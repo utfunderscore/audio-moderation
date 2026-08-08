@@ -1,0 +1,454 @@
+# Typed ASR Deployments on Modal — Project Plan
+
+## 1. Goal
+
+Build a Python 3.12 project, managed by `uv`, that deploys multiple ASR models to
+Modal. Every deployed model exposes the same versioned HTTP contract while keeping
+model dependencies, GPU configuration, weight loading, and release cadence isolated.
+
+The design should make adding a model a small, explicit task rather than requiring
+changes to the shared HTTP layer.
+
+## 2. Initial decisions
+
+These are the recommended defaults. The open product decisions in section 12 should
+be confirmed before the first public deployment.
+
+- Use **one Modal App/deployment per model variant**. A variant is a concrete engine,
+  model revision, and inference configuration.
+- Give every deployment the same route: `POST /v1/audio/transcriptions`.
+- Make the batch endpoint compatible with the stable core of OpenAI's transcription
+  API: multipart `file` and `model` fields, with a JSON `{"text": "..."}` response.
+- Keep the first API deliberately small. Add streaming, diarization, timestamps, and
+  asynchronous jobs as separate capabilities rather than weakening the base contract.
+- Use FastAPI through `@modal.asgi_app()` because the service needs uploads,
+  authentication, health routes, middleware, and generated OpenAPI.
+- Define the model boundary with a strict `Protocol`; FastAPI and Modal types must not
+  leak into model adapters.
+- Load one model per container in `@modal.enter()` and begin with one inference at a
+  time per GPU container.
+- Store model weights in a named Modal Volume and pin each upstream model to an
+  immutable revision.
+- Prefer explicit, thin deployment modules over a dynamic registry or decorator
+  metaprogramming. The repeated Modal wiring should be small and easy to type-check.
+
+## 3. Proposed layout
+
+```text
+.
+├── pyproject.toml
+├── uv.lock
+├── README.md
+├── src/socialguard_models/
+│   ├── __init__.py
+│   ├── api/
+│   │   ├── app.py              # create_api(transcriber, settings)
+│   │   ├── auth.py             # bearer-token dependency
+│   │   ├── errors.py           # stable public error envelope/mapping
+│   │   └── schemas.py          # HTTP request/response DTOs
+│   ├── core/
+│   │   ├── capabilities.py     # supported options for a deployment
+│   │   ├── models.py           # AudioInput, options, transcript, model info
+│   │   └── transcriber.py      # Transcriber Protocol
+│   ├── backends/
+│   │   └── faster_whisper.py   # first concrete adapter; no Modal/FastAPI
+│   └── deployments/
+│       ├── common.py           # typed image/settings helpers only
+│       └── faster_whisper_large_v3.py
+└── tests/
+    ├── contract/               # reusable tests every adapter must pass
+    ├── unit/                   # schemas, errors, limits, fake transcriber
+    ├── integration/            # FastAPI multipart tests
+    └── fixtures/               # short, redistributable audio samples
+```
+
+Do not create a central import-time registry of all backends. Importing one deployment
+must not require every model framework to be installed.
+
+## 4. Typed core boundary
+
+The shared API depends on a model-neutral synchronous protocol. GPU libraries are
+usually synchronous; the FastAPI layer can explicitly run inference in a worker
+thread so it does not silently block the ASGI event loop.
+
+The intended shape is:
+
+```python
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+
+@dataclass(frozen=True, slots=True)
+class AudioInput:
+    path: Path
+    filename: str | None
+    content_type: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptionOptions:
+    language: str | None = None
+    prompt: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Transcript:
+    text: str
+
+
+class Transcriber(Protocol):
+    @property
+    def info(self) -> "ModelInfo": ...
+
+    def transcribe(
+        self,
+        audio: AudioInput,
+        options: TranscriptionOptions,
+    ) -> Transcript: ...
+```
+
+Design rules:
+
+- Use frozen, slotted dataclasses for internal values and Pydantic models only at the
+  untrusted HTTP boundary.
+- Do not use `Any` or `dict[str, Any]` in the common contract.
+- If extension JSON becomes necessary, define a recursive `JsonValue` alias and keep
+  extensions explicitly capability-gated.
+- Isolate untyped ML libraries in the smallest possible backend modules. Describe the
+  subset used through local `Protocol`s, narrow casts, or local stubs. Do not disable
+  strict checking for a whole backend.
+- Every public function and class has complete parameter and return annotations.
+
+## 5. HTTP contract v1
+
+### Routes
+
+- `POST /v1/audio/transcriptions` — synchronous batch transcription.
+- `GET /v1/models` — identifies the one fixed model served by this deployment.
+- `GET /healthz` — process liveness.
+- `GET /readyz` — confirms model initialization completed.
+- `GET /openapi.json` — generated by FastAPI and tested as a public artifact.
+
+### Transcription request
+
+`multipart/form-data` fields:
+
+| Field | Required | v1 behavior |
+| --- | --- | --- |
+| `file` | yes | Stream to a bounded temporary file; never read an unbounded upload into RAM. |
+| `model` | yes | Must match the deployment's canonical ID or an explicit alias. |
+| `language` | no | Language hint; reject it if the adapter does not advertise support. |
+| `prompt` | no | Context hint; reject it if unsupported rather than ignoring it. |
+| `response_format` | no | Accept only `json` in v1. |
+
+The default success body is exactly:
+
+```json
+{"text":"transcribed text"}
+```
+
+Put operational metadata in headers where useful, for example `X-Request-ID`,
+`X-ASR-Model`, and `Server-Timing`. Do not add unstable backend details to the base
+JSON response.
+
+### Errors
+
+Define and test one typed error envelope:
+
+```json
+{
+  "error": {
+    "code": "unsupported_option",
+    "message": "This model does not support prompt hints.",
+    "param": "prompt",
+    "request_id": "..."
+  }
+}
+```
+
+Use a closed error-code enum and a deliberate status mapping:
+
+- `400`/`422`: malformed upload, model mismatch, unsupported option, invalid audio.
+- `401`/`403`: authentication failure.
+- `413`: configured upload-size limit exceeded.
+- `429`: service capacity/rate limiting.
+- `500`: internal invariant failure, without leaking implementation details.
+- `503`: model unavailable or not ready.
+- `504`: transcription deadline exceeded.
+
+### Capability policy
+
+`ModelInfo` should advertise canonical ID, aliases, engine, immutable model revision,
+and supported options. An unsupported optional field must produce a typed 4xx error;
+it must never be silently ignored.
+
+Keep these out of v1 until they have their own tested contract:
+
+- word/segment timestamps;
+- SRT, VTT, text, and verbose response variants;
+- diarization or speaker labels;
+- streaming/SSE or WebSockets;
+- arbitrary backend keyword arguments;
+- URL-based audio inputs;
+- long-running asynchronous jobs.
+
+## 6. Modal deployment design
+
+Each module in `deployments/` owns one top-level `modal.App` and one concrete model
+configuration:
+
+1. Build a Python 3.12 image using `modal.Image.uv_sync(..., frozen=True, groups=[...])`.
+2. Install system tools such as `ffmpeg` explicitly in the image.
+3. Mount a model-specific or namespaced `modal.Volume` under a stable cache path.
+4. Provide an idempotent weight-prefetch function. It downloads an immutable model
+   revision, commits the Volume, and is run before deployment.
+5. Define an `@app.cls(...)` with explicit GPU, secrets, Volume, timeout, and scaling
+   settings.
+6. In `@modal.enter()`, construct the backend adapter and load weights into RAM/GPU.
+   The request path must never perform an implicit first-time model download.
+7. In `@modal.asgi_app()`, return `create_api(self.transcriber, settings)`.
+8. Start at `@modal.concurrent(max_inputs=1)`. Raise concurrency or add batching only
+   after representative GPU-memory and latency benchmarks.
+
+Recommended operational defaults:
+
+- Pin the Python, Modal SDK, backend packages, model revision, and image inputs.
+- Treat cache population as single-writer; inference mounts should be read-only where
+  Modal's Volume API permits it.
+- Set `max_containers` before exposure to bound cost.
+- Keep `min_containers=0` in development. Choose production warm capacity from the
+  cold-start SLA and budget.
+- Use an L40S as a starting benchmark, not a permanent assumption. Select the smallest
+  GPU meeting memory and latency targets.
+- Keep synchronous requests comfortably below Modal's 150-second web-function limit.
+  Add a submit/status/result job API for longer audio instead of depending on timeout
+  redirects.
+- Do not log uploaded audio, prompts, transcripts, bearer tokens, or signed URLs.
+
+Use FastAPI bearer authentication backed by a Modal Secret if compatibility with
+normal OpenAI clients matters. Modal proxy authentication is simpler but requires
+`Modal-Key`/`Modal-Secret` headers and is not a drop-in bearer-token interface.
+
+## 7. Dependency and uv strategy
+
+Add small shared runtime dependencies to the root project:
+
+- `modal`;
+- `fastapi`;
+- `pydantic`;
+- `python-multipart`.
+
+Add HTTP test support to the development group. Put heavy backend dependencies in
+named dependency groups such as `backend-faster-whisper`, never in the default local
+environment.
+
+For each deployment image, sync only the shared project plus its backend group from
+`uv.lock` with frozen resolution. If two backend stacks later require incompatible
+Torch/CUDA ecosystems, declare them as conflicting uv groups and type-check/test them
+in a CI matrix. If that becomes unwieldy, promote those backends to independent uv
+subprojects; do not force incompatible ML stacks into one environment.
+
+Useful local gates:
+
+```bash
+uv lock --check
+uv run ruff format --check .
+uv run ruff check .
+uv run basedpyright
+uv run pytest
+```
+
+Backend-specific checks should sync and run one backend group at a time. The Modal
+image build must use the checked-in lock file with frozen resolution.
+
+## 8. Test strategy
+
+### Pure unit tests
+
+- DTO validation and serialization.
+- Model ID/alias matching.
+- Capability rejection for every optional request field.
+- Stable exception-to-error-envelope mapping.
+- Upload size, empty file, filename, and cleanup behavior.
+- Authentication without real secrets.
+
+### API integration tests
+
+Use FastAPI `TestClient` with a typed fake `Transcriber`:
+
+- valid multipart request and exact JSON response;
+- missing `file` or `model`;
+- wrong model ID;
+- malformed audio and oversized body;
+- adapter timeout and typed failures;
+- temporary files removed on success and failure;
+- OpenAPI schema snapshot or focused schema assertions;
+- concurrent requests do not share request-local state.
+
+### Adapter contract tests
+
+Create a reusable test suite that every adapter factory must pass:
+
+- implements the `Transcriber` protocol under basedpyright;
+- exposes complete immutable `ModelInfo`;
+- returns non-empty text for a short known fixture;
+- respects or explicitly rejects every advertised option;
+- translates backend exceptions into the internal typed error taxonomy;
+- does not download weights during `transcribe()`.
+
+### Modal validation
+
+Use a spend ladder:
+
+1. Import and configuration smoke test locally.
+2. Build the deployment image.
+3. Prefetch weights into a non-production Volume.
+4. Run one remote GPU transcription against a short fixture.
+5. Serve ephemerally and exercise the actual HTTP upload.
+6. Deploy to a staging Modal environment.
+7. Benchmark representative short, medium, and maximum-supported audio before
+   production rollout.
+
+Record cold-start time, model-load time, real-time factor, p50/p95 latency, peak GPU
+memory, and error rate.
+
+## 9. Delivery milestones
+
+### Milestone 0 — Contract and policy decisions
+
+- Confirm initial model/backend.
+- Confirm auth mechanism, upload limit, maximum audio duration, latency target, and
+  budget ceiling.
+- Write an ADR for one-deployment-per-model and the v1 compatibility boundary.
+
+**Exit:** the open decisions in section 12 are answered.
+
+### Milestone 1 — Shared typed foundation
+
+- Add shared dependencies and regenerate `uv.lock`.
+- Implement core dataclasses, enums, capability model, and `Transcriber` protocol.
+- Add typed settings loaded from environment without import-time secret access.
+- Add unit tests and CI commands.
+
+**Exit:** all local gates pass with no basedpyright warnings.
+
+### Milestone 2 — HTTP service with fake inference
+
+- Implement `create_api()` and all v1 routes.
+- Add bearer auth, bounded upload spooling, request IDs, and error mapping.
+- Add API integration tests and OpenAPI assertions.
+
+**Exit:** the complete HTTP contract is testable locally with no ML dependency.
+
+### Milestone 3 — First Modal deployment
+
+- Add common image/settings helpers and one explicit deployment module.
+- Add Volume prefetch, lifecycle loading, GPU/resource settings, and staging secrets.
+- Deploy a fake/CPU adapter first to validate routing and authentication cheaply.
+
+**Exit:** staging exposes the common interface and passes HTTP smoke tests.
+
+### Milestone 4 — First real ASR backend
+
+- Implement the backend adapter behind the protocol.
+- Pin package and model revisions.
+- Add adapter contract tests and remote GPU fixture tests.
+- Benchmark and choose GPU, scaling limits, and synchronous duration ceiling.
+
+**Exit:** one production candidate passes local, contract, staging, and benchmark gates.
+
+### Milestone 5 — Prove extensibility with a second backend
+
+- Add a second dependency group, adapter, deployment module, and contract-test case.
+- Make no changes to the shared route handler except for a genuine new common
+  capability approved as an API change.
+
+**Exit:** two independently deployable model URLs pass the same HTTP test suite.
+
+### Milestone 6 — Production hardening
+
+- Add CI deployment to a staging Modal environment and explicit promotion to prod.
+- Add structured redacted logs, latency/error metrics, alerts, and cost limits.
+- Document rollback, weight migration, secret rotation, and model deprecation.
+- Add load tests and failure injection for timeout, OOM, corrupt audio, and missing
+  weights.
+
+**Exit:** rollback and on-call procedures have been exercised.
+
+## 10. Adding a model later
+
+A new model should require this checklist:
+
+1. Add a named uv dependency group and lock it.
+2. Add one backend adapter implementing `Transcriber`.
+3. Declare immutable `ModelInfo` and capabilities.
+4. Add the backend to the shared adapter contract tests.
+5. Add one explicit Modal deployment module with image, GPU, Volume, and scaling.
+6. Add an idempotent pinned-revision prefetch function.
+7. Run local gates, image build, remote fixture test, HTTP staging test, and benchmark.
+8. Document deployment URL, canonical model ID, accepted formats/options, limits, and
+   rollback command.
+
+If adding a model requires editing request parsing or response serialization, stop and
+decide whether the change is a versioned shared capability or a backend-specific
+extension. Do not add backend conditionals to `api/app.py`.
+
+## 11. Non-goals for the first release
+
+- A single gateway that routes among all model deployments.
+- Runtime installation or arbitrary user-selected Hugging Face models.
+- Training, fine-tuning, or dataset management.
+- Persistent storage of source audio or transcripts.
+- Streaming and durable long-running transcription jobs.
+- Automatic GPU selection without benchmarks.
+- A generic plugin discovery framework.
+
+A gateway can be added later without changing model endpoints: it can implement the
+same contract, validate `model`, and forward to an allow-listed deployment URL.
+
+## 12. Decisions needed before implementation
+
+1. Which model should be the first reference backend? `faster-whisper` is a practical
+   default, but it should not be assumed without confirming language/accuracy needs.
+2. Is strict OpenAI client compatibility required, or only a similar common contract?
+3. Should auth use normal bearer tokens, Modal proxy auth, or a private network path?
+4. What are the maximum upload bytes and maximum audio duration?
+5. What is the synchronous latency SLA, including cold starts?
+6. Are timestamps, diarization, translation, language detection, or streaming needed
+   in the first release?
+7. What are the expected request rate, burst concurrency, and monthly GPU budget?
+8. May audio/transcripts appear in logs or traces? The recommended default is no.
+9. Which Modal environments and deployment promotion process are required?
+
+## 13. Current repository baseline
+
+The repository already has a suitable minimal foundation:
+
+- Python 3.12 and `uv_build`;
+- strict basedpyright with warnings treated as failures;
+- Ruff with all lint rules enabled apart from documented conflicts;
+- strict pytest configuration;
+- a source-layout package and passing import smoke test.
+
+At planning time, these checks pass:
+
+```text
+uv run ruff check .
+uv run basedpyright
+uv run pytest
+```
+
+The directory currently has no `.git` metadata, so change history and tracked-file
+status cannot yet be used as validation evidence.
+
+## References
+
+- Modal Web Functions: <https://modal.com/docs/guide/webhooks>
+- Modal lifecycle hooks: <https://modal.com/docs/guide/lifecycle-functions>
+- Modal input concurrency: <https://modal.com/docs/guide/concurrent-inputs>
+- Modal model weights: <https://modal.com/docs/guide/model-weights>
+- Modal Images/uv sync: <https://modal.com/docs/sdk/py/latest/Image>
+- Modal request timeouts: <https://modal.com/docs/guide/webhook-timeouts>
+- OpenAI transcription API: <https://developers.openai.com/api/reference/resources/audio/subresources/transcriptions/methods/create>
+- FastAPI files and forms: <https://fastapi.tiangolo.com/tutorial/request-forms-and-files/>

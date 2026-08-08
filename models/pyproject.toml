@@ -1,0 +1,57 @@
+[project]
+name = "socialguard-models"
+version = "0.1.0"
+description = "Typed ASR model deployments for Modal"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "modal>=1,<2",
+    "pydantic>=2.10,<3",
+    "python-multipart>=0.0.20,<1",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.0,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39,<2",
+    "httpx>=0.28,<1",
+    "pytest>=9,<10",
+    "ruff>=0.15,<1",
+]
+
+[tool.uv]
+package = true
+
+[tool.basedpyright]
+include = ["src", "tests"]
+exclude = [".venv"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+failOnWarnings = true
+
+[tool.pytest.ini_options]
+addopts = ["--strict-config", "--strict-markers", "-ra"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812", # Conflicts with the formatter.
+    "CPY001", # The project does not require per-file copyright notices.
+    "D203",   # Prefer no blank line before class docstrings.
+    "D213",   # Prefer summary on the first docstring line.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.ruff.format]
+docstring-code-format = true
