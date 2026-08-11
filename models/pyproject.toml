@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
     "modal>=1,<2",
     "pydantic>=2.10,<3",
     "python-multipart>=0.0.20,<1",
@@ -16,9 +17,15 @@ requires = ["uv_build>=0.11.0,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
+backend-granite = [
+    "huggingface-hub==0.34.4",
+    "soundfile==0.13.1",
+    "torch==2.7.1",
+    "torchaudio==2.7.1",
+    "transformers==4.54.0",
+]
 dev = [
     "basedpyright>=1.39,<2",
-    "httpx>=0.28,<1",
     "pytest>=9,<10",
     "ruff>=0.15,<1",
 ]
@@ -27,8 +34,9 @@ dev = [
 package = true
 
 [tool.basedpyright]
-include = ["src", "tests"]
+include = ["src", "tests", "typings"]
 exclude = [".venv"]
+stubPath = "typings"
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 failOnWarnings = true
@@ -51,6 +59,13 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"src/socialguard_models/deployments/granite_{prefetch,smoke}.py" = [
+    "PLC0415", # Modal-only ML imports must not load in the default local environment.
+]
+"src/socialguard_models/deployments/granite.py" = [
+    "PLC0415", # The local API image intentionally omits Modal-only ML dependencies.
+]
+"tests/unit/test_gateway_runtime.py" = ["ARG005", "D102", "D107", "PLR2004", "PT018"]
 "tests/**/*.py" = ["S101"]
 
 [tool.ruff.format]
