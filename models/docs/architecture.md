@@ -26,7 +26,7 @@
 
   Implements bounded retries and accepts any HTTP 2xx response.
 
-- [`api/networking.py`](../src/socialguard_models/api/networking.py) — URL and SSRF policy. Requires HTTPS port 443 and public IP resolution, and rejects credentials, fragments, private networks, and unsafe destinations.
+- [`api/networking.py`](../src/socialguard_models/api/networking.py) — Callback URL and SSRF policy. Requires HTTPS port 443 and public IP resolution, and rejects credentials, fragments, private networks, and unsafe destinations.
 
 ## Shared model contract
 
@@ -46,6 +46,8 @@
   - 25 MiB download and 60-second audio limits;
   - mono 16 kHz normalization and deterministic inference.
 
+- [`deployments/s3_audio.py`](../src/socialguard_models/deployments/s3_audio.py) — Environment-configured boto3 client and bounded S3 object streaming for audio input.
+
 - [`deployments/granite_resources.py`](../src/socialguard_models/deployments/granite_resources.py) — Shared pinned configuration for the Granite model revision, L40S resources, Hugging Face cache Volume, and locked runtime image.
 
 - [`deployments/granite_prefetch.py`](../src/socialguard_models/deployments/granite_prefetch.py) — Downloads the pinned model snapshot into the Modal Volume. It is the only cache writer.
@@ -59,7 +61,7 @@ Client POST
   → FastAPI authentication and validation
   → Modal Dict idempotency record
   → spawned CPU orchestration worker
-  → bounded audio download
+  → bounded boto3 download from the configured S3 bucket
   → L40S Granite inference
   → immutable terminal event
   → signed, retryable HTTPS callback

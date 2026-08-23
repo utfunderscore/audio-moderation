@@ -62,7 +62,7 @@ def _valid_request() -> dict[str, str]:
     """Return a valid asynchronous transcription request."""
     return {
         "model": "granite-4.0-1b-speech",
-        "audio_url": "https://uploads.example.com/audio.wav?signature=example",
+        "audio_url": "https://audio-bucket.s3.eu-west-2.amazonaws.com/audio.wav",
         "callback_url": "https://client.example.com/hooks/transcriptions",
         "report_id": "report_01J0EXAMPLE",
         "idempotency_key": "customer-request-123",
@@ -84,7 +84,7 @@ def test_queue_transcription_maps_request_to_submission_command() -> None:
     assert submitter.command == SubmissionCommand(
         caller_id="single-tenant",
         model=TranscriptionModel.GRANITE_4_0_1B_SPEECH,
-        audio_url="https://uploads.example.com/audio.wav?signature=example",
+        audio_url="https://audio-bucket.s3.eu-west-2.amazonaws.com/audio.wav",
         callback_url="https://client.example.com/hooks/transcriptions",
         report_id="report_01J0EXAMPLE",
         idempotency_key="customer-request-123",

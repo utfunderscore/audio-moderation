@@ -79,7 +79,7 @@ def _command(*, report_id: str = "report") -> SubmissionCommand:
     return SubmissionCommand(
         caller_id="caller",
         model=TranscriptionModel.GRANITE_4_0_1B_SPEECH,
-        audio_url="https://audio.example.com/file.wav",
+        audio_url="https://audio-bucket.s3.eu-west-2.amazonaws.com/file.wav",
         callback_url="https://hooks.example.com/callback",
         report_id=report_id,
         idempotency_key="retry-key",

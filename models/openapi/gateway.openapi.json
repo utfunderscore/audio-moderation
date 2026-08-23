@@ -311,9 +311,9 @@
         "description": "Request that submits one already-uploaded audio object for transcription.",
         "properties": {
           "audio_url": {
-            "description": "HTTPS presigned URL for the audio object. The retrieval worker validates DNS, network, size, and object policy before download.",
+            "description": "HTTPS S3 URL for an object in the worker's configured bucket. The worker uses the URL path as the object key and enforces a download size limit.",
             "examples": [
-              "https://uploads.example.com/audio.wav?X-Amz-Signature=example"
+              "https://audio-bucket.s3.eu-west-2.amazonaws.com/audio.wav"
             ],
             "maxLength": 8192,
             "title": "Audio Url",

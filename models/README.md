@@ -31,7 +31,7 @@ uv run pytest
 The Modal gateway accepts `POST /v1/transcriptions` with a JSON body containing:
 
 - `model` — a supported model type;
-- `audio_url` — an HTTPS presigned download URL for the audio file;
+- `audio_url` — an HTTPS S3 object URL in the configured audio bucket;
 - `callback_url` — an HTTPS webhook endpoint for completion or failure events;
 - `report_id` — the caller's opaque report identifier, echoed in the `202` response
   and callback events; and
@@ -59,19 +59,23 @@ with spawning a Modal worker. Concurrent identical requests use a bounded handof
 they return `202` only after one request has spawned work or the ledger confirms it was
 dispatched. A temporary `503` is safe to retry with the same idempotency key. Use a
 transactional external database before requiring longer retention or stronger outbox
-guarantees. Audio downloads are limited to 25 MiB compressed bytes and 60 seconds decoded duration.
-The worker allows 90 seconds for download, 180 seconds for GPU inference, and 420 seconds
-total; the GPU gets a 600-second cold-start budget. URL dereferencing rejects non-HTTPS,
-non-443, credential-bearing, fragment-bearing, and private-network destinations. Python HTTP clients cannot pin the
-validated DNS address, so deployment egress allowlists remain the defense against DNS
-rebinding.
+guarantees. The worker extracts the object key from `audio_url` and downloads it from
+`SOCIALGUARD_S3_BUCKET` with boto3. S3 downloads are limited to 25 MiB compressed bytes
+and 60 seconds decoded duration. The worker allows 90 seconds for download, 180 seconds
+for GPU inference, and 420 seconds total; the GPU gets a 600-second cold-start budget.
+Callback URL dereferencing rejects non-HTTPS, non-443, credential-bearing,
+fragment-bearing, and private-network destinations.
 
 ### Deploy prerequisites
 
-Create two Modal Secrets before deploying: `socialguard-gateway-api` containing
+Create three Modal Secrets before deploying: `socialguard-gateway-api` containing
 `SOCIALGUARD_GATEWAY_API_TOKEN`, and `socialguard-callback-signing` containing
-`SOCIALGUARD_CALLBACK_HMAC_KEY` plus `SOCIALGUARD_CALLBACK_KEY_ID`. Prefetch the
-pinned model cache before deployment. The deployment entrypoint is
+`SOCIALGUARD_CALLBACK_HMAC_KEY` plus `SOCIALGUARD_CALLBACK_KEY_ID`. The
+`socialguard-s3` secret must contain `SOCIALGUARD_S3_BUCKET`, `AWS_DEFAULT_REGION`,
+`AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`. It may also contain
+`AWS_SESSION_TOKEN` for temporary credentials and `SOCIALGUARD_S3_ENDPOINT_URL` for an
+S3-compatible endpoint. See [`.env.example`](.env.example) for the complete environment
+shape. Prefetch the pinned model cache before deployment. The deployment entrypoint is
 `socialguard_models.deployments.granite`; it has a CPU ASGI gateway, CPU orchestrator,
 and lifecycle-loaded L40S worker with one active inference per container.
 

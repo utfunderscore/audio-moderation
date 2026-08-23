@@ -50,10 +50,10 @@ class TranscriptionRequest(GatewayModel):
     )
     audio_url: Annotated[str, Field(max_length=8_192)] = Field(
         description=(
-            "HTTPS presigned URL for the audio object. The retrieval worker validates "
-            "DNS, network, size, and object policy before download."
+            "HTTPS S3 URL for an object in the worker's configured bucket. The worker "
+            "uses the URL path as the object key and enforces a download size limit."
         ),
-        examples=["https://uploads.example.com/audio.wav?X-Amz-Signature=example"],
+        examples=["https://audio-bucket.s3.eu-west-2.amazonaws.com/audio.wav"],
     )
     callback_url: Annotated[str, Field(max_length=8_192)] = Field(
         description=(

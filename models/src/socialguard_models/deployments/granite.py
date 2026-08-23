@@ -24,7 +24,6 @@ from socialguard_models.api.callbacks import (
     terminal_body,
 )
 from socialguard_models.api.networking import (
-    MAX_REMOTE_BYTES,
     NetworkPolicy,
     validate_url,
 )
@@ -49,6 +48,12 @@ from socialguard_models.deployments.granite_resources import (
 from socialguard_models.deployments.granite_resources import (
     IMAGE as GRANITE_IMAGE,
 )
+from socialguard_models.deployments.s3_audio import (
+    AUDIO_EMPTY_MESSAGE,
+    AudioRejectedError,
+    AudioRetrievalError,
+    download_audio,
+)
 
 APP = modal.App("socialguard-asr-gateway")
 # Modal CLI deployment defaults to a module-level variable named ``app``.
@@ -63,6 +68,15 @@ CALLBACK_SECRET = modal.Secret.from_name(
     "socialguard-callback-signing",
     required_keys=["SOCIALGUARD_CALLBACK_HMAC_KEY", "SOCIALGUARD_CALLBACK_KEY_ID"],
 )
+S3_SECRET = modal.Secret.from_name(
+    "socialguard-s3",
+    required_keys=[
+        "SOCIALGUARD_S3_BUCKET",
+        "AWS_DEFAULT_REGION",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+    ],
+)
 JOB_LEDGER = modal.Dict.from_name(
     "socialguard-asr-gateway-jobs", create_if_missing=True
 )
@@ -70,10 +84,7 @@ GATEWAY_MAX_CONTAINERS = 2
 WORKER_MAX_CONTAINERS = 2
 MAX_AUDIO_SECONDS = 60
 TARGET_SAMPLE_RATE = 16_000
-AUDIO_TOO_LARGE_MESSAGE = "Audio exceeds the 25 MiB size limit."
-AUDIO_EMPTY_MESSAGE = "Audio is empty or invalid."
 AUDIO_TOO_LONG_MESSAGE = "Audio exceeds the 60-second duration limit."
-DOWNLOAD_TIMEOUT_SECONDS = 90
 GPU_TIMEOUT_SECONDS = 180
 WORKER_TIMEOUT_SECONDS = 420
 GPU_STARTUP_TIMEOUT_SECONDS = 600
@@ -128,14 +139,6 @@ class _ModalDispatcher(SubmissionDispatcher):
         await process_transcription.spawn.aio(ledger_key, transcription_id, command)
 
 
-class AudioRetrievalError(RuntimeError):
-    """The remote object could not be fetched within the gateway policy."""
-
-
-class AudioRejectedError(ValueError):
-    """The fetched object exceeds a public audio safety limit."""
-
-
 def _failure_event(
     transcription_id: str, command: SubmissionCommand, code: str, message: str
 ) -> dict[str, object]:
@@ -149,48 +152,9 @@ def _failure_event(
     }
 
 
-async def _download_audio(url: str) -> bytes:
-    """Download one object with absolute, streamed byte limits."""
-    import asyncio
-
-    import httpx
-
-    try:
-        validate_url(url, NetworkPolicy())
-        timeout = httpx.Timeout(
-            timeout=DOWNLOAD_TIMEOUT_SECONDS, connect=10.0, read=30.0
-        )
-        async with asyncio.timeout(DOWNLOAD_TIMEOUT_SECONDS):
-            async with httpx.AsyncClient(
-                follow_redirects=False, timeout=timeout
-            ) as client:
-                async with client.stream("GET", url) as response:
-                    response.raise_for_status()
-                    content_length = response.headers.get("content-length")
-                    if (
-                        content_length is not None
-                        and int(content_length) > MAX_REMOTE_BYTES
-                    ):
-                        raise AudioRejectedError(AUDIO_TOO_LARGE_MESSAGE)  # noqa: TRY301
-                    chunks: list[bytes] = []
-                    size = 0
-                    async for chunk in response.aiter_bytes():
-                        size += len(chunk)
-                        if size > MAX_REMOTE_BYTES:
-                            raise AudioRejectedError(AUDIO_TOO_LARGE_MESSAGE)  # noqa: TRY301
-                        chunks.append(chunk)
-    except AudioRejectedError:
-        raise
-    except (OSError, ValueError, httpx.HTTPError, TimeoutError) as exc:
-        raise AudioRetrievalError from exc
-    if not chunks:
-        raise AudioRejectedError(AUDIO_EMPTY_MESSAGE)
-    return b"".join(chunks)
-
-
 @APP.function(  # pyright: ignore[reportUnknownMemberType]
     image=API_IMAGE,
-    secrets=[CALLBACK_SECRET],
+    secrets=[CALLBACK_SECRET, S3_SECRET],
     timeout=WORKER_TIMEOUT_SECONDS,
     retries=WORKER_RETRIES,
     max_containers=WORKER_MAX_CONTAINERS,
@@ -210,7 +174,7 @@ async def process_transcription(
         await _deliver_callback(command.callback_url, existing)
         return
     try:
-        audio = await _download_audio(command.audio_url)
+        audio = await download_audio(command.audio_url)
         text = cast(
             "str",
             await GraniteModel().transcribe_bytes.remote.aio(audio),  # pyright: ignore[reportUnknownMemberType,reportCallIssue]
