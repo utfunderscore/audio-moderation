@@ -31,9 +31,9 @@ uv run pytest
 The Modal gateway accepts `POST /v1/transcriptions` with a JSON body containing:
 
 - `model` — a supported model type;
-- `audio_url` — an HTTPS S3 object URL in the configured audio bucket;
+- `audio_uri` — an `s3://bucket/key` URI accessible to the worker's AWS identity;
 - `callback_url` — an HTTPS webhook endpoint for completion or failure events;
-- `report_id` — the caller's opaque report identifier, echoed in the `202` response
+- `report_id` — the caller's positive integer report identifier, echoed in the `202` response
   and callback events; and
 - `idempotency_key` — a caller-generated retry key, distinct from `report_id`.
 
@@ -46,12 +46,13 @@ identical retries return the original accepted job, while reuse with a different
 returns a typed `409 idempotency_conflict` response.
 
 Callbacks are at-least-once and receivers must deduplicate by gateway transcription ID.
-The delivery worker signs `ASCII(timestamp) + b'.' + exact JSON body bytes` using
-HMAC-SHA256 and sends `X-SocialGuard-Timestamp`, `X-SocialGuard-Webhook-Key-Id`, and
-`X-SocialGuard-Signature: sha256=<lowercase-hex>` headers. Any 2xx response
-acknowledges delivery. Each worker attempt makes three callback attempts with one- and
-two-second backoff (a three-second window); two Modal retries redeliver the exact
-persisted bytes after callback exhaustion.
+The delivery worker exchanges its runtime-provided `MODAL_IDENTITY_TOKEN` through AWS
+STS `AssumeRoleWithWebIdentity`, keeps the temporary credentials in memory, and
+SigV4-signs the exact JSON body bytes with the STS session token. A `204` response
+acknowledges delivery. A `400` payload rejection or `403` authentication rejection stops
+local retries; temporary failures receive up to three attempts with one- and two-second
+backoff. Modal retries redeliver the exact persisted bytes after temporary callback
+exhaustion.
 
 The deployed gateway uses a bounded Modal Dict ledger. Its idempotency and recovery
 records expire after seven days of inactivity, and a ledger write cannot be transactional
@@ -59,23 +60,24 @@ with spawning a Modal worker. Concurrent identical requests use a bounded handof
 they return `202` only after one request has spawned work or the ledger confirms it was
 dispatched. A temporary `503` is safe to retry with the same idempotency key. Use a
 transactional external database before requiring longer retention or stronger outbox
-guarantees. The worker extracts the object key from `audio_url` and downloads it from
-`SOCIALGUARD_S3_BUCKET` with boto3. S3 downloads are limited to 25 MiB compressed bytes
-and 60 seconds decoded duration. The worker allows 90 seconds for download, 180 seconds
-for GPU inference, and 420 seconds total; the GPU gets a 600-second cold-start budget.
+guarantees. The worker extracts the bucket and object key from `audio_uri` and downloads
+it with boto3. IAM determines which buckets are accessible. S3 downloads are limited to
+25 MiB compressed bytes and 60 seconds decoded duration. The worker allows 90 seconds
+for download, 180 seconds for GPU inference, and 420 seconds total; the GPU gets a
+600-second cold-start budget.
 Callback URL dereferencing rejects non-HTTPS, non-443, credential-bearing,
 fragment-bearing, and private-network destinations.
 
 ### Deploy prerequisites
 
-Create three Modal Secrets before deploying: `socialguard-gateway-api` containing
-`SOCIALGUARD_GATEWAY_API_TOKEN`, and `socialguard-callback-signing` containing
-`SOCIALGUARD_CALLBACK_HMAC_KEY` plus `SOCIALGUARD_CALLBACK_KEY_ID`. The
-`socialguard-s3` secret must contain `SOCIALGUARD_S3_BUCKET`, `AWS_DEFAULT_REGION`,
-`AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`. It may also contain
+Create two Modal Secrets before deploying: `socialguard-gateway-api` containing
+`SOCIALGUARD_GATEWAY_API_TOKEN`, and `socialguard-s3` containing
+`AWS_DEFAULT_REGION`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`. The S3 secret may also contain
 `AWS_SESSION_TOKEN` for temporary credentials and `SOCIALGUARD_S3_ENDPOINT_URL` for an
-S3-compatible endpoint. See [`.env.example`](.env.example) for the complete environment
-shape. Prefetch the pinned model cache before deployment. The deployment entrypoint is
+S3-compatible endpoint. Callback delivery requires no permanent AWS key: Modal provides
+the OIDC identity token at runtime, while the callback URL, role ARN, region, and SigV4
+service are non-secret worker configuration. See [`.env.example`](.env.example) for the
+complete environment shape. Prefetch the pinned model cache before deployment. The deployment entrypoint is
 `socialguard_models.deployments.granite`; it has a CPU ASGI gateway, CPU orchestrator,
 and lifecycle-loaded L40S worker with one active inference per container.
 

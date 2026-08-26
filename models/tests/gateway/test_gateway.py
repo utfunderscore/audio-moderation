@@ -62,9 +62,9 @@ def _valid_request() -> dict[str, str]:
     """Return a valid asynchronous transcription request."""
     return {
         "model": "granite-4.0-1b-speech",
-        "audio_url": "https://audio-bucket.s3.eu-west-2.amazonaws.com/audio.wav",
+        "audio_uri": "s3://audio-bucket/path/audio.wav",
         "callback_url": "https://client.example.com/hooks/transcriptions",
-        "report_id": "report_01J0EXAMPLE",
+        "report_id": "42",
         "idempotency_key": "customer-request-123",
     }
 
@@ -78,15 +78,15 @@ def test_queue_transcription_maps_request_to_submission_command() -> None:
     assert response.status_code == status.HTTP_202_ACCEPTED
     assert response.json() == {
         "id": "transcription_01J0EXAMPLE",
-        "report_id": "report_01J0EXAMPLE",
+        "report_id": "42",
         "status": "queued",
     }
     assert submitter.command == SubmissionCommand(
         caller_id="single-tenant",
         model=TranscriptionModel.GRANITE_4_0_1B_SPEECH,
-        audio_url="https://audio-bucket.s3.eu-west-2.amazonaws.com/audio.wav",
+        audio_uri="s3://audio-bucket/path/audio.wav",
         callback_url="https://client.example.com/hooks/transcriptions",
-        report_id="report_01J0EXAMPLE",
+        report_id="42",
         idempotency_key="customer-request-123",
     )
 
@@ -248,14 +248,20 @@ def test_queue_transcription_rejects_extra_fields() -> None:
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
-def test_queue_transcription_requires_https_audio_url() -> None:
-    """The gateway rejects non-HTTPS audio locations."""
+def test_queue_transcription_requires_s3_audio_uri() -> None:
+    """The gateway requires an S3 bucket and object key without URL parameters."""
     client, _ = _client()
-    request = _valid_request() | {"audio_url": "http://uploads.example.com/audio.wav"}
-
-    response = client.post("/v1/transcriptions", json=request)
-
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    for audio_uri in (
+        "https://audio-bucket.s3.eu-west-2.amazonaws.com/audio.wav",
+        "s3://audio-bucket",
+        "s3://audio-bucket/audio.wav?versionId=1",
+        "s3://audio-bucket/audio.wav#fragment",
+    ):
+        response = client.post(
+            "/v1/transcriptions",
+            json=_valid_request() | {"audio_uri": audio_uri},
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 def test_queue_transcription_requires_https_callback_url() -> None:
@@ -268,8 +274,8 @@ def test_queue_transcription_requires_https_callback_url() -> None:
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
-def test_queue_transcription_requires_bounded_report_id() -> None:
-    """The caller report identifier is required, nonempty, and bounded."""
+def test_queue_transcription_requires_positive_integer_report_id() -> None:
+    """The callback report identifier is a bounded positive integer string."""
     client, _ = _client()
 
     missing_response = client.post(
@@ -290,6 +296,12 @@ def test_queue_transcription_requires_bounded_report_id() -> None:
     assert missing_response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
     assert empty_response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
     assert long_response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    for invalid_report_id in ("0", "-1", "report_42"):
+        response = client.post(
+            "/v1/transcriptions",
+            json=_valid_request() | {"report_id": invalid_report_id},
+        )
+        assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
 
 
 def test_queue_transcription_enforces_idempotency_key_bounds() -> None:
@@ -353,16 +365,9 @@ def test_openapi_documents_callback_expression_and_event_union() -> None:
     assert isinstance(one_of, list)
     typed_one_of = cast("list[object]", one_of)
     assert len(typed_one_of) == EXPECTED_CALLBACK_EVENT_VARIANTS
-    parameters = _mapping_value(callback_post, "parameters")
-    assert isinstance(parameters, list)
-    parameter_names = {
-        _as_mapping(parameter)["name"] for parameter in cast("list[object]", parameters)
-    }
-    assert parameter_names == {
-        "x-socialguard-signature",
-        "x-socialguard-timestamp",
-        "x-socialguard-webhook-key-id",
-    }
+    assert "parameters" not in callback_post
+    responses = _as_mapping(_mapping_value(callback_post, "responses"))
+    assert "204" in responses
 
 
 def test_openapi_documents_authentication_and_error_contract() -> None:

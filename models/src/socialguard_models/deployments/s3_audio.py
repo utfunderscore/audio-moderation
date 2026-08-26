@@ -32,9 +32,8 @@ class S3ConfigurationError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class S3AudioSettings:
-    """Environment-backed S3 client and bucket configuration."""
+    """Environment-backed S3 client configuration."""
 
-    bucket: str
     region_name: str
     access_key_id: str = field(repr=False)
     secret_access_key: str = field(repr=False)
@@ -53,7 +52,6 @@ class S3AudioSettings:
             return value
 
         return cls(
-            bucket=required("SOCIALGUARD_S3_BUCKET"),
             region_name=required("AWS_DEFAULT_REGION"),
             access_key_id=required("AWS_ACCESS_KEY_ID"),
             secret_access_key=required("AWS_SECRET_ACCESS_KEY"),
@@ -94,37 +92,37 @@ def _create_s3_client(settings: S3AudioSettings) -> _S3Client:
     return cast("_S3Client", client)
 
 
-def _object_key(audio_url: str, settings: S3AudioSettings) -> str:
-    parsed = urlsplit(audio_url)
-    if parsed.scheme != "https" or not parsed.netloc:
-        message = "Audio location must be an HTTPS S3 object URL."
+def _s3_location(audio_uri: str) -> tuple[str, str]:
+    parsed = urlsplit(audio_uri)
+    if (
+        parsed.scheme != "s3"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        message = "Audio location must be an S3 URI."
         raise ValueError(message)
     key = unquote(parsed.path.lstrip("/"))
     if not key:
         message = "Audio location does not contain an S3 object key."
         raise ValueError(message)
-    hostname = parsed.hostname or ""
-    if hostname.startswith(f"{settings.bucket}."):
-        return key
-    bucket_prefix = f"{settings.bucket}/"
-    if key.startswith(bucket_prefix):
-        return key.removeprefix(bucket_prefix)
-    message = "Audio location does not reference the configured S3 bucket."
-    raise ValueError(message)
+    return parsed.netloc, key
 
 
 def _download_audio_from_s3(
-    audio_url: str,
+    audio_uri: str,
     settings: S3AudioSettings,
     client: _S3Client | None = None,
 ) -> bytes:
     """Read one S3 object without buffering more than the public size limit."""
     try:
         s3 = client or _create_s3_client(settings)
+        bucket, key = _s3_location(audio_uri)
         response = s3.get_object(
-            Bucket=settings.bucket,
-            Key=_object_key(audio_url, settings),
-            Range=f"bytes=0-{MAX_REMOTE_BYTES}",
+            Bucket=bucket, Key=key, Range=f"bytes=0-{MAX_REMOTE_BYTES}"
         )
         body = response["Body"]
         try:
@@ -158,12 +156,12 @@ def _download_audio_from_s3(
     return b"".join(chunks)
 
 
-async def download_audio(audio_url: str) -> bytes:
-    """Download one configured S3 object without blocking the async worker."""
+async def download_audio(audio_uri: str) -> bytes:
+    """Download one IAM-authorized S3 object without blocking the async worker."""
     try:
         settings = S3AudioSettings.from_environment()
         async with asyncio.timeout(DOWNLOAD_TIMEOUT_SECONDS):
-            return await asyncio.to_thread(_download_audio_from_s3, audio_url, settings)
+            return await asyncio.to_thread(_download_audio_from_s3, audio_uri, settings)
     except (AudioRejectedError, AudioRetrievalError):
         raise
     except (S3ConfigurationError, TimeoutError) as exc:

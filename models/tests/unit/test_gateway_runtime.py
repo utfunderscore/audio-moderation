@@ -1,15 +1,17 @@
 """Tests for asynchronous gateway primitives that do not require Modal resources."""
 
 import asyncio
-import hashlib
-import hmac
 
 import pytest
+from pydantic import ValidationError
 
 from socialguard_models.api.callbacks import (
+    CallbackAuthenticationError,
+    CallbackContractError,
     CallbackDeliveryError,
-    CallbackSigner,
+    SigV4CallbackSigner,
     deliver_with_retries,
+    terminal_body,
 )
 from socialguard_models.api.networking import (
     NetworkPolicy,
@@ -79,7 +81,7 @@ def _command(*, report_id: str = "report") -> SubmissionCommand:
     return SubmissionCommand(
         caller_id="caller",
         model=TranscriptionModel.GRANITE_4_0_1B_SPEECH,
-        audio_url="https://audio-bucket.s3.eu-west-2.amazonaws.com/file.wav",
+        audio_uri="s3://audio-bucket/file.wav",
         callback_url="https://hooks.example.com/callback",
         report_id=report_id,
         idempotency_key="retry-key",
@@ -306,8 +308,18 @@ def test_network_policy_rejects_private_addresses_and_url_ambiguity() -> None:
     )
 
 
-def test_callback_retry_signs_the_same_body_until_a_2xx_acknowledges() -> None:
-    """Retries keep exact bytes and accept every HTTP 2xx response."""
+def _callback_signer() -> SigV4CallbackSigner:
+    return SigV4CallbackSigner(
+        access_key_id="temporary-access-key",
+        secret_access_key="temporary-secret-key",  # noqa: S106
+        session_token="temporary-session-token",  # noqa: S106
+        region="eu-west-2",
+        service="lambda",
+    )
+
+
+def test_callback_retry_signs_the_same_body_until_204_acknowledges() -> None:
+    """Retries preserve exact bytes and include the temporary AWS session token."""
 
     class Sender:
         def __init__(self) -> None:
@@ -319,19 +331,54 @@ def test_callback_retry_signs_the_same_body_until_a_2xx_acknowledges() -> None:
             return 500 if len(self.sent) == 1 else 204
 
     sender = Sender()
-    signer = CallbackSigner(b"secret", "key-1")
     body = b'{"id":"transcription_1"}'
     delivery = asyncio.run(
-        deliver_with_retries(sender, "https://hooks.example.com", body, signer)
+        deliver_with_retries(
+            sender,
+            "https://example.lambda-url.eu-west-2.on.aws/",
+            body,
+            _callback_signer(),
+        )
     )
 
     assert delivery.delivered and delivery.attempts == 2
     assert sender.sent[0][0] == sender.sent[1][0] == body
-    timestamp = sender.sent[0][1]["X-SocialGuard-Timestamp"]
-    expected = hmac.new(
-        b"secret", timestamp.encode("ascii") + b"." + body, hashlib.sha256
-    ).hexdigest()
-    assert sender.sent[0][1]["X-SocialGuard-Signature"] == f"sha256={expected}"
+    assert sender.sent[0][1]["X-Amz-Security-Token"] == "temporary-session-token"
+    assert "/eu-west-2/lambda/aws4_request" in sender.sent[0][1]["Authorization"]
+    assert sender.sent[0][1]["Content-Type"] == "application/json"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "error_type"),
+    [
+        (400, CallbackContractError),
+        (403, CallbackAuthenticationError),
+    ],
+)
+def test_callback_does_not_retry_permanent_rejections(
+    status_code: int, error_type: type[CallbackDeliveryError]
+) -> None:
+    """Payload and authentication failures stop local callback retries."""
+
+    class Sender:
+        attempts = 0
+
+        async def send(self, url: str, body: bytes, headers: dict[str, str]) -> int:
+            del url, body, headers
+            self.attempts += 1
+            return status_code
+
+    sender = Sender()
+    with pytest.raises(error_type):
+        asyncio.run(
+            deliver_with_retries(
+                sender,
+                "https://example.lambda-url.eu-west-2.on.aws/",
+                b"{}",
+                _callback_signer(),
+            )
+        )
+    assert sender.attempts == 1
 
 
 def test_callback_exhaustion_raises_for_modal_retry() -> None:
@@ -345,14 +392,56 @@ def test_callback_exhaustion_raises_for_modal_retry() -> None:
     with pytest.raises(CallbackDeliveryError):
         asyncio.run(
             deliver_with_retries(
-                Sender(), "https://hooks.example.com", b"{}", CallbackSigner(b"k", "id")
+                Sender(),
+                "https://example.lambda-url.eu-west-2.on.aws/",
+                b"{}",
+                _callback_signer(),
             )
         )
 
 
-def test_timestamp_and_body_both_change_the_signature() -> None:
-    """The timestamp cannot be replayed independently of the callback body."""
-    signer = CallbackSigner(b"secret", "key")
-    first = signer.headers(b"{}", timestamp=1)["X-SocialGuard-Signature"]
-    assert first != signer.headers(b"{}", timestamp=2)["X-SocialGuard-Signature"]
-    assert first != signer.headers(b'{"x":1}', timestamp=1)["X-SocialGuard-Signature"]
+def test_callback_body_bytes_change_the_sigv4_signature() -> None:
+    """SigV4 authenticates the exact callback body bytes sent over HTTP."""
+    signer = _callback_signer()
+    url = "https://example.lambda-url.eu-west-2.on.aws/"
+    first = signer.headers(url, b"{}")
+    second = signer.headers(url, b'{"x":1}')
+    assert first["Authorization"] != second["Authorization"]
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "type": "transcription.completed",
+            "id": "transcription_1",
+            "report_id": "0",
+            "model": "granite-4.0-1b-speech",
+            "data": {"text": "text"},
+        },
+        {
+            "type": "transcription.completed",
+            "id": "transcription_1",
+            "report_id": "42",
+            "model": "granite-4.0-1b-speech",
+            "data": {"text": ""},
+        },
+        {
+            "type": "transcription.failed",
+            "id": "transcription_1",
+            "report_id": "42",
+            "model": "granite-4.0-1b-speech",
+            "error": {
+                "code": "transcription_failed",
+                "message": "safe",
+                "unknown": "rejected",
+            },
+        },
+    ],
+)
+def test_terminal_body_rejects_payloads_the_callback_contract_forbids(
+    event: dict[str, object],
+) -> None:
+    """Invalid report IDs, empty strings, and unknown fields never reach AWS."""
+    with pytest.raises(ValidationError):
+        terminal_body(event)

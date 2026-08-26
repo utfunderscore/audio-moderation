@@ -2,12 +2,18 @@
 
 import inspect
 
+import boto3
+import pytest
+
+from socialguard_models.api.callbacks import CallbackAuthenticationError
 from socialguard_models.deployments.granite import (
     APP,
+    CALLBACK_ENV,
     GATEWAY_MAX_CONTAINERS,
     GPU_STARTUP_TIMEOUT_SECONDS,
     WORKER_MAX_CONTAINERS,
     WORKER_TIMEOUT_SECONDS,
+    _assume_callback_role,  # pyright: ignore[reportPrivateUsage]
     process_transcription,
 )
 from socialguard_models.deployments.granite_prefetch import PREFETCH_APP
@@ -50,6 +56,65 @@ def test_worker_receives_ledger_key_to_repair_dispatch_state() -> None:
     parameters = inspect.signature(process_transcription.get_raw_f()).parameters
 
     assert tuple(parameters) == ("ledger_key", "transcription_id", "command")
+
+
+def test_worker_has_development_aws_callback_configuration() -> None:
+    """The worker receives only non-secret identifiers for the deployed AWS target."""
+    assert CALLBACK_ENV == {
+        "ASR_CALLBACK_URL": (
+            "https://e4rytge57sepkksrukjcy3p7ze0ezqnl.lambda-url.eu-west-2.on.aws/"
+        ),
+        "ASR_CALLBACK_ROLE_ARN": (
+            "arn:aws:iam::967883357915:role/socialguard-dev-modal-asr-callback-sender"
+        ),
+        "AWS_REGION": "eu-west-2",
+        "AWS_SIGV4_SERVICE": "lambda",
+    }
+
+
+def test_modal_identity_is_exchanged_for_temporary_callback_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The runtime OIDC token goes only to STS and the session token reaches SigV4."""
+    request: dict[str, str] = {}
+
+    class StsClient:
+        def assume_role_with_web_identity(self, **kwargs: str) -> dict[str, object]:
+            request.update(kwargs)
+            return {
+                "Credentials": {
+                    "AccessKeyId": "temporary-access-key",
+                    "SecretAccessKey": "temporary-secret-key",
+                    "SessionToken": "temporary-session-token",
+                }
+            }
+
+    def fake_client(service_name: str, **kwargs: object) -> StsClient:
+        del kwargs
+        assert service_name == "sts"
+        return StsClient()
+
+    for key, value in CALLBACK_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("MODAL_IDENTITY_TOKEN", "modal-oidc-token")
+    monkeypatch.setattr(boto3, "client", fake_client)
+
+    signer = _assume_callback_role()
+    headers = signer.headers(CALLBACK_ENV["ASR_CALLBACK_URL"], b"{}")
+
+    assert request["RoleArn"] == CALLBACK_ENV["ASR_CALLBACK_ROLE_ARN"]
+    assert request["WebIdentityToken"] == "modal-oidc-token"
+    assert request["RoleSessionName"].startswith("asr-")
+    assert headers["X-Amz-Security-Token"] == "temporary-session-token"
+
+
+def test_missing_modal_identity_token_is_an_authentication_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A local or misconfigured worker fails before contacting AWS STS."""
+    monkeypatch.delenv("MODAL_IDENTITY_TOKEN", raising=False)
+    with pytest.raises(CallbackAuthenticationError):
+        _assume_callback_role()
 
 
 def test_granite_resources_pin_the_model_and_gpu() -> None:

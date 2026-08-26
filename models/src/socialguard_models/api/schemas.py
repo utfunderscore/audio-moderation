@@ -48,12 +48,12 @@ class TranscriptionRequest(GatewayModel):
         description="Internal identifier of the model that will process the audio.",
         examples=[TranscriptionModel.GRANITE_4_0_1B_SPEECH],
     )
-    audio_url: Annotated[str, Field(max_length=8_192)] = Field(
+    audio_uri: Annotated[str, Field(max_length=8_192)] = Field(
         description=(
-            "HTTPS S3 URL for an object in the worker's configured bucket. The worker "
-            "uses the URL path as the object key and enforces a download size limit."
+            "S3 URI for an object accessible to the worker's AWS identity. The worker "
+            "uses its own credentials and enforces a download size limit."
         ),
-        examples=["https://audio-bucket.s3.eu-west-2.amazonaws.com/audio.wav"],
+        examples=["s3://audio-bucket/path/audio.wav"],
     )
     callback_url: Annotated[str, Field(max_length=8_192)] = Field(
         description=(
@@ -62,12 +62,15 @@ class TranscriptionRequest(GatewayModel):
         ),
         examples=["https://client.example.com/webhooks/transcriptions"],
     )
-    report_id: Annotated[str, Field(min_length=1, max_length=255)] = Field(
+    report_id: Annotated[
+        str,
+        Field(min_length=1, max_length=255, pattern=r"^[1-9][0-9]*$"),
+    ] = Field(
         description=(
-            "Opaque caller report identifier. It is retained with the job and echoed "
-            "in the accepted response and every callback event for correlation."
+            "Positive integer report identifier. It is retained with the job and "
+            "echoed in the accepted response and every callback event for correlation."
         ),
-        examples=["report_01J0EXAMPLE"],
+        examples=["42"],
     )
     idempotency_key: Annotated[str, Field(min_length=1, max_length=255)] = Field(
         description=(
@@ -78,7 +81,26 @@ class TranscriptionRequest(GatewayModel):
         examples=["customer-request-123"],
     )
 
-    @field_validator("audio_url", "callback_url")
+    @field_validator("audio_uri")
+    @classmethod
+    def require_s3_uri(cls, value: str) -> str:
+        """Require an S3 bucket and non-empty object key without URL parameters."""
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme != "s3"
+            or not parsed.netloc
+            or not parsed.path.lstrip("/")
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            message = "Audio location must be an S3 URI with a bucket and object key."
+            raise ValueError(message)
+        return value
+
+    @field_validator("callback_url")
     @classmethod
     def require_https_url(cls, value: str) -> str:
         """Require an absolute HTTPS URL without applying retrieval policy."""
@@ -140,14 +162,16 @@ class HealthResponse(GatewayModel):
 class CallbackData(GatewayModel):
     """Completed transcription payload delivered to a client callback URL."""
 
-    text: str = Field(description="Final transcription text.")
+    text: str = Field(min_length=1, description="Final transcription text.")
 
 
 class CallbackError(GatewayModel):
     """Stable error payload delivered when transcription fails."""
 
     code: CallbackErrorCode = Field(description="Machine-readable failure code.")
-    message: str = Field(description="Safe human-readable failure description.")
+    message: str = Field(
+        min_length=1, description="Safe human-readable failure description."
+    )
 
 
 class GatewayError(GatewayModel):
@@ -177,9 +201,13 @@ class TranscriptionCompleted(GatewayModel):
     type: Literal["transcription.completed"] = Field(
         description="Event type discriminator.",
     )
-    id: str = Field(description="Transcription ID from the queued response.")
+    id: str = Field(
+        min_length=1, description="Transcription ID from the queued response."
+    )
     report_id: str = Field(
-        description="Opaque caller report identifier supplied in the submission.",
+        min_length=1,
+        pattern=r"^[1-9][0-9]*$",
+        description="Positive integer report identifier supplied in the submission.",
     )
     model: TranscriptionModel = Field(description="Model that processed the audio.")
     data: CallbackData
@@ -191,9 +219,13 @@ class TranscriptionFailed(GatewayModel):
     type: Literal["transcription.failed"] = Field(
         description="Event type discriminator.",
     )
-    id: str = Field(description="Transcription ID from the queued response.")
+    id: str = Field(
+        min_length=1, description="Transcription ID from the queued response."
+    )
     report_id: str = Field(
-        description="Opaque caller report identifier supplied in the submission.",
+        min_length=1,
+        pattern=r"^[1-9][0-9]*$",
+        description="Positive integer report identifier supplied in the submission.",
     )
     model: TranscriptionModel = Field(description="Model selected by the request.")
     error: CallbackError

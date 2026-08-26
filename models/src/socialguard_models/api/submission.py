@@ -18,7 +18,7 @@ class SubmissionCommand:
 
     caller_id: str
     model: TranscriptionModel
-    audio_url: str
+    audio_uri: str
     callback_url: str
     report_id: str
     idempotency_key: str
@@ -83,7 +83,7 @@ class SubmissionDispatcher(Protocol):
 
 def _canonical_fingerprint(command: SubmissionCommand) -> str:
     payload = {
-        "audio_url": command.audio_url,
+        "audio_uri": command.audio_uri,
         "callback_url": command.callback_url,
         "model": command.model.value,
         "report_id": command.report_id,

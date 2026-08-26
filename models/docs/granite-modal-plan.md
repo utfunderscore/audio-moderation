@@ -8,7 +8,7 @@ as the first worker behind the generated asynchronous gateway contract.
 > **Superseded transport design:** the synchronous multipart endpoint described in
 > earlier revisions of this document is obsolete. The authoritative public contract is
 > [`openapi/gateway.openapi.json`](../openapi/gateway.openapi.json):
-> `POST /v1/transcriptions` accepts an HTTPS presigned audio URL and callback URL,
+> `POST /v1/transcriptions` accepts an S3 audio URI and HTTPS callback URL,
 > responds `202`, and delivers a signed terminal callback.
 
 ## Pinned model facts

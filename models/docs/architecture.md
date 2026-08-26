@@ -18,13 +18,14 @@
 
 - [`api/submission.py`](../src/socialguard_models/api/submission.py) — Caller-scoped idempotency and dispatch coordination. It hashes request payloads, returns the original transcription ID for identical retries, rejects conflicting key reuse, prevents concurrent duplicate dispatch, and returns `503` unless dispatch is confirmed.
 
-- [`api/callbacks.py`](../src/socialguard_models/api/callbacks.py) — Serializes and signs terminal callbacks using:
+- [`api/callbacks.py`](../src/socialguard_models/api/callbacks.py) — Serializes terminal callbacks once and signs each delivery attempt using:
 
   ```text
-  HMAC-SHA256(key, ASCII(timestamp) + "." + exact_body)
+  Modal OIDC identity → AWS STS temporary credentials → SigV4(exact_body)
   ```
 
-  Implements bounded retries and accepts any HTTP 2xx response.
+  Implements bounded retries, accepts `204`, and fails fast on `400` payload or `403`
+  authentication rejections.
 
 - [`api/networking.py`](../src/socialguard_models/api/networking.py) — Callback URL and SSRF policy. Requires HTTPS port 443 and public IP resolution, and rejects credentials, fragments, private networks, and unsafe destinations.
 
@@ -45,8 +46,9 @@
   - lifecycle-loaded L40S Granite GPU class;
   - 25 MiB download and 60-second audio limits;
   - mono 16 kHz normalization and deterministic inference.
+  - OIDC role exchange and in-memory AWS callback credentials;
 
-- [`deployments/s3_audio.py`](../src/socialguard_models/deployments/s3_audio.py) — Environment-configured boto3 client and bounded S3 object streaming for audio input.
+- [`deployments/s3_audio.py`](../src/socialguard_models/deployments/s3_audio.py) — Parses `s3://bucket/key` audio locations and uses the environment-configured boto3 identity for bounded object streaming. IAM controls accessible buckets.
 
 - [`deployments/granite_resources.py`](../src/socialguard_models/deployments/granite_resources.py) — Shared pinned configuration for the Granite model revision, L40S resources, Hugging Face cache Volume, and locked runtime image.
 

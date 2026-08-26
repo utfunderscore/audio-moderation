@@ -7,6 +7,7 @@
         "properties": {
           "text": {
             "description": "Final transcription text.",
+            "minLength": 1,
             "title": "Text",
             "type": "string"
           }
@@ -27,6 +28,7 @@
           },
           "message": {
             "description": "Safe human-readable failure description.",
+            "minLength": 1,
             "title": "Message",
             "type": "string"
           }
@@ -231,6 +233,7 @@
           },
           "id": {
             "description": "Transcription ID from the queued response.",
+            "minLength": 1,
             "title": "Id",
             "type": "string"
           },
@@ -239,7 +242,9 @@
             "description": "Model that processed the audio."
           },
           "report_id": {
-            "description": "Opaque caller report identifier supplied in the submission.",
+            "description": "Positive integer report identifier supplied in the submission.",
+            "minLength": 1,
+            "pattern": "^[1-9][0-9]*$",
             "title": "Report Id",
             "type": "string"
           },
@@ -269,6 +274,7 @@
           },
           "id": {
             "description": "Transcription ID from the queued response.",
+            "minLength": 1,
             "title": "Id",
             "type": "string"
           },
@@ -277,7 +283,9 @@
             "description": "Model selected by the request."
           },
           "report_id": {
-            "description": "Opaque caller report identifier supplied in the submission.",
+            "description": "Positive integer report identifier supplied in the submission.",
+            "minLength": 1,
+            "pattern": "^[1-9][0-9]*$",
             "title": "Report Id",
             "type": "string"
           },
@@ -310,13 +318,13 @@
         "additionalProperties": false,
         "description": "Request that submits one already-uploaded audio object for transcription.",
         "properties": {
-          "audio_url": {
-            "description": "HTTPS S3 URL for an object in the worker's configured bucket. The worker uses the URL path as the object key and enforces a download size limit.",
+          "audio_uri": {
+            "description": "S3 URI for an object accessible to the worker's AWS identity. The worker uses its own credentials and enforces a download size limit.",
             "examples": [
-              "https://audio-bucket.s3.eu-west-2.amazonaws.com/audio.wav"
+              "s3://audio-bucket/path/audio.wav"
             ],
             "maxLength": 8192,
-            "title": "Audio Url",
+            "title": "Audio Uri",
             "type": "string"
           },
           "callback_url": {
@@ -346,19 +354,20 @@
             ]
           },
           "report_id": {
-            "description": "Opaque caller report identifier. It is retained with the job and echoed in the accepted response and every callback event for correlation.",
+            "description": "Positive integer report identifier. It is retained with the job and echoed in the accepted response and every callback event for correlation.",
             "examples": [
-              "report_01J0EXAMPLE"
+              "42"
             ],
             "maxLength": 255,
             "minLength": 1,
+            "pattern": "^[1-9][0-9]*$",
             "title": "Report Id",
             "type": "string"
           }
         },
         "required": [
           "model",
-          "audio_url",
+          "audio_uri",
           "callback_url",
           "report_id",
           "idempotency_key"
@@ -415,7 +424,7 @@
     }
   },
   "info": {
-    "summary": "Submit presigned audio URLs for asynchronous transcription.",
+    "summary": "Submit S3 audio URIs for asynchronous transcription.",
     "title": "SocialGuard ASR Gateway",
     "version": "0.1.0"
   },
@@ -530,43 +539,8 @@
           "transcription_callback": {
             "{$request.body#/callback_url}": {
               "post": {
-                "description": "The gateway delivers exactly one terminal event type at least once and retries until a configured retry window expires. Acknowledgement is any 2xx response. Receivers must deduplicate by transcription ID. The gateway signs the exact unmodified JSON request-body bytes using HMAC-SHA256.",
+                "description": "The gateway delivers exactly one terminal event type at least once and retries temporary failures until a configured retry window expires. A 204 response acknowledges delivery. Receivers must deduplicate by transcription ID. The gateway exchanges its Modal OIDC identity for temporary AWS credentials and SigV4-signs the exact unmodified JSON request-body bytes.",
                 "operationId": "transcription_callback__request_body__callback_url__post",
-                "parameters": [
-                  {
-                    "description": "Unix timestamp in seconds authenticated by the callback signature.",
-                    "in": "header",
-                    "name": "x-socialguard-timestamp",
-                    "required": true,
-                    "schema": {
-                      "description": "Unix timestamp in seconds authenticated by the callback signature.",
-                      "title": "X-Socialguard-Timestamp",
-                      "type": "string"
-                    }
-                  },
-                  {
-                    "description": "Identifier of the HMAC signing key used for this delivery.",
-                    "in": "header",
-                    "name": "x-socialguard-webhook-key-id",
-                    "required": true,
-                    "schema": {
-                      "description": "Identifier of the HMAC signing key used for this delivery.",
-                      "title": "X-Socialguard-Webhook-Key-Id",
-                      "type": "string"
-                    }
-                  },
-                  {
-                    "description": "HMAC-SHA256 signature formatted as `sha256=<lowercase-hex>` over ASCII(timestamp) + `.` + the exact JSON request-body bytes.",
-                    "in": "header",
-                    "name": "x-socialguard-signature",
-                    "required": true,
-                    "schema": {
-                      "description": "HMAC-SHA256 signature formatted as `sha256=<lowercase-hex>` over ASCII(timestamp) + `.` + the exact JSON request-body bytes.",
-                      "title": "X-Socialguard-Signature",
-                      "type": "string"
-                    }
-                  }
-                ],
                 "requestBody": {
                   "content": {
                     "application/json": {
@@ -593,12 +567,7 @@
                   "required": true
                 },
                 "responses": {
-                  "200": {
-                    "content": {
-                      "application/json": {
-                        "schema": {}
-                      }
-                    },
+                  "204": {
                     "description": "Successful Response"
                   },
                   "422": {

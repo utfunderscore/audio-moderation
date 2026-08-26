@@ -1,8 +1,11 @@
 """FastAPI application factory for the model-neutral ASR gateway."""
 
+import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Request, status
+from fastapi import APIRouter, Depends, FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
 
@@ -12,6 +15,7 @@ from socialguard_models.api.auth import (
     GatewaySettings,
     require_caller,
 )
+from socialguard_models.api.observability import log_event
 from socialguard_models.api.schemas import (
     CallbackEvent,
     ErrorEnvelope,
@@ -73,44 +77,19 @@ _ERROR_RESPONSES: ErrorResponse = {
 @_CALLBACKS.post(
     "{$request.body#/callback_url}",
     response_model=None,
+    status_code=status.HTTP_204_NO_CONTENT,
     summary="Transcription callback",
     description=(
         "The gateway delivers exactly one terminal event type at least once and "
-        "retries until a configured retry window expires. Acknowledgement is any 2xx "
-        "response. "
-        "Receivers must deduplicate by transcription ID. The gateway signs the exact "
-        "unmodified JSON request-body bytes using HMAC-SHA256."
+        "retries temporary failures until a configured retry window expires. A 204 "
+        "response acknowledges delivery. Receivers must deduplicate by transcription "
+        "ID. The gateway exchanges its Modal OIDC identity for temporary AWS "
+        "credentials and SigV4-signs the exact unmodified JSON request-body bytes."
     ),
 )
-async def transcription_callback(
-    event: CallbackEvent,
-    x_socialguard_timestamp: Annotated[
-        str,
-        Header(
-            description=(
-                "Unix timestamp in seconds authenticated by the callback signature."
-            ),
-        ),
-    ],
-    x_socialguard_webhook_key_id: Annotated[
-        str,
-        Header(
-            description="Identifier of the HMAC signing key used for this delivery.",
-        ),
-    ],
-    x_socialguard_signature: Annotated[
-        str,
-        Header(
-            description=(
-                "HMAC-SHA256 signature formatted as `sha256=<lowercase-hex>` over "
-                "ASCII(timestamp) + `.` + the exact JSON request-body bytes."
-            ),
-        ),
-    ],
-) -> None:
+async def transcription_callback(event: CallbackEvent) -> None:
     """Document the outbound callback without registering a local route."""
-    del event, x_socialguard_timestamp, x_socialguard_webhook_key_id
-    del x_socialguard_signature
+    del event
 
 
 def _error_response(
@@ -133,7 +112,7 @@ def create_gateway_app(
     app = FastAPI(
         title="SocialGuard ASR Gateway",
         version="0.1.0",
-        summary="Submit presigned audio URLs for asynchronous transcription.",
+        summary="Submit S3 audio URIs for asynchronous transcription.",
     )
 
     @app.exception_handler(GatewayAuthenticationError)
@@ -142,11 +121,42 @@ def create_gateway_app(
         exc: GatewayAuthenticationError,
     ) -> JSONResponse:
         """Map authentication failures to the public error envelope."""
-        del request, exc
+        del exc
+        log_event(
+            "authentication_rejected",
+            level=logging.WARNING,
+            method=request.method,
+            path=request.url.path,
+        )
         return _error_response(
             status.HTTP_401_UNAUTHORIZED,
             GatewayErrorCode.AUTHENTICATION_REQUIRED,
             "A valid bearer token is required.",
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_validation_error(  # pyright: ignore[reportUnusedFunction]
+        request: Request,
+        exc: RequestValidationError,
+    ) -> JSONResponse:
+        """Log rejected request fields and keep the default validation payload."""
+        log_event(
+            "request_validation_rejected",
+            level=logging.WARNING,
+            method=request.method,
+            path=request.url.path,
+            errors=[
+                {
+                    "loc": [str(part) for part in error.get("loc", [])],
+                    "type": str(error.get("type")),
+                    "msg": str(error.get("msg")),
+                }
+                for error in exc.errors()
+            ],
+        )
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={"detail": jsonable_encoder(exc.errors())},
         )
 
     @app.exception_handler(Exception)
@@ -155,7 +165,15 @@ def create_gateway_app(
         exc: Exception,
     ) -> JSONResponse:
         """Do not expose implementation failures through the public API."""
-        del request, exc
+        log_event(
+            "unexpected_gateway_error",
+            level=logging.ERROR,
+            method=request.method,
+            path=request.url.path,
+            error_type=type(exc).__name__,
+            detail=str(exc),
+            exc_info=True,
+        )
         return _error_response(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             GatewayErrorCode.INTERNAL_ERROR,
@@ -183,13 +201,20 @@ def create_gateway_app(
                 SubmissionCommand(
                     caller_id=caller_id,
                     model=request.model,
-                    audio_url=request.audio_url,
+                    audio_uri=request.audio_uri,
                     callback_url=request.callback_url,
                     report_id=request.report_id,
                     idempotency_key=request.idempotency_key,
                 ),
             )
         except IdempotencyConflictError:
+            log_event(
+                "idempotency_conflict",
+                level=logging.WARNING,
+                report_id=request.report_id,
+                idempotency_key=request.idempotency_key,
+                audio_uri=request.audio_uri,
+            )
             return _error_response(
                 status.HTTP_409_CONFLICT,
                 GatewayErrorCode.IDEMPOTENCY_CONFLICT,
@@ -197,11 +222,24 @@ def create_gateway_app(
                 param="idempotency_key",
             )
         except SubmissionUnavailableError:
+            log_event(
+                "submission_unavailable",
+                level=logging.ERROR,
+                report_id=request.report_id,
+                idempotency_key=request.idempotency_key,
+            )
             return _error_response(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 GatewayErrorCode.MODEL_UNAVAILABLE,
                 "The gateway could not queue the transcription.",
             )
+        log_event(
+            "transcription_accepted",
+            transcription_id=result.transcription_id,
+            report_id=request.report_id,
+            model=request.model.value,
+            audio_uri=request.audio_uri,
+        )
         return QueuedTranscription(
             id=result.transcription_id,
             report_id=request.report_id,

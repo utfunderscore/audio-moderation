@@ -40,7 +40,6 @@ class FakeS3Client:
 @pytest.fixture
 def s3_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Configure every supported S3 environment variable for one test."""
-    monkeypatch.setenv("SOCIALGUARD_S3_BUCKET", "audio-bucket")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-2")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test-access-key")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-secret-key")
@@ -56,7 +55,6 @@ def test_s3_settings_load_client_parameters_without_repr_secrets(
 
     settings = s3_audio.S3AudioSettings.from_environment()
 
-    assert settings.bucket == "audio-bucket"
     assert settings.region_name == "eu-west-2"
     assert settings.access_key_id == "test-access-key"
     assert settings.secret_access_key == "test-secret-key"
@@ -67,18 +65,17 @@ def test_s3_settings_load_client_parameters_without_repr_secrets(
     assert "test-session-token" not in repr(settings)
 
 
-def test_s3_settings_require_bucket(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_s3_settings_require_region(monkeypatch: pytest.MonkeyPatch) -> None:
     """Missing required configuration fails before boto3 can make a request."""
-    monkeypatch.delenv("SOCIALGUARD_S3_BUCKET", raising=False)
+    monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
 
-    with pytest.raises(s3_audio.S3ConfigurationError, match="SOCIALGUARD_S3_BUCKET"):
+    with pytest.raises(s3_audio.S3ConfigurationError, match="AWS_DEFAULT_REGION"):
         s3_audio.S3AudioSettings.from_environment()
 
 
-def test_download_streams_configured_bucket_key_with_bounded_range() -> None:
-    """A query-bearing S3 URL maps to one bounded get-object request."""
+def test_download_streams_s3_uri_bucket_key_with_bounded_range() -> None:
+    """The URI bucket and decoded object key drive the bounded get-object request."""
     settings = s3_audio.S3AudioSettings(
-        bucket="audio-bucket",
         region_name="eu-west-2",
         access_key_id="access",
         secret_access_key="secret",
@@ -87,15 +84,14 @@ def test_download_streams_configured_bucket_key_with_bounded_range() -> None:
     client = FakeS3Client(body, len(b"audio bytes"))
 
     audio = s3_audio._download_audio_from_s3(
-        "https://audio-bucket.s3.eu-west-2.amazonaws.com/segments/audio%20clip.mp3"
-        "?X-Amz-Signature=ignored",
+        "s3://workflow-audio/segments/audio%20clip.mp3",
         settings,
         client,
     )
 
     assert audio == b"audio bytes"
     assert client.request == (
-        "audio-bucket",
+        "workflow-audio",
         "segments/audio clip.mp3",
         f"bytes=0-{MAX_REMOTE_BYTES}",
     )
@@ -104,27 +100,51 @@ def test_download_streams_configured_bucket_key_with_bounded_range() -> None:
 
 def test_download_rejects_oversized_s3_object_and_closes_body() -> None:
     """The range response detects an oversized object before buffering it."""
-    settings = s3_audio.S3AudioSettings("audio-bucket", "eu-west-2", "id", "key")
+    settings = s3_audio.S3AudioSettings("eu-west-2", "id", "key")
     body = FakeStreamingBody(b"not read")
     client = FakeS3Client(body, MAX_REMOTE_BYTES + 1)
 
     with pytest.raises(s3_audio.AudioRejectedError, match="25 MiB"):
         s3_audio._download_audio_from_s3(
-            "https://audio-bucket.s3.amazonaws.com/large.mp3", settings, client
+            "s3://audio-bucket/large.mp3", settings, client
         )
 
     assert body.content == b"not read"
     assert body.closed
 
 
-def test_download_rejects_url_for_another_bucket() -> None:
-    """The configured credentials cannot be redirected to a different URL bucket."""
-    settings = s3_audio.S3AudioSettings("audio-bucket", "eu-west-2", "id", "key")
+def test_download_uses_any_bucket_authorized_by_the_aws_identity() -> None:
+    """Bucket restrictions belong to IAM rather than local configuration."""
+    settings = s3_audio.S3AudioSettings("eu-west-2", "id", "key")
+    client = FakeS3Client(FakeStreamingBody(b"audio"), len(b"audio"))
+
+    assert (
+        s3_audio._download_audio_from_s3(
+            "s3://other-authorized-bucket/audio.mp3", settings, client
+        )
+        == b"audio"
+    )
+    assert client.request == (
+        "other-authorized-bucket",
+        "audio.mp3",
+        f"bytes=0-{MAX_REMOTE_BYTES}",
+    )
+
+
+@pytest.mark.parametrize(
+    "audio_uri",
+    [
+        "https://audio-bucket.s3.amazonaws.com/audio.mp3",
+        "s3://audio-bucket",
+        "s3://audio-bucket/audio.mp3?versionId=1",
+    ],
+)
+def test_download_rejects_non_s3_object_uris(audio_uri: str) -> None:
+    """Malformed locations fail before boto3 receives a request."""
+    settings = s3_audio.S3AudioSettings("eu-west-2", "id", "key")
     client = FakeS3Client(FakeStreamingBody(b"audio"), len(b"audio"))
 
     with pytest.raises(s3_audio.AudioRetrievalError):
-        s3_audio._download_audio_from_s3(
-            "https://other-bucket.s3.amazonaws.com/audio.mp3", settings, client
-        )
+        s3_audio._download_audio_from_s3(audio_uri, settings, client)
 
     assert client.request is None
