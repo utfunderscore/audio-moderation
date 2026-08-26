@@ -48,7 +48,7 @@
   - mono 16 kHz normalization and deterministic inference.
   - OIDC role exchange and in-memory AWS callback credentials;
 
-- [`deployments/s3_audio.py`](../src/socialguard_models/deployments/s3_audio.py) — Parses `s3://bucket/key` audio locations and uses the environment-configured boto3 identity for bounded object streaming. IAM controls accessible buckets.
+- [`deployments/s3_audio.py`](../src/socialguard_models/deployments/s3_audio.py) — Parses `s3://bucket/key` audio locations and uses short-lived Modal OIDC/STS credentials for bounded object streaming. IAM controls accessible buckets.
 
 - [`deployments/granite_resources.py`](../src/socialguard_models/deployments/granite_resources.py) — Shared pinned configuration for the Granite model revision, L40S resources, Hugging Face cache Volume, and locked runtime image.
 
@@ -63,7 +63,7 @@ Client POST
   → FastAPI authentication and validation
   → Modal Dict idempotency record
   → spawned CPU orchestration worker
-  → bounded boto3 download from the configured S3 bucket
+  → bounded boto3 download using the Modal OIDC/STS session
   → L40S Granite inference
   → immutable terminal event
   → signed, retryable HTTPS callback

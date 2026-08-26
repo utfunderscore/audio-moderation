@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol, TypedDict, cast
 from urllib.parse import unquote, urlsplit
 
@@ -11,6 +11,7 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from socialguard_models.api.networking import MAX_REMOTE_BYTES
+from socialguard_models.deployments.aws_credentials import TemporaryAwsCredentials
 
 AUDIO_TOO_LARGE_MESSAGE = "Audio exceeds the 25 MiB size limit."
 AUDIO_EMPTY_MESSAGE = "Audio is empty or invalid."
@@ -35,9 +36,6 @@ class S3AudioSettings:
     """Environment-backed S3 client configuration."""
 
     region_name: str
-    access_key_id: str = field(repr=False)
-    secret_access_key: str = field(repr=False)
-    session_token: str | None = field(default=None, repr=False)
     endpoint_url: str | None = None
 
     @classmethod
@@ -52,10 +50,7 @@ class S3AudioSettings:
             return value
 
         return cls(
-            region_name=required("AWS_DEFAULT_REGION"),
-            access_key_id=required("AWS_ACCESS_KEY_ID"),
-            secret_access_key=required("AWS_SECRET_ACCESS_KEY"),
-            session_token=os.environ.get("AWS_SESSION_TOKEN") or None,
+            region_name=required("AWS_REGION"),
             endpoint_url=os.environ.get("SOCIALGUARD_S3_ENDPOINT_URL") or None,
         )
 
@@ -75,14 +70,16 @@ class _S3Client(Protocol):
     def get_object(self, **kwargs: str) -> _GetObjectResponse: ...
 
 
-def _create_s3_client(settings: S3AudioSettings) -> _S3Client:
+def _create_s3_client(
+    settings: S3AudioSettings, credentials: TemporaryAwsCredentials
+) -> _S3Client:
     client = boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "s3",
         region_name=settings.region_name,
         endpoint_url=settings.endpoint_url,
-        aws_access_key_id=settings.access_key_id,
-        aws_secret_access_key=settings.secret_access_key,
-        aws_session_token=settings.session_token,
+        aws_access_key_id=credentials.access_key_id,
+        aws_secret_access_key=credentials.secret_access_key,
+        aws_session_token=credentials.session_token,
         config=Config(
             connect_timeout=10,
             read_timeout=30,
@@ -115,11 +112,12 @@ def _s3_location(audio_uri: str) -> tuple[str, str]:
 def _download_audio_from_s3(
     audio_uri: str,
     settings: S3AudioSettings,
+    credentials: TemporaryAwsCredentials,
     client: _S3Client | None = None,
 ) -> bytes:
     """Read one S3 object without buffering more than the public size limit."""
     try:
-        s3 = client or _create_s3_client(settings)
+        s3 = client or _create_s3_client(settings, credentials)
         bucket, key = _s3_location(audio_uri)
         response = s3.get_object(
             Bucket=bucket, Key=key, Range=f"bytes=0-{MAX_REMOTE_BYTES}"
@@ -156,12 +154,14 @@ def _download_audio_from_s3(
     return b"".join(chunks)
 
 
-async def download_audio(audio_uri: str) -> bytes:
+async def download_audio(audio_uri: str, credentials: TemporaryAwsCredentials) -> bytes:
     """Download one IAM-authorized S3 object without blocking the async worker."""
     try:
         settings = S3AudioSettings.from_environment()
         async with asyncio.timeout(DOWNLOAD_TIMEOUT_SECONDS):
-            return await asyncio.to_thread(_download_audio_from_s3, audio_uri, settings)
+            return await asyncio.to_thread(
+                _download_audio_from_s3, audio_uri, settings, credentials
+            )
     except (AudioRejectedError, AudioRetrievalError):
         raise
     except (S3ConfigurationError, TimeoutError) as exc:

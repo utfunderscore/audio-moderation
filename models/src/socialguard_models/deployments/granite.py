@@ -8,11 +8,9 @@ retention or stronger outbox guarantees.
 
 import logging
 import os
-from collections.abc import Mapping
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import TYPE_CHECKING, Protocol, cast
-from uuid import uuid4
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from transformers import Processor, SpeechModel
@@ -40,6 +38,11 @@ from socialguard_models.api.submission import (
     SubmissionDispatcher,
     SubmissionLedger,
     SubmissionRecord,
+)
+from socialguard_models.deployments.aws_credentials import (
+    TemporaryAwsCredentials,
+    TemporaryAwsCredentialsError,
+    assume_role_with_modal_identity,
 )
 from socialguard_models.deployments.granite_resources import (
     CACHE_DIRECTORY,
@@ -81,14 +84,9 @@ CALLBACK_ENV: dict[str, str] = {
     "AWS_REGION": "eu-west-2",
     "AWS_SIGV4_SERVICE": "lambda",
 }
-S3_SECRET = modal.Secret.from_name(
-    "socialguard-s3",
-    required_keys=[
-        "AWS_DEFAULT_REGION",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-    ],
-)
+WORKER_ENV = dict(CALLBACK_ENV)
+if endpoint_url := os.environ.get("SOCIALGUARD_S3_ENDPOINT_URL"):
+    WORKER_ENV["SOCIALGUARD_S3_ENDPOINT_URL"] = endpoint_url
 JOB_LEDGER = modal.Dict.from_name(
     "socialguard-asr-gateway-jobs", create_if_missing=True
 )
@@ -166,8 +164,7 @@ def _failure_event(
 
 @APP.function(  # pyright: ignore[reportUnknownMemberType]
     image=API_IMAGE,
-    env=cast("dict[str, str | None]", CALLBACK_ENV),
-    secrets=[S3_SECRET],
+    env=cast("dict[str, str | None]", WORKER_ENV),
     timeout=WORKER_TIMEOUT_SECONDS,
     retries=WORKER_RETRIES,
     max_containers=WORKER_MAX_CONTAINERS,
@@ -196,10 +193,12 @@ async def process_transcription(
             transcription_id=transcription_id,
             report_id=command.report_id,
         )
-        await _deliver_callback(command.callback_url, existing)
+        credentials = await asyncio.to_thread(_assume_aws_credentials)
+        await _deliver_callback(command.callback_url, existing, credentials)
         return
+    credentials = await asyncio.to_thread(_assume_aws_credentials)
     try:
-        audio = await download_audio(command.audio_uri)
+        audio = await download_audio(command.audio_uri, credentials)
         text = cast(
             "str",
             await GraniteModel().transcribe_bytes.remote.aio(audio),  # pyright: ignore[reportUnknownMemberType,reportCallIssue]
@@ -261,7 +260,7 @@ async def process_transcription(
     if not isinstance(winning, bytes):
         message = "terminal event persistence failed"
         raise TypeError(message)
-    await _deliver_callback(command.callback_url, winning)
+    await _deliver_callback(command.callback_url, winning, credentials)
     log_event(
         "worker_job_finished",
         transcription_id=transcription_id,
@@ -271,10 +270,10 @@ async def process_transcription(
     await asyncio.sleep(0)
 
 
-async def _deliver_callback(url: str, body: bytes) -> None:
+async def _deliver_callback(
+    url: str, body: bytes, credentials: TemporaryAwsCredentials
+) -> None:
     """Send a bounded callback without logging request data or secrets."""
-    import asyncio
-
     import httpx
 
     validate_url(url, NetworkPolicy())
@@ -297,7 +296,7 @@ async def _deliver_callback(url: str, body: bytes) -> None:
         )
         return
     try:
-        signer = await asyncio.to_thread(_assume_callback_role)
+        signer = _callback_signer(credentials)
         await deliver_with_retries(Sender(), url, body, signer, sleep=_sleep)
     except CallbackContractError:
         log_event(
@@ -325,73 +324,29 @@ async def _deliver_callback(url: str, body: bytes) -> None:
         raise
 
 
-def _assume_callback_role() -> SigV4CallbackSigner:
+def _assume_aws_credentials() -> TemporaryAwsCredentials:
     """Exchange the runtime Modal identity for in-memory AWS session credentials."""
-    import boto3
-    from botocore import UNSIGNED
-    from botocore.config import Config
-    from botocore.exceptions import BotoCoreError, ClientError
-
-    identity_token = os.environ.get("MODAL_IDENTITY_TOKEN")
-    if not identity_token:
+    if not os.environ.get("MODAL_IDENTITY_TOKEN"):
         message = "MODAL_IDENTITY_TOKEN is unavailable"
         raise CallbackAuthenticationError(message)
-
-    region = os.environ["AWS_REGION"]
     try:
-        sts = cast(
-            "_StsClient",
-            boto3.client(  # pyright: ignore[reportUnknownMemberType]
-                "sts",
-                region_name=region,
-                config=Config(
-                    signature_version=UNSIGNED,
-                    connect_timeout=5,
-                    read_timeout=10,
-                    retries={"max_attempts": 2, "mode": "standard"},
-                ),
-            ),
+        return assume_role_with_modal_identity(
+            role_arn=os.environ["ASR_CALLBACK_ROLE_ARN"],
+            region=os.environ["AWS_REGION"],
         )
-        response = sts.assume_role_with_web_identity(
-            RoleArn=os.environ["ASR_CALLBACK_ROLE_ARN"],
-            RoleSessionName=f"asr-{uuid4().hex}",
-            WebIdentityToken=identity_token,
-        )
-    except (BotoCoreError, ClientError) as exc:
-        message = "AWS rejected the Modal OIDC role exchange"
-        raise CallbackAuthenticationError(message) from exc
+    except TemporaryAwsCredentialsError as exc:
+        raise CallbackAuthenticationError(str(exc)) from exc
 
-    credentials_value = response.get("Credentials")
-    if not isinstance(credentials_value, Mapping):
-        message = "AWS STS returned no temporary credentials"
-        raise CallbackAuthenticationError(message)
-    credentials = cast("Mapping[str, object]", credentials_value)
-    values: dict[str, object] = {
-        key: credentials.get(key)
-        for key in ("AccessKeyId", "SecretAccessKey", "SessionToken")
-    }
-    if not all(isinstance(value, str) and value for value in values.values()):
-        message = "AWS STS returned incomplete temporary credentials"
-        raise CallbackAuthenticationError(message)
+
+def _callback_signer(credentials: TemporaryAwsCredentials) -> SigV4CallbackSigner:
+    """Build a callback signer from the AWS session used for audio retrieval."""
     return SigV4CallbackSigner(
-        access_key_id=cast("str", values["AccessKeyId"]),
-        secret_access_key=cast("str", values["SecretAccessKey"]),
-        session_token=cast("str", values["SessionToken"]),
-        region=region,
+        access_key_id=credentials.access_key_id,
+        secret_access_key=credentials.secret_access_key,
+        session_token=credentials.session_token,
+        region=os.environ["AWS_REGION"],
         service=os.environ["AWS_SIGV4_SERVICE"],
     )
-
-
-class _StsClient(Protocol):
-    """Typed subset of STS used without adding the full service stub package."""
-
-    def assume_role_with_web_identity(
-        self,
-        *,
-        RoleArn: str,  # noqa: N803 - AWS request field spelling.
-        RoleSessionName: str,  # noqa: N803 - AWS request field spelling.
-        WebIdentityToken: str,  # noqa: N803 - AWS request field spelling.
-    ) -> Mapping[str, object]: ...
 
 
 async def _sleep(seconds: float) -> None:

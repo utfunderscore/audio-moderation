@@ -70,16 +70,26 @@ fragment-bearing, and private-network destinations.
 
 ### Deploy prerequisites
 
-Create two Modal Secrets before deploying: `socialguard-gateway-api` containing
-`SOCIALGUARD_GATEWAY_API_TOKEN`, and `socialguard-s3` containing
-`AWS_DEFAULT_REGION`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`. The S3 secret may also contain
-`AWS_SESSION_TOKEN` for temporary credentials and `SOCIALGUARD_S3_ENDPOINT_URL` for an
-S3-compatible endpoint. Callback delivery requires no permanent AWS key: Modal provides
-the OIDC identity token at runtime, while the callback URL, role ARN, region, and SigV4
-service are non-secret worker configuration. See [`.env.example`](.env.example) for the
-complete environment shape. Prefetch the pinned model cache before deployment. The deployment entrypoint is
+Create the `socialguard-gateway-api` Modal Secret containing
+`SOCIALGUARD_GATEWAY_API_TOKEN`. Both S3 retrieval and callback delivery use temporary
+credentials obtained from Modal's runtime OIDC identity; no permanent AWS key or S3
+Modal Secret is required. The callback URL, role ARN, region, and SigV4 service are
+non-secret worker configuration. `SOCIALGUARD_S3_ENDPOINT_URL` remains optional for an
+S3-compatible endpoint. See [`.env.example`](.env.example) for the complete environment
+shape. Prefetch the pinned model cache before deployment. The deployment entrypoint is
 `socialguard_models.deployments.granite`; it has a CPU ASGI gateway, CPU orchestrator,
 and lifecycle-loaded L40S worker with one active inference per container.
+
+### Deploy
+
+After completing the prerequisites, deploy the gateway from any working directory:
+
+```bash
+./scripts/deploy-modal.sh
+```
+
+The script verifies the lockfile, formatting, linting, types, and tests before invoking
+`modal deploy`. It does not prefetch the model; run the prefetch command above first.
 
 ## Dependency policy
 

@@ -3,7 +3,7 @@
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Protocol, cast
 
 from botocore.auth import SigV4Auth
@@ -41,9 +41,9 @@ class CallbackAuthenticationError(CallbackDeliveryError):
 class SigV4CallbackSigner:
     """Sign immutable callback bytes with temporary AWS session credentials."""
 
-    access_key_id: str
-    secret_access_key: str
-    session_token: str
+    access_key_id: str = field(repr=False)
+    secret_access_key: str = field(repr=False)
+    session_token: str = field(repr=False)
     region: str
     service: str
 
