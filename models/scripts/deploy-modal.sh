@@ -27,4 +27,4 @@ Required remote prerequisites:
   - The pinned Granite model is pre-fetched in the Modal Volume.
 EOF
 
-exec uv run modal deploy -m socialguard_models.deployments.granite
+exec uv run modal deploy --env dev -m socialguard_models.deployments.granite

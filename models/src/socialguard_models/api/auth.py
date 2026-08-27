@@ -43,11 +43,12 @@ def require_caller(
         ],
     ) -> str:
         """Return the authenticated caller identity or reject the request."""
-        if credentials is None or not secrets.compare_digest(
-            credentials.credentials,
-            settings.api_token,
-        ):
-            raise GatewayAuthenticationError
+        if credentials is None:
+            reason = "missing_bearer_token"
+            raise GatewayAuthenticationError(reason)
+        if not secrets.compare_digest(credentials.credentials, settings.api_token):
+            reason = "invalid_bearer_token"
+            raise GatewayAuthenticationError(reason)
         return settings.caller_id
 
     return authenticate
