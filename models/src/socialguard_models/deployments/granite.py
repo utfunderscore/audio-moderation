@@ -31,7 +31,7 @@ from socialguard_models.api.networking import (
     NetworkPolicy,
     validate_url,
 )
-from socialguard_models.api.observability import log_event
+from socialguard_models.api.observability import log_event, redacted_url
 from socialguard_models.api.submission import (
     LedgerSubmitter,
     SubmissionCommand,
@@ -70,7 +70,7 @@ APP = modal.App("socialguard-asr-gateway")
 app = APP
 API_IMAGE = modal.Image.debian_slim(python_version="3.12").uv_sync(
     uv_project_dir=".", frozen=True, extra_options="--no-dev"
-)
+).add_local_python_source("socialguard_models")
 GATEWAY_SECRET = modal.Secret.from_name(
     "socialguard-gateway-api", required_keys=["SOCIALGUARD_GATEWAY_API_TOKEN"]
 )
@@ -96,8 +96,8 @@ MAX_AUDIO_SECONDS = 60
 TARGET_SAMPLE_RATE = 16_000
 AUDIO_TOO_LONG_MESSAGE = "Audio exceeds the 60-second duration limit."
 GPU_TIMEOUT_SECONDS = 180
-WORKER_TIMEOUT_SECONDS = 420
 GPU_STARTUP_TIMEOUT_SECONDS = 600
+WORKER_TIMEOUT_SECONDS = 840
 WORKER_RETRIES = modal.Retries(
     max_retries=2, initial_delay=1.0, backoff_coefficient=2.0, max_delay=2.0
 )
@@ -169,7 +169,7 @@ def _failure_event(
     retries=WORKER_RETRIES,
     max_containers=WORKER_MAX_CONTAINERS,
 )
-async def process_transcription(
+async def process_transcription(  # noqa: C901, PLR0915 - terminal-event orchestration has explicit failure logs.
     ledger_key: str,
     transcription_id: str,
     command: SubmissionCommand,
@@ -184,26 +184,102 @@ async def process_transcription(
         model=command.model.value,
         audio_uri=command.audio_uri,
     )
-    await _ModalLedger().set_state(ledger_key, "dispatched")
+    try:
+        await _ModalLedger().set_state(ledger_key, "dispatched")
+    except Exception as exc:
+        log_event(
+            "worker_dispatch_state_write_failed",
+            level=logging.ERROR,
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            error_type=type(exc).__name__,
+            detail=str(exc),
+            exc_info=True,
+        )
+        raise
     terminal_key = f"terminal:{transcription_id}"
-    existing = await JOB_LEDGER.get.aio(terminal_key)
+    try:
+        existing = await JOB_LEDGER.get.aio(terminal_key)
+    except Exception as exc:
+        log_event(
+            "terminal_event_lookup_failed",
+            level=logging.ERROR,
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            error_type=type(exc).__name__,
+            detail=str(exc),
+            exc_info=True,
+        )
+        raise
     if isinstance(existing, bytes):
         log_event(
             "terminal_replay",
             transcription_id=transcription_id,
             report_id=command.report_id,
         )
-        credentials = await asyncio.to_thread(_assume_aws_credentials)
-        await _deliver_callback(command.callback_url, existing, credentials)
+        try:
+            credentials = await asyncio.to_thread(_assume_aws_credentials)
+        except Exception as exc:
+            log_event(
+                "worker_credentials_failed",
+                level=logging.ERROR,
+                transcription_id=transcription_id,
+                report_id=command.report_id,
+                error_type=type(exc).__name__,
+                detail=str(exc),
+                exc_info=True,
+            )
+            raise
+        await _deliver_callback(
+            command.callback_url, existing, credentials, command, transcription_id
+        )
         return
-    credentials = await asyncio.to_thread(_assume_aws_credentials)
     try:
+        credentials = await asyncio.to_thread(_assume_aws_credentials)
+    except Exception as exc:
+        log_event(
+            "worker_credentials_failed",
+            level=logging.ERROR,
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            error_type=type(exc).__name__,
+            detail=str(exc),
+            exc_info=True,
+        )
+        raise
+    try:
+        log_event(
+            "audio_download_started",
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            audio_uri=command.audio_uri,
+        )
         audio = await download_audio(command.audio_uri, credentials)
+        log_event(
+            "audio_downloaded",
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            bytes_downloaded=len(audio),
+        )
+        log_event(
+            "transcription_inference_started",
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            model=command.model.value,
+        )
         text = cast(
             "str",
-            await GraniteModel().transcribe_bytes.remote.aio(audio),  # pyright: ignore[reportUnknownMemberType,reportCallIssue]
+            await GraniteModel().transcribe_bytes.remote.aio(  # pyright: ignore[reportUnknownMemberType,reportCallIssue]
+                audio, transcription_id
+            ),
         )
         if text:
+            log_event(
+                "transcription_inference_completed",
+                transcription_id=transcription_id,
+                report_id=command.report_id,
+                transcript_characters=len(text),
+            )
             event: dict[str, object] = {
                 "type": "transcription.completed",
                 "id": transcription_id,
@@ -212,6 +288,12 @@ async def process_transcription(
                 "data": {"text": text},
             }
         else:
+            log_event(
+                "transcription_empty_result",
+                level=logging.WARNING,
+                transcription_id=transcription_id,
+                report_id=command.report_id,
+            )
             event = _failure_event(
                 transcription_id,
                 command,
@@ -223,15 +305,21 @@ async def process_transcription(
             "audio_rejected",
             level=logging.WARNING,
             transcription_id=transcription_id,
+            report_id=command.report_id,
+            model=command.model.value,
+            audio_uri=command.audio_uri,
             reason=str(exc),
         )
         event = _failure_event(transcription_id, command, "audio_rejected", str(exc))
-    except AudioRetrievalError:
+    except AudioRetrievalError as exc:
         log_event(
             "audio_retrieval_failed",
             level=logging.WARNING,
             transcription_id=transcription_id,
+            report_id=command.report_id,
             audio_uri=command.audio_uri,
+            error_type=type(exc).__name__,
+            detail=str(exc),
         )
         event = _failure_event(
             transcription_id,
@@ -244,6 +332,9 @@ async def process_transcription(
             "transcription_unexpectedly_failed",
             level=logging.ERROR,
             transcription_id=transcription_id,
+            report_id=command.report_id,
+            model=command.model.value,
+            audio_uri=command.audio_uri,
             error_type=type(exc).__name__,
             detail=str(exc),
             exc_info=True,
@@ -255,12 +346,46 @@ async def process_transcription(
             "Transcription could not be completed.",
         )
     body = terminal_body(event)
-    await JOB_LEDGER.put.aio(terminal_key, body, skip_if_exists=True)
-    winning = await JOB_LEDGER.get.aio(terminal_key)
+    log_event(
+        "terminal_event_persisting",
+        transcription_id=transcription_id,
+        report_id=command.report_id,
+        event_type=event["type"],
+        body_bytes=len(body),
+    )
+    try:
+        await JOB_LEDGER.put.aio(terminal_key, body, skip_if_exists=True)
+        winning = await JOB_LEDGER.get.aio(terminal_key)
+    except Exception as exc:
+        log_event(
+            "terminal_event_persistence_failed",
+            level=logging.ERROR,
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            error_type=type(exc).__name__,
+            detail=str(exc),
+            exc_info=True,
+        )
+        raise
     if not isinstance(winning, bytes):
         message = "terminal event persistence failed"
+        log_event(
+            "terminal_event_persistence_invalid",
+            level=logging.ERROR,
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            value_type=type(winning).__name__,
+        )
         raise TypeError(message)
-    await _deliver_callback(command.callback_url, winning, credentials)
+    log_event(
+        "terminal_event_persisted",
+        transcription_id=transcription_id,
+        report_id=command.report_id,
+        event_type=event["type"],
+    )
+    await _deliver_callback(
+        command.callback_url, winning, credentials, command, transcription_id
+    )
     log_event(
         "worker_job_finished",
         transcription_id=transcription_id,
@@ -271,12 +396,29 @@ async def process_transcription(
 
 
 async def _deliver_callback(
-    url: str, body: bytes, credentials: TemporaryAwsCredentials
+    url: str,
+    body: bytes,
+    credentials: TemporaryAwsCredentials,
+    command: SubmissionCommand,
+    transcription_id: str,
 ) -> None:
     """Send a bounded callback without logging request data or secrets."""
     import httpx
 
-    validate_url(url, NetworkPolicy())
+    try:
+        validate_url(url, NetworkPolicy())
+    except Exception as exc:
+        log_event(
+            "callback_url_rejected",
+            level=logging.ERROR,
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            callback_url=redacted_url(url),
+            error_type=type(exc).__name__,
+            detail=str(exc),
+            exc_info=True,
+        )
+        raise
 
     class Sender:
         async def send(self, url: str, body: bytes, headers: dict[str, str]) -> int:
@@ -292,36 +434,64 @@ async def _deliver_callback(
         log_event(
             "callback_contract_rejected",
             level=logging.ERROR,
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            callback_url=redacted_url(url),
             detail="Callback URL does not match the configured AWS target.",
         )
         return
     try:
+        log_event(
+            "callback_delivery_started",
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            callback_url=redacted_url(url),
+            body_bytes=len(body),
+        )
         signer = _callback_signer(credentials)
         await deliver_with_retries(Sender(), url, body, signer, sleep=_sleep)
-    except CallbackContractError:
+    except CallbackContractError as exc:
         log_event(
             "callback_contract_rejected",
             level=logging.ERROR,
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            callback_url=redacted_url(url),
+            error_type=type(exc).__name__,
             detail="Callback payload was rejected and will not be retried locally.",
             exc_info=True,
         )
         return
-    except CallbackAuthenticationError:
+    except CallbackAuthenticationError as exc:
         log_event(
             "callback_authentication_rejected",
             level=logging.ERROR,
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            callback_url=redacted_url(url),
+            error_type=type(exc).__name__,
             detail="OIDC, IAM, or SigV4 callback authentication failed.",
             exc_info=True,
         )
         return
-    except CallbackDeliveryError:
+    except CallbackDeliveryError as exc:
         log_event(
             "callback_exhausted",
             level=logging.ERROR,
-            detail="Callback was not acknowledged; Modal will redeliver this job.",
+            transcription_id=transcription_id,
+            report_id=command.report_id,
+            callback_url=redacted_url(url),
+            error_type=type(exc).__name__,
+            detail=str(exc),
             exc_info=True,
         )
         raise
+    log_event(
+        "callback_delivery_completed",
+        transcription_id=transcription_id,
+        report_id=command.report_id,
+        callback_url=redacted_url(url),
+    )
 
 
 def _assume_aws_credentials() -> TemporaryAwsCredentials:
@@ -381,6 +551,11 @@ class GraniteModel:
         from huggingface_hub import snapshot_download
         from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
 
+        log_event(
+            "granite_model_loading",
+            model_id=MODEL_ID,
+            model_revision=MODEL_REVISION,
+        )
         snapshot = Path(
             snapshot_download(
                 repo_id=MODEL_ID,
@@ -389,6 +564,7 @@ class GraniteModel:
                 local_files_only=True,
             )
         )
+        log_event("granite_model_snapshot_ready", snapshot=str(snapshot))
         self.processor = AutoProcessor.from_pretrained(snapshot, local_files_only=True)
         self.model = (
             AutoModelForSpeechSeq2Seq.from_pretrained(
@@ -397,13 +573,23 @@ class GraniteModel:
             .eval()
             .to("cuda")
         )
+        log_event(
+            "granite_model_loaded",
+            model_id=MODEL_ID,
+            model_revision=MODEL_REVISION,
+        )
 
     @modal.method()  # pyright: ignore[reportUnknownMemberType]
-    def transcribe_bytes(self, audio_bytes: bytes) -> str:
+    def transcribe_bytes(self, audio_bytes: bytes, transcription_id: str) -> str:
         """Normalize uploaded audio then generate deterministic Granite output."""
         import torch
         import torchaudio
 
+        log_event(
+            "granite_inference_started",
+            transcription_id=transcription_id,
+            audio_bytes=len(audio_bytes),
+        )
         with NamedTemporaryFile(suffix=".audio") as handle:
             handle.write(audio_bytes)
             handle.flush()
@@ -448,9 +634,15 @@ class GraniteModel:
                 num_beams=1,
             )
         generated = output[0, inputs["input_ids"].shape[-1] :].unsqueeze(0)
-        return self.processor.tokenizer.batch_decode(
+        text = self.processor.tokenizer.batch_decode(
             generated, add_special_tokens=False, skip_special_tokens=True
         )[0]
+        log_event(
+            "granite_inference_completed",
+            transcription_id=transcription_id,
+            transcript_characters=len(text),
+        )
+        return text
 
 
 @APP.function(  # pyright: ignore[reportUnknownMemberType]

@@ -23,4 +23,5 @@ IMAGE = (
         extra_options="--no-dev",
     )
     .env({"HF_HUB_CACHE": CACHE_DIRECTORY})
+    .add_local_python_source("socialguard_models")
 )

@@ -1,9 +1,11 @@
 """Tests for the local ASR gateway HTTP and OpenAPI contract."""
 
 import json
+import logging
 from collections.abc import Mapping
 from typing import Protocol, cast
 
+import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
 from starlette import status
@@ -130,6 +132,37 @@ def test_gateway_requires_configured_bearer_token() -> None:
     assert invalid_response.status_code == status.HTTP_401_UNAUTHORIZED
     assert invalid_response.json() == expected_body
     assert health_response.status_code == status.HTTP_200_OK
+
+
+def test_gateway_logs_authentication_rejections_with_request_outcome(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Authentication rejection logs include a safe reason and HTTP outcome."""
+    submitter = FakeSubmitter()
+    app = create_gateway_app(submitter, GatewaySettings(api_token=_TEST_API_TOKEN))
+
+    with caplog.at_level(logging.INFO, logger="socialguard"):
+        response = cast(
+            "Response",
+            TestClient(app).post(  # pyright: ignore[reportUnknownMemberType]
+                "/v1/transcriptions", json=_valid_request()
+            ),
+        )
+
+    events = [json.loads(record.message) for record in caplog.records]
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    assert {
+        "event": "authentication_rejected",
+        "method": "POST",
+        "path": "/v1/transcriptions",
+        "reason": "missing_bearer_token",
+    } in events
+    assert {
+        "event": "api_request_rejected",
+        "method": "POST",
+        "path": "/v1/transcriptions",
+        "status_code": 401,
+    }.items() <= events[-1].items()
 
 
 def test_queue_transcription_rejects_idempotency_conflict() -> None:

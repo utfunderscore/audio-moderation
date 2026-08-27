@@ -24,7 +24,6 @@ def redacted_url(url: str) -> str:
 def log_event(
     event: str,
     level: int = logging.INFO,
-    /,
     *,
     exc_info: bool = False,
     **fields: object,

@@ -1,6 +1,8 @@
 """FastAPI application factory for the model-neutral ASR gateway."""
 
 import logging
+from collections.abc import Awaitable, Callable
+from time import perf_counter
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, FastAPI, Request, status
@@ -8,6 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
+from starlette.responses import Response
 
 from socialguard_models.api.auth import (
     CallerDependency,
@@ -104,7 +107,7 @@ def _error_response(
     return JSONResponse(status_code=status_code, content=body.model_dump(mode="json"))
 
 
-def create_gateway_app(
+def create_gateway_app(  # noqa: C901 - route-specific failure handling keeps public responses explicit.
     submitter: TranscriptionSubmitter,
     settings: GatewaySettings,
 ) -> FastAPI:
@@ -121,12 +124,12 @@ def create_gateway_app(
         exc: GatewayAuthenticationError,
     ) -> JSONResponse:
         """Map authentication failures to the public error envelope."""
-        del exc
         log_event(
             "authentication_rejected",
             level=logging.WARNING,
             method=request.method,
             path=request.url.path,
+            reason=str(exc),
         )
         return _error_response(
             status.HTTP_401_UNAUTHORIZED,
@@ -182,6 +185,26 @@ def create_gateway_app(
 
     caller_dependency: CallerDependency = require_caller(settings)
 
+    @app.middleware("http")
+    async def log_request_outcome(  # pyright: ignore[reportUnusedFunction]
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        """Record every API outcome, including framework-generated rejections."""
+        started_at = perf_counter()
+        response = await call_next(request)  # type: ignore[operator]
+        duration_ms = round((perf_counter() - started_at) * 1_000, 2)
+        rejected = response.status_code >= status.HTTP_400_BAD_REQUEST
+        log_event(
+            "api_request_rejected" if rejected else "api_request_completed",
+            level=logging.WARNING if rejected else logging.INFO,
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+        )
+        return response
+
     @app.post(
         "/v1/transcriptions",
         status_code=status.HTTP_202_ACCEPTED,
@@ -227,12 +250,27 @@ def create_gateway_app(
                 level=logging.ERROR,
                 report_id=request.report_id,
                 idempotency_key=request.idempotency_key,
+                model=request.model.value,
+                audio_uri=request.audio_uri,
             )
             return _error_response(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
                 GatewayErrorCode.MODEL_UNAVAILABLE,
                 "The gateway could not queue the transcription.",
             )
+        except Exception as exc:
+            log_event(
+                "submission_unexpectedly_failed",
+                level=logging.ERROR,
+                report_id=request.report_id,
+                idempotency_key=request.idempotency_key,
+                model=request.model.value,
+                audio_uri=request.audio_uri,
+                error_type=type(exc).__name__,
+                detail=str(exc),
+                exc_info=True,
+            )
+            raise
         log_event(
             "transcription_accepted",
             transcription_id=result.transcription_id,
