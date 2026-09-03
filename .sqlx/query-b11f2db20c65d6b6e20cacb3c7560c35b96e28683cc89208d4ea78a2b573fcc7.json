@@ -1,0 +1,80 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO review_jobs (job_id, tenant_id, idempotency_key, input_file_path)\n                VALUES ($1, $2, $3, $4)\n                ON CONFLICT (tenant_id, idempotency_key) DO UPDATE\n                    SET tenant_id = review_jobs.tenant_id\n                RETURNING job_id, tenant_id, idempotency_key,\n                    status AS \"status: ReviewJobStatus\", input_file_path, created_at, updated_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "tenant_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "idempotency_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "status: ReviewJobStatus",
+        "type_info": {
+          "Custom": {
+            "name": "review_job_status",
+            "kind": {
+              "Enum": [
+                "AWAITING_UPLOAD",
+                "QUEUED",
+                "STARTED_PREPROCESSING_AUDIO",
+                "FINISHED_PREPROCESSING_AUDIO",
+                "STARTED_TRANSCRIBING",
+                "FINISHED_TRANSCRIBING",
+                "STARTED_EVALUATING",
+                "FINISHED_EVALUATING",
+                "STARTED_PERSISTING_RESULT",
+                "COMPLETED",
+                "FAILED"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "input_file_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b11f2db20c65d6b6e20cacb3c7560c35b96e28683cc89208d4ea78a2b573fcc7"
+}

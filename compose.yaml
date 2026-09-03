@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: audio_moderation
+      POSTGRES_USER: audio_moderation
+      POSTGRES_PASSWORD: audio_moderation
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audio_moderation -d audio_moderation"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  migrations:
+    image: flyway/flyway:11-alpine
+    command: -connectRetries=10 -url=jdbc:postgresql://postgres:5432/audio_moderation -user=audio_moderation -password=audio_moderation migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/flyway/sql:ro
+
+volumes:
+  postgres-data:

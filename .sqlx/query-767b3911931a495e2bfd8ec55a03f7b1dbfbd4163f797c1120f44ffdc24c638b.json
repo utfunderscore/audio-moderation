@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT job_id, tenant_id, idempotency_key,\n                    status AS \"status: ReviewJobStatus\", input_file_path, created_at, updated_at\n                FROM review_jobs\n                WHERE job_id = $1 AND tenant_id = $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "tenant_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "idempotency_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "status: ReviewJobStatus",
+        "type_info": {
+          "Custom": {
+            "name": "review_job_status",
+            "kind": {
+              "Enum": [
+                "AWAITING_UPLOAD",
+                "QUEUED",
+                "STARTED_PREPROCESSING_AUDIO",
+                "FINISHED_PREPROCESSING_AUDIO",
+                "STARTED_TRANSCRIBING",
+                "FINISHED_TRANSCRIBING",
+                "STARTED_EVALUATING",
+                "FINISHED_EVALUATING",
+                "STARTED_PERSISTING_RESULT",
+                "COMPLETED",
+                "FAILED"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "input_file_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "767b3911931a495e2bfd8ec55a03f7b1dbfbd4163f797c1120f44ffdc24c638b"
+}
