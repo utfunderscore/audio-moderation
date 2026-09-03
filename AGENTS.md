@@ -15,9 +15,9 @@ This project aims to build a reliable, asynchronous audio review platform. It ac
 
 ## Target Architecture and Initial Scope
 
-The intended AWS architecture uses API Gateway and Lambda for API handling, Step Functions for orchestration, S3 for artifacts, and Aurora PostgreSQL or RDS PostgreSQL for durable state and results. Transcription and evaluation are handled by approved managed or custom model endpoints.
+The intended AWS architecture uses unary Connect RPC methods defined in versioned Protobuf files for the public API. API Gateway and a Rust Lambda adapter host the initial API handlers, Step Functions provides orchestration, S3 stores artifacts, and Aurora PostgreSQL or RDS PostgreSQL stores durable state and results. Transcription and evaluation are handled by approved managed or custom model endpoints. If streaming RPCs become necessary, host the Connect service on ECS/Fargate behind an Application Load Balancer instead of extending the Lambda adapter.
 
-The first implementation should deliver a production-shaped vertical slice: submit a review, create its database record, run preprocessing and mocked model steps through Step Functions, persist the result, and retrieve job status. Real model integrations, callbacks, notifications, alarms, and retention policies can then be added incrementally.
+The first implementation should deliver a production-shaped vertical slice: generate Rust and browser/service clients from the Protobuf contract, submit a review through Connect RPC, create its database record, run preprocessing and mocked model steps through Step Functions, persist the result, and retrieve job status through Connect RPC. Real model integrations, callbacks, notifications, alarms, and retention policies can then be added incrementally.
 
 Real-time transcription, model training, a full human-review UI, and cross-region active/active operation are not first-release goals.
 

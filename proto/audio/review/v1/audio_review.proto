@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package audio.review.v1;
+
+service AudioReviewService {
+  rpc SubmitAudio(SubmitAudioRequest) returns (SubmitAudioResponse);
+}
+
+message SubmitAudioRequest {
+  string content_type = 1;
+}
+
+message SubmitAudioResponse {
+  string task_id = 1;
+  string upload_url = 2;
+  map<string, string> upload_headers = 3;
+}

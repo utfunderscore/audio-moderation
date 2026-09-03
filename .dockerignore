@@ -1,0 +1,6 @@
+.git
+.terraform
+target
+terraform/.terraform
+terraform/*.tfstate
+terraform/*.tfstate.*
