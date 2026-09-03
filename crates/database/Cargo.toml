@@ -8,6 +8,7 @@ license.workspace = true
 common = { path = "../common" }
 chrono = { version = "0.4.44", default-features = false, features = ["std"] }
 sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "macros", "postgres", "runtime-tokio-rustls", "uuid"] }
+thiserror = "2.0.18"
 uuid = { version = "1.22.0", features = ["v4"] }
 
 [dev-dependencies]

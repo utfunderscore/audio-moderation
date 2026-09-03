@@ -1168,6 +1168,7 @@ dependencies = [
  "common",
  "sqlx",
  "testcontainers",
+ "thiserror",
  "uuid",
 ]
 

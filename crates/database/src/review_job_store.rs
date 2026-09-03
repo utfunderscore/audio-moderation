@@ -2,6 +2,19 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Errors returned while accessing persisted review jobs.
+#[derive(Debug, thiserror::Error)]
+pub enum DatabaseError {
+    #[error("failed to create or retrieve review job")]
+    CreateOrGet(#[source] sqlx::Error),
+
+    #[error("failed to retrieve review job")]
+    Get(#[source] sqlx::Error),
+
+    #[error("failed to update review job status")]
+    UpdateStatus(#[source] sqlx::Error),
+}
+
 /// The persisted state for a review request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewJob {
@@ -71,7 +84,7 @@ impl ReviewJobStore {
     }
 
     /// Creates a job, or returns the existing job for the same tenant and idempotency key.
-    pub async fn create_or_get(&self, job: NewReviewJob<'_>) -> Result<ReviewJob, sqlx::Error> {
+    pub async fn create_or_get(&self, job: NewReviewJob<'_>) -> Result<ReviewJob, DatabaseError> {
         sqlx::query_as!(
             ReviewJob,
             r#"
@@ -89,6 +102,7 @@ impl ReviewJobStore {
         )
         .fetch_one(&self.pool)
         .await
+        .map_err(DatabaseError::CreateOrGet)
     }
 
     /// Gets a job only when it belongs to `tenant_id`.
@@ -96,7 +110,7 @@ impl ReviewJobStore {
         &self,
         job_id: Uuid,
         tenant_id: &str,
-    ) -> Result<Option<ReviewJob>, sqlx::Error> {
+    ) -> Result<Option<ReviewJob>, DatabaseError> {
         sqlx::query_as!(
             ReviewJob,
             r#"
@@ -110,6 +124,7 @@ impl ReviewJobStore {
         )
         .fetch_optional(&self.pool)
         .await
+        .map_err(DatabaseError::Get)
     }
 
     /// Updates a job's workflow status and returns the updated row.
@@ -118,7 +133,7 @@ impl ReviewJobStore {
         job_id: Uuid,
         tenant_id: &str,
         status: ReviewJobStatus,
-    ) -> Result<Option<ReviewJob>, sqlx::Error> {
+    ) -> Result<Option<ReviewJob>, DatabaseError> {
         sqlx::query_as!(
             ReviewJob,
             r#"
@@ -134,5 +149,6 @@ impl ReviewJobStore {
         )
         .fetch_optional(&self.pool)
         .await
+        .map_err(DatabaseError::UpdateStatus)
     }
 }
