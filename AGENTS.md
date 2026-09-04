@@ -1,23 +1,28 @@
 # Project Overview
 
-This project aims to build a reliable, asynchronous audio review platform. It accepts audio review requests, prepares and normalizes the audio, produces a transcript, evaluates the content against moderation or quality rules, persists the outcome, and exposes job status and results through an API.
+This repository contains two independent systems and their optional integration. The review submission system owns review requests, expected file uploads, and a coarse request status. It does not own moderation workflow state. The audio moderation system independently accepts one or more existing audio object references, prepares and normalizes the audio, produces a transcript, evaluates the content against moderation or quality rules, persists its own state and outcome, and publishes completion or failure events. When combined into the full flow, the review submission system is one client of the moderation system; other authorized services can invoke moderation without creating a review request.
 
 ## Project Goals
 
-- Process every audio review job reliably, with explicit workflow state, bounded retries, timeouts, and durable failure records.
-- Prevent duplicate jobs through idempotent request handling.
-- Scale ingestion, audio processing, transcription, evaluation, and result retrieval independently.
+- Process every review request and evaluation job reliably, with explicit independently owned state, bounded retries, timeouts, and durable failure records.
+- Prevent duplicate review requests and evaluation jobs through separately scoped idempotent request handling.
+- Scale and deploy ingestion, moderation, and result retrieval independently.
+- Allow authorized services to invoke moderation directly with ordered sets of existing audio objects.
 - Preserve an auditable history of job states, model runs, errors, and model versions.
 - Store large artifacts such as audio, transcripts, and detailed results in S3 while keeping queryable job and result metadata in PostgreSQL.
 - Protect sensitive audio and transcript data with least-privilege access, encryption, private networking, retention controls, and sanitized logging.
-- Provide end-to-end observability using a shared job/correlation ID, structured logs, metrics, traces, dashboards, and alarms.
+- Provide end-to-end observability using distinct review, evaluation, execution-attempt, and caller-correlation identifiers, plus structured logs, metrics, traces, dashboards, and alarms.
 - Support completion and failure notifications for callers and downstream systems.
 
 ## Target Architecture and Initial Scope
 
-The intended AWS architecture uses unary Connect RPC methods defined in versioned Protobuf files for the public API. API Gateway and a Rust Lambda adapter host the initial API handlers, Step Functions provides orchestration, S3 stores artifacts, and Aurora PostgreSQL or RDS PostgreSQL stores durable state and results. Transcription and evaluation are handled by approved managed or custom model endpoints. If streaming RPCs become necessary, host the Connect service on ECS/Fargate behind an Application Load Balancer instead of extending the Lambda adapter.
+The review submission system uses unary Connect RPC methods through API Gateway and a Rust Lambda adapter. It creates review requests, manages expected uploads in S3, persists its own state in PostgreSQL, and exposes only `AWAITING_UPLOAD`, `PROCESSING`, `COMPLETE`, and `ERROR`. Its downstream processing dependency is an interface expressed in object references, an opaque processing reference, and terminal outcome events.
 
-The first implementation should deliver a production-shaped vertical slice: generate Rust and browser/service clients from the Protobuf contract, submit a review through Connect RPC, create its database record, run preprocessing and mocked model steps through Step Functions, persist the result, and retrieve job status through Connect RPC. Real model integrations, callbacks, notifications, alarms, and retention policies can then be added incrementally.
+The audio moderation system has its own unary Connect RPC ingress, persistence ownership, and deployment lifecycle. Its ingress accepts ordered existing audio object references, creates an evaluation job, and durably dispatches Step Functions. Callers do not invoke Step Functions directly. The system owns preprocessing, transcription, evaluation, detailed state, execution attempts, results, and completion/failure events. If streaming RPCs become necessary, host this Connect service on ECS/Fargate behind an Application Load Balancer instead of extending the Lambda adapter.
+
+For the full flow, an adapter connects the review system's downstream processing interface to the moderation API and events. The review system stores `evaluationId` only as an opaque processing reference, while moderation stores `reviewId` only as an opaque caller reference. Neither system accesses the other's tables.
+
+The first implementation should prove both systems independently, then their integration. Test review submission through upload and a mocked downstream processor. Test moderation directly with multiple ordered file references and no review request. Finally connect the review processing adapter to moderation, consume its terminal event, and expose the projected coarse review status. Real model integrations, callbacks, notifications, alarms, and retention policies can then be added incrementally.
 
 The demo API is unauthenticated and rate-limited only. Jobs use a configured environment `TENANT_ID` (default `default`) until authentication and per-caller tenant identity are added.
 
@@ -37,6 +42,4 @@ Run `./deploy.sh` from the repository root to build and push the submit-review a
 
 The deployment requires authenticated AWS CLI access plus Cargo, Docker, Git, and Terraform. Run `./deploy.sh --help` for configuration flags and equivalent environment variables. The script generates a shared unique immutable image tag by default, bootstraps both ECR repositories when necessary, waits for both Lambda updates to complete, and prints the API endpoint. Use `--skip-integration-test` only when an infrastructure-only deployment is needed. Use the script rather than a direct first-time `terraform apply`, because both Lambda images must be pushed before Terraform can create the functions.
 
-Run the ignored deployed integration test explicitly with `AUDIO_MODERATION_API_ENDPOINT=$(terraform -chdir=terraform output -raw api_endpoint) cargo test --package submit-audio-lambda --test deployed -- --ignored --nocapture`. It creates a real review job, uploads a small WAV object to the deployed S3 bucket, and waits for the upload-complete Lambda to queue the job; normal test runs never execute it.
-
-See `audio_review_architecture_design_sql.md` for the detailed architecture and design decisions.
+Run the currently implemented ignored deployment test explicitly with `AUDIO_MODERATION_API_ENDPOINT=$(terraform -chdir=terraform output -raw api_endpoint) cargo test --package submit-audio-lambda --test deployed -- --ignored --nocapture`. It exercises the existing single-file upload slice; normal test runs never execute it. Update this test alongside implementation of the separate review-request and evaluation-job flows.

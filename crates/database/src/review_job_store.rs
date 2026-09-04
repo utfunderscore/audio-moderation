@@ -44,32 +44,20 @@ pub struct NewReviewJob<'a> {
 #[sqlx(type_name = "review_job_status", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ReviewJobStatus {
     AwaitingUpload,
-    Queued,
-    StartedPreprocessingAudio,
-    FinishedPreprocessingAudio,
-    StartedTranscribing,
-    FinishedTranscribing,
-    StartedEvaluating,
-    FinishedEvaluating,
-    StartedPersistingResult,
+    PendingProcessing,
+    Processing,
     Completed,
-    Failed,
+    Error,
 }
 
 impl ReviewJobStatus {
     const fn as_str(self) -> &'static str {
         match self {
             Self::AwaitingUpload => "AWAITING_UPLOAD",
-            Self::Queued => "QUEUED",
-            Self::StartedPreprocessingAudio => "STARTED_PREPROCESSING_AUDIO",
-            Self::FinishedPreprocessingAudio => "FINISHED_PREPROCESSING_AUDIO",
-            Self::StartedTranscribing => "STARTED_TRANSCRIBING",
-            Self::FinishedTranscribing => "FINISHED_TRANSCRIBING",
-            Self::StartedEvaluating => "STARTED_EVALUATING",
-            Self::FinishedEvaluating => "FINISHED_EVALUATING",
-            Self::StartedPersistingResult => "STARTED_PERSISTING_RESULT",
+            Self::PendingProcessing => "PENDING_PROCESSING",
+            Self::Processing => "PROCESSING",
             Self::Completed => "COMPLETED",
-            Self::Failed => "FAILED",
+            Self::Error => "ERROR",
         }
     }
 }
@@ -155,7 +143,7 @@ impl ReviewJobStore {
         .map_err(DatabaseError::UpdateStatus)
     }
 
-    /// Advances the job for an uploaded source object to `QUEUED`.
+    /// Advances the job for an uploaded source object to `PENDING_PROCESSING`.
     ///
     /// Repeated upload notifications return the job's current status without
     /// moving it backwards, making S3's at-least-once delivery safe.
@@ -170,7 +158,7 @@ impl ReviewJobStore {
                 UPDATE review_jobs
                 SET
                     status = CASE
-                        WHEN status = 'AWAITING_UPLOAD' THEN 'QUEUED'::review_job_status
+                        WHEN status = 'AWAITING_UPLOAD' THEN 'PENDING_PROCESSING'::review_job_status
                         ELSE status
                     END,
                     updated_at = CASE

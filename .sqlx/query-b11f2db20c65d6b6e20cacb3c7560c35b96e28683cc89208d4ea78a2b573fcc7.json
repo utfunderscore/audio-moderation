@@ -27,16 +27,10 @@
             "kind": {
               "Enum": [
                 "AWAITING_UPLOAD",
-                "QUEUED",
-                "STARTED_PREPROCESSING_AUDIO",
-                "FINISHED_PREPROCESSING_AUDIO",
-                "STARTED_TRANSCRIBING",
-                "FINISHED_TRANSCRIBING",
-                "STARTED_EVALUATING",
-                "FINISHED_EVALUATING",
-                "STARTED_PERSISTING_RESULT",
+                "PENDING_PROCESSING",
+                "PROCESSING",
                 "COMPLETED",
-                "FAILED"
+                "ERROR"
               ]
             }
           }

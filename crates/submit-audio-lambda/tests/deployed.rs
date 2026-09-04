@@ -50,7 +50,7 @@ async fn submits_uploads_and_replays_against_aws() -> Result<(), Box<dyn std::er
         &client,
         &submit_url,
         &idempotency_key,
-        "REVIEW_JOB_STATUS_QUEUED",
+        "REVIEW_JOB_STATUS_PENDING_PROCESSING",
     )
     .await?;
     assert_eq!(replayed["taskId"], task_id);

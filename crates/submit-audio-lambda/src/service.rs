@@ -197,16 +197,10 @@ impl From<DatabaseReviewJobStatus> for ReviewJobStatus {
     fn from(status: DatabaseReviewJobStatus) -> Self {
         match status {
             DatabaseReviewJobStatus::AwaitingUpload => Self::AwaitingUpload,
-            DatabaseReviewJobStatus::Queued => Self::Queued,
-            DatabaseReviewJobStatus::StartedPreprocessingAudio => Self::StartedPreprocessingAudio,
-            DatabaseReviewJobStatus::FinishedPreprocessingAudio => Self::FinishedPreprocessingAudio,
-            DatabaseReviewJobStatus::StartedTranscribing => Self::StartedTranscribing,
-            DatabaseReviewJobStatus::FinishedTranscribing => Self::FinishedTranscribing,
-            DatabaseReviewJobStatus::StartedEvaluating => Self::StartedEvaluating,
-            DatabaseReviewJobStatus::FinishedEvaluating => Self::FinishedEvaluating,
-            DatabaseReviewJobStatus::StartedPersistingResult => Self::StartedPersistingResult,
+            DatabaseReviewJobStatus::PendingProcessing => Self::PendingProcessing,
+            DatabaseReviewJobStatus::Processing => Self::Processing,
             DatabaseReviewJobStatus::Completed => Self::Completed,
-            DatabaseReviewJobStatus::Failed => Self::Failed,
+            DatabaseReviewJobStatus::Error => Self::Error,
         }
     }
 }
