@@ -13,14 +13,14 @@ variable "environment" {
   default = "dev"
 }
 
-variable "image_tag" {
+variable "submit_audio_image_tag" {
   type    = string
   default = "latest"
 }
 
-variable "database_url" {
-  type      = string
-  sensitive = true
+variable "database_parameter_name" {
+  type    = string
+  default = "/audio-moderation/dev/database-url"
 }
 
 variable "upload_retention_days" {
