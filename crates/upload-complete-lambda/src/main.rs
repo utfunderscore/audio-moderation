@@ -4,30 +4,22 @@ use std::io::Error as IoError;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_ssm::Client as SsmClient;
-use connectrpc::ConnectRpcService;
 use database::ReviewJobStore;
-use http_body_util::Full;
-use lambda_http::{Error, Request as LambdaRequest, run, service_fn};
+use lambda_runtime::{Error, run, service_fn};
 use sqlx::postgres::PgPoolOptions;
-use tower::Service;
-
-mod proto;
-mod service;
-
-use proto::audio::review::v1::AudioReviewServiceServer;
-use service::SubmitReviewService;
+use upload_complete_lambda::UploadCompleteHandler;
 
 async fn load_database_url(ssm_client: &SsmClient) -> Result<String, Error> {
-    let database_parameter_name =
+    let parameter_name =
         env::var("DATABASE_URL_PARAMETER").expect("DATABASE_URL_PARAMETER must be set");
-    let database_parameter = ssm_client
+    let response = ssm_client
         .get_parameter()
-        .name(database_parameter_name)
+        .name(parameter_name)
         .with_decryption(true)
         .send()
         .await?;
 
-    database_parameter
+    response
         .parameter()
         .and_then(|parameter| parameter.value())
         .map(str::to_owned)
@@ -45,33 +37,23 @@ async fn main() -> Result<(), Error> {
         .init();
 
     let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-    let s3_client = S3Client::new(&sdk_config);
     let ssm_client = SsmClient::new(&sdk_config);
-
     let database_url = load_database_url(&ssm_client).await?;
     let pool = PgPoolOptions::new()
         .max_connections(3)
         .connect_lazy(&database_url)?;
     let uploads_bucket = env::var("UPLOADS_BUCKET_NAME").expect("UPLOADS_BUCKET_NAME must be set");
     let tenant_id = env::var("TENANT_ID").expect("TENANT_ID must be set");
-
-    let service = SubmitReviewService::new(
+    let handler = UploadCompleteHandler::new(
         ReviewJobStore::new(pool),
-        s3_client,
+        S3Client::new(&sdk_config),
         uploads_bucket,
         tenant_id,
     );
-    let connect_service = ConnectRpcService::new(AudioReviewServiceServer::new(service));
 
-    run(service_fn(move |request: LambdaRequest| {
-        let mut connect_service = connect_service.clone();
-        async move {
-            let request = request.map(|body| Full::new(body.as_ref().to_owned().into()));
-            connect_service
-                .call(request)
-                .await
-                .map_err(|never| -> Error { match never {} })
-        }
+    run(service_fn(move |event| {
+        let handler = handler.clone();
+        async move { handler.handle(event).await }
     }))
     .await
 }

@@ -2,3 +2,8 @@
 .env
 /.terraform/
 /terraform/.terraform/
+*.tfstate
+*.tfstate.*
+/.opencode/
+/opencode.json
+/opencode.jsonc

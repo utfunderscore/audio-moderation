@@ -3,15 +3,31 @@ syntax = "proto3";
 package audio.review.v1;
 
 service AudioReviewService {
-  rpc SubmitAudio(SubmitAudioRequest) returns (SubmitAudioResponse);
+  rpc SubmitReview(SubmitReviewRequest) returns (SubmitReviewResponse);
 }
 
-message SubmitAudioRequest {
+message SubmitReviewRequest {
   string content_type = 1;
 }
 
-message SubmitAudioResponse {
+message SubmitReviewResponse {
   string task_id = 1;
   string upload_url = 2;
   map<string, string> upload_headers = 3;
+  ReviewJobStatus status = 4;
+}
+
+enum ReviewJobStatus {
+  REVIEW_JOB_STATUS_UNSPECIFIED = 0;
+  REVIEW_JOB_STATUS_AWAITING_UPLOAD = 1;
+  REVIEW_JOB_STATUS_QUEUED = 2;
+  REVIEW_JOB_STATUS_STARTED_PREPROCESSING_AUDIO = 3;
+  REVIEW_JOB_STATUS_FINISHED_PREPROCESSING_AUDIO = 4;
+  REVIEW_JOB_STATUS_STARTED_TRANSCRIBING = 5;
+  REVIEW_JOB_STATUS_FINISHED_TRANSCRIBING = 6;
+  REVIEW_JOB_STATUS_STARTED_EVALUATING = 7;
+  REVIEW_JOB_STATUS_FINISHED_EVALUATING = 8;
+  REVIEW_JOB_STATUS_STARTED_PERSISTING_RESULT = 9;
+  REVIEW_JOB_STATUS_COMPLETED = 10;
+  REVIEW_JOB_STATUS_FAILED = 11;
 }

@@ -13,6 +13,9 @@ pub enum DatabaseError {
 
     #[error("failed to update review job status")]
     UpdateStatus(#[source] sqlx::Error),
+
+    #[error("failed to mark review job upload complete")]
+    MarkUploadComplete(#[source] sqlx::Error),
 }
 
 /// The persisted state for a review request.
@@ -150,5 +153,39 @@ impl ReviewJobStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(DatabaseError::UpdateStatus)
+    }
+
+    /// Advances the job for an uploaded source object to `QUEUED`.
+    ///
+    /// Repeated upload notifications return the job's current status without
+    /// moving it backwards, making S3's at-least-once delivery safe.
+    pub async fn mark_upload_complete(
+        &self,
+        input_file_path: &str,
+        tenant_id: &str,
+    ) -> Result<Option<ReviewJob>, DatabaseError> {
+        sqlx::query_as!(
+            ReviewJob,
+            r#"
+                UPDATE review_jobs
+                SET
+                    status = CASE
+                        WHEN status = 'AWAITING_UPLOAD' THEN 'QUEUED'::review_job_status
+                        ELSE status
+                    END,
+                    updated_at = CASE
+                        WHEN status = 'AWAITING_UPLOAD' THEN NOW()
+                        ELSE updated_at
+                    END
+                WHERE input_file_path = $1 AND tenant_id = $2
+                RETURNING job_id, tenant_id, idempotency_key,
+                    status AS "status: ReviewJobStatus", input_file_path, created_at, updated_at
+            "#,
+            input_file_path,
+            tenant_id,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DatabaseError::MarkUploadComplete)
     }
 }

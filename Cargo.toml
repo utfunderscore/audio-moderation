@@ -2,6 +2,7 @@
 members = [
     "crates/common",
     "crates/database",
+    "crates/upload-complete-lambda",
     "crates/submit-audio-lambda",
 ]
 resolver = "3"

@@ -67,8 +67,11 @@ resource "aws_iam_role_policy" "submit_audio_upload" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = "s3:PutObject"
+      Effect = "Allow"
+      Action = [
+        "s3:GetObject",
+        "s3:PutObject",
+      ]
       Resource = "${aws_s3_bucket.uploads.arn}/reviews/*"
     }]
   })
@@ -99,23 +102,6 @@ resource "aws_cloudwatch_log_group" "submit_audio" {
   retention_in_days = 7
 }
 
-resource "terraform_data" "submit_audio_image" {
-  triggers_replace = [
-    var.submit_audio_image_tag,
-  ]
-
-  provisioner "local-exec" {
-    working_dir = path.module
-    command     = <<-EOT
-      aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com
-      docker build --platform linux/amd64 --provenance=false --file ../crates/submit-audio-lambda/Dockerfile --tag ${aws_ecr_repository.submit_audio.repository_url}:${var.submit_audio_image_tag} ..
-      docker push ${aws_ecr_repository.submit_audio.repository_url}:${var.submit_audio_image_tag}
-    EOT
-  }
-
-  depends_on = [aws_ecr_repository.submit_audio]
-}
-
 resource "aws_lambda_function" "submit_audio" {
   function_name = "${local.name_prefix}-submit-audio"
   package_type  = "Image"
@@ -129,6 +115,8 @@ resource "aws_lambda_function" "submit_audio" {
     variables = {
       DATABASE_URL_PARAMETER = var.database_parameter_name
       UPLOADS_BUCKET_NAME    = aws_s3_bucket.uploads.bucket
+      TENANT_ID              = var.tenant_id
+      RUST_LOG               = "info"
     }
   }
 
@@ -138,7 +126,6 @@ resource "aws_lambda_function" "submit_audio" {
     aws_iam_role_policy.submit_audio_upload,
     aws_iam_role_policy.submit_audio_database_parameter,
     aws_cloudwatch_log_group.submit_audio,
-    terraform_data.submit_audio_image,
   ]
 }
 
