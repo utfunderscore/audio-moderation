@@ -21,3 +21,27 @@ output "confirm_upload_function_name" {
 output "uploads_bucket_name" {
   value = aws_s3_bucket.uploads.bucket
 }
+
+output "artifacts_bucket_name" {
+  value = aws_s3_bucket.artifacts.bucket
+}
+
+output "audio_processing_ecr_repository_url" {
+  value = aws_ecr_repository.audio_processing.repository_url
+}
+
+output "audio_processing_function_name" {
+  value = aws_lambda_function.audio_processing.function_name
+}
+
+output "audio_processing_state_machine_arn" {
+  value = aws_sfn_state_machine.audio_processing.arn
+}
+
+output "resource_group_name" {
+  value = aws_resourcegroups_group.application.name
+}
+
+output "resource_group_arn" {
+  value = aws_resourcegroups_group.application.arn
+}

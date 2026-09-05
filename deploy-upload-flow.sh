@@ -18,11 +18,11 @@ usage() {
     cat <<'EOF'
 Usage: ./deploy-upload-flow.sh [options]
 
-Deploy the review submission and file-upload flow to AWS.
+Deploy the review submission, file-upload, and audio conversion infrastructure to AWS.
 
-This script deploys the submit-audio and confirm-upload Lambdas, plus their
-API Gateway and S3 infrastructure. It does not deploy or test audio
-processing, transcription, or moderation evaluation.
+This script deploys the submit-audio, confirm-upload, and audio-processing
+Lambdas, plus their API Gateway, S3, and Step Functions infrastructure. It
+does not deploy or test transcription or moderation evaluation.
 
 Options:
   --region REGION                 AWS region (default: eu-west-2)
@@ -123,9 +123,11 @@ fi
 
 ECR_REPOSITORY="${PROJECT_NAME}-${ENVIRONMENT}-submit-audio"
 CONFIRM_UPLOAD_ECR_REPOSITORY="${PROJECT_NAME}-${ENVIRONMENT}-confirm-upload"
+AUDIO_PROCESSING_ECR_REPOSITORY="${PROJECT_NAME}-${ENVIRONMENT}-audio-processing"
 ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
 CONFIRM_UPLOAD_IMAGE_URI="${ECR_REGISTRY}/${CONFIRM_UPLOAD_ECR_REPOSITORY}:${IMAGE_TAG}"
+AUDIO_PROCESSING_IMAGE_URI="${ECR_REGISTRY}/${AUDIO_PROCESSING_ECR_REPOSITORY}:${IMAGE_TAG}"
 
 terraform_args=(
     -var="aws_region=${AWS_REGION}"
@@ -135,6 +137,7 @@ terraform_args=(
     -var="tenant_id=${TENANT_ID}"
     -var="submit_audio_image_tag=${IMAGE_TAG}"
     -var="confirm_upload_image_tag=${IMAGE_TAG}"
+    -var="audio_processing_image_tag=${IMAGE_TAG}"
 )
 approve_args=()
 if [[ "${AUTO_APPROVE}" == true ]]; then
@@ -145,6 +148,7 @@ printf 'AWS account: %s\n' "${ACCOUNT_ID}"
 printf 'Environment: %s\n' "${ENVIRONMENT}"
 printf 'Image: %s\n' "${IMAGE_URI}"
 printf 'Image: %s\n' "${CONFIRM_UPLOAD_IMAGE_URI}"
+printf 'Image: %s\n' "${AUDIO_PROCESSING_IMAGE_URI}"
 
 terraform -chdir="${TERRAFORM_DIR}" init -input=false
 
@@ -158,7 +162,10 @@ terraform -chdir="${TERRAFORM_DIR}" apply \
     -target=aws_ecr_lifecycle_policy.submit_audio \
     -target=aws_ecr_repository.confirm_upload \
     -target=aws_ecr_repository_policy.confirm_upload_lambda_pull \
-    -target=aws_ecr_lifecycle_policy.confirm_upload
+    -target=aws_ecr_lifecycle_policy.confirm_upload \
+    -target=aws_ecr_repository.audio_processing \
+    -target=aws_ecr_repository_policy.audio_processing_lambda_pull \
+    -target=aws_ecr_lifecycle_policy.audio_processing
 
 existing_image_count="$(aws ecr batch-get-image \
     --region "${AWS_REGION}" \
@@ -182,6 +189,17 @@ if [[ "${confirm_upload_existing_image_count}" != 0 ]]; then
     exit 1
 fi
 
+audio_processing_existing_image_count="$(aws ecr batch-get-image \
+    --region "${AWS_REGION}" \
+    --repository-name "${AUDIO_PROCESSING_ECR_REPOSITORY}" \
+    --image-ids imageTag="${IMAGE_TAG}" \
+    --query 'length(images)' \
+    --output text)"
+if [[ "${audio_processing_existing_image_count}" != 0 ]]; then
+    printf 'Image tag already exists; choose a new immutable tag: %s\n' "${IMAGE_TAG}" >&2
+    exit 1
+fi
+
 aws ecr get-login-password --region "${AWS_REGION}" \
     | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
 
@@ -199,6 +217,13 @@ docker build \
     --tag "${CONFIRM_UPLOAD_IMAGE_URI}" \
     "${ROOT_DIR}"
 docker push "${CONFIRM_UPLOAD_IMAGE_URI}"
+docker build \
+    --platform linux/amd64 \
+    --provenance=false \
+    --file "${ROOT_DIR}/crates/audio-processing-lambda/Dockerfile" \
+    --tag "${AUDIO_PROCESSING_IMAGE_URI}" \
+    "${ROOT_DIR}"
+docker push "${AUDIO_PROCESSING_IMAGE_URI}"
 
 terraform -chdir="${TERRAFORM_DIR}" apply \
     "${terraform_args[@]}" \
@@ -206,14 +231,18 @@ terraform -chdir="${TERRAFORM_DIR}" apply \
 
 FUNCTION_NAME="$(terraform -chdir="${TERRAFORM_DIR}" output -raw submit_audio_function_name)"
 CONFIRM_UPLOAD_FUNCTION_NAME="$(terraform -chdir="${TERRAFORM_DIR}" output -raw confirm_upload_function_name)"
+AUDIO_PROCESSING_FUNCTION_NAME="$(terraform -chdir="${TERRAFORM_DIR}" output -raw audio_processing_function_name)"
 aws lambda wait function-updated-v2 \
     --region "${AWS_REGION}" \
     --function-name "${FUNCTION_NAME}"
 aws lambda wait function-updated-v2 \
     --region "${AWS_REGION}" \
     --function-name "${CONFIRM_UPLOAD_FUNCTION_NAME}"
+aws lambda wait function-updated-v2 \
+    --region "${AWS_REGION}" \
+    --function-name "${AUDIO_PROCESSING_FUNCTION_NAME}"
 
-    printf 'Upload-flow deployment complete\n'
+printf 'Upload-flow deployment complete\n'
 API_ENDPOINT="$(terraform -chdir="${TERRAFORM_DIR}" output -raw api_endpoint)"
 printf 'API endpoint: %s\n' "${API_ENDPOINT}"
 
