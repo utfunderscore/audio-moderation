@@ -18,11 +18,12 @@ usage() {
     cat <<'EOF'
 Usage: ./deploy-upload-flow.sh [options]
 
-Deploy the review submission, file-upload, and audio conversion infrastructure to AWS.
+Deploy the review submission, file-upload, and audio-processing infrastructure to AWS.
 
-This script deploys the submit-audio, confirm-upload, and audio-processing
-Lambdas, plus their API Gateway, S3, and Step Functions infrastructure. It
-does not deploy or test transcription or moderation evaluation.
+This script deploys the submit-audio and confirm-upload Lambdas, plus their
+API Gateway and S3 infrastructure, and the audio-processing Lambda and Step
+Functions state machine. It does not deploy start-evaluation, transcription,
+or moderation evaluation.
 
 Options:
   --region REGION                 AWS region (default: eu-west-2)
@@ -152,7 +153,14 @@ printf 'Image: %s\n' "${AUDIO_PROCESSING_IMAGE_URI}"
 
 terraform -chdir="${TERRAFORM_DIR}" init -input=false
 
-# Both repositories must exist before their images can be pushed. The full apply
+# Apply pending moved blocks before targeting repositories for image bootstrap.
+# Terraform otherwise rejects a targeted plan that excludes renamed resources.
+terraform -chdir="${TERRAFORM_DIR}" apply \
+    "${terraform_args[@]}" \
+    "${approve_args[@]}" \
+    -refresh-only
+
+# All repositories must exist before their images can be pushed. The full apply
 # below remains authoritative for these resources and all dependent infrastructure.
 terraform -chdir="${TERRAFORM_DIR}" apply \
     "${terraform_args[@]}" \

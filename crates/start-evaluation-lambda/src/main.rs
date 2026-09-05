@@ -15,7 +15,7 @@ mod proto;
 mod service;
 
 use proto::audio::moderation::v1::AudioModerationServiceServer;
-use service::ModerationIngressService;
+use service::StartEvaluationService;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Error> {
         env::var("ARTIFACTS_BUCKET_NAME").expect("ARTIFACTS_BUCKET_NAME must be set");
     let tenant_id = env::var("TENANT_ID").expect("TENANT_ID must be set");
 
-    let service = ModerationIngressService::new(
+    let service = StartEvaluationService::new(
         PipelineTaskStore::new(pool),
         SfnClient::new(&sdk_config),
         state_machine_arn,

@@ -5,7 +5,7 @@ members = [
     "crates/audio-processing-lambda",
     "crates/confirm-upload-lambda",
     "crates/submit-audio-lambda",
-    "crates/moderation-ingress-lambda",
+    "crates/start-evaluation-lambda",
 ]
 resolver = "3"
 

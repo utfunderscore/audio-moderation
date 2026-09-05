@@ -7,9 +7,9 @@ RUN rustup target add x86_64-unknown-linux-musl \
 
 WORKDIR /app
 COPY . .
-RUN cargo build --release --target x86_64-unknown-linux-musl --package moderation-ingress-lambda
+RUN cargo build --release --target x86_64-unknown-linux-musl --package start-evaluation-lambda
 
 FROM public.ecr.aws/lambda/provided:al2023
 
-COPY --from=build /app/target/x86_64-unknown-linux-musl/release/moderation-ingress-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
+COPY --from=build /app/target/x86_64-unknown-linux-musl/release/start-evaluation-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
 CMD ["bootstrap"]

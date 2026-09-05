@@ -1,5 +1,5 @@
 [package]
-name = "moderation-ingress-lambda"
+name = "start-evaluation-lambda"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

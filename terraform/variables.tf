@@ -47,13 +47,14 @@ variable "upload_retention_days" {
   default = 7
 }
 
-variable "artifact_retention_days" {
-  type    = number
-  default = 30
-}
-
 variable "audio_source_bucket_arns" {
   description = "Additional S3 bucket ARNs from which the audio-processing Lambda may read audio objects"
   type        = set(string)
   default     = []
+}
+
+variable "artifacts_retention_days" {
+  description = "Number of days to retain generated evaluation artifacts"
+  type        = number
+  default     = 30
 }

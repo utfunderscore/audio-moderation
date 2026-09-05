@@ -12,9 +12,9 @@ use crate::proto::audio::moderation::v1::{
 
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 
-/// Connect RPC ingress that owns evaluation persistence and Step Functions dispatch.
+/// Connect RPC service that owns evaluation persistence and Step Functions dispatch.
 #[derive(Clone)]
-pub(crate) struct ModerationIngressService {
+pub(crate) struct StartEvaluationService {
     store: PipelineTaskStore,
     sfn_client: SfnClient,
     state_machine_arn: String,
@@ -22,7 +22,7 @@ pub(crate) struct ModerationIngressService {
     tenant_id: String,
 }
 
-impl ModerationIngressService {
+impl StartEvaluationService {
     pub(crate) fn new(
         store: PipelineTaskStore,
         sfn_client: SfnClient,
@@ -40,7 +40,7 @@ impl ModerationIngressService {
     }
 }
 
-impl AudioModerationService for ModerationIngressService {
+impl AudioModerationService for StartEvaluationService {
     /// Creates or replays an evaluation and ensures that one invocation owns
     /// the attempt to dispatch it.
     async fn start_evaluation<'a>(
@@ -283,7 +283,7 @@ fn execution_input(
             .map(|(sequence, s3_uri)| PipelineAudioSource { s3_uri, sequence })
             .collect(),
         output_s3_uri: format!(
-            "s3://{artifacts_bucket}/evaluations/{task_id}/processed/stitched.wav"
+            "s3://{artifacts_bucket}/{task_id}.wav"
         ),
     })
 }
@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(input["files"][1]["sequence"], 1);
         assert_eq!(
             input["outputS3Uri"],
-            "s3://artifacts/evaluations/42/processed/stitched.wav"
+            "s3://artifacts/42.wav"
         );
     }
 
