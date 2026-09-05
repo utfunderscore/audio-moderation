@@ -26,6 +26,7 @@ pub enum AudioStitchError {
     Persist(#[from] tempfile::PersistError),
 }
 
+#[derive(Clone)]
 pub struct AudioStitcher {
     ffmpeg_path: PathBuf,
 }
