@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE pipeline_tasks\n                SET dispatch_started_at = NOW(),\n                    attempt_count = attempt_count + 1,\n                    updated_at = NOW()\n                WHERE task_id = $1\n                    AND execution_arn IS NULL\n                    AND attempt_count < 3\n                    AND (\n                        dispatch_started_at IS NULL\n                        OR dispatch_started_at < NOW() - INTERVAL '5 minutes'\n                    )\n                RETURNING attempt_count\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "attempt_count",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1beccffb0d16885b6f0d171d9afd8333dd6dabfc85586a53f7e3c5f8dea94a14"
+}

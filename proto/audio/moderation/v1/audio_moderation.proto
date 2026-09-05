@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package audio.moderation.v1;
+
+service AudioModerationService {
+  rpc StartEvaluation(StartEvaluationRequest) returns (StartEvaluationResponse);
+}
+
+message StartEvaluationRequest {
+  repeated AudioObjectReference audio_objects = 1;
+  string caller_reference = 2;
+}
+
+message AudioObjectReference {
+  string s3_uri = 1;
+}
+
+message StartEvaluationResponse {
+  string evaluation_id = 1;
+  PipelineTaskStatus status = 2;
+}
+
+enum PipelineTaskStatus {
+  PIPELINE_TASK_STATUS_UNSPECIFIED = 0;
+  PIPELINE_TASK_STATUS_PENDING = 1;
+  PIPELINE_TASK_STATUS_STARTED_AUDIO_PROCESSING = 2;
+  PIPELINE_TASK_STATUS_AUDIO_PROCESSING_FINISHED = 3;
+  PIPELINE_TASK_STATUS_STARTED_ASR = 4;
+  PIPELINE_TASK_STATUS_ASR_FINISHED = 5;
+  PIPELINE_TASK_STATUS_STARTED_MODERATION_PROCESSING = 6;
+  PIPELINE_TASK_STATUS_MODERATION_PROCESSING_FINISHED = 7;
+  PIPELINE_TASK_STATUS_SUCCEEDED = 8;
+  PIPELINE_TASK_STATUS_FAILED = 9;
+  PIPELINE_TASK_STATUS_TIMED_OUT = 10;
+  PIPELINE_TASK_STATUS_CANCELLED = 11;
+}

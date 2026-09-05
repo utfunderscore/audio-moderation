@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    INSERT INTO pipeline_task_inputs (task_id, sequence, audio_s3_uri)\n                    SELECT $1, (ordinality - 1)::INTEGER, audio_s3_uri\n                    FROM UNNEST($2::TEXT[]) WITH ORDINALITY AS input(audio_s3_uri, ordinality)\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "142cc2d80b844bba899ca0d74c549cd59e71604de9da080d8ae930e72f7311b7"
+}

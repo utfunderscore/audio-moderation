@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE pipeline_tasks\n                SET dispatch_started_at = NULL,\n                    error_code = 'DISPATCH_FAILED',\n                    error_message = $2,\n                    status = CASE\n                        WHEN attempt_count >= 3 THEN 'FAILED'::pipeline_task_status\n                        ELSE status\n                    END,\n                    completed_at = CASE\n                        WHEN attempt_count >= 3 THEN NOW()\n                        ELSE completed_at\n                    END,\n                    updated_at = NOW()\n                WHERE task_id = $1 AND execution_arn IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bc78ef4384d72c00e6166a46aaeee350af3c5d8a8a2bf08d349b4b1c0168dbd2"
+}

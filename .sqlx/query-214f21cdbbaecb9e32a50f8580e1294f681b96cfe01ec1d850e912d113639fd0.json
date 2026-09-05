@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT audio_s3_uri\n                FROM pipeline_task_inputs\n                WHERE task_id = $1\n                ORDER BY sequence\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "audio_s3_uri",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "214f21cdbbaecb9e32a50f8580e1294f681b96cfe01ec1d850e912d113639fd0"
+}

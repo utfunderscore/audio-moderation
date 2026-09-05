@@ -1,0 +1,91 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO pipeline_tasks (tenant_id, idempotency_key, caller_reference)\n                VALUES ($1, $2, $3)\n                ON CONFLICT (tenant_id, idempotency_key) DO UPDATE\n                    SET tenant_id = pipeline_tasks.tenant_id\n                RETURNING task_id, tenant_id, idempotency_key, caller_reference,\n                    status AS \"status: PipelineTaskStatus\", execution_arn, created_at, updated_at,\n                    (xmax = 0) AS \"created!\"\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "tenant_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "idempotency_key",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "caller_reference",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "status: PipelineTaskStatus",
+        "type_info": {
+          "Custom": {
+            "name": "pipeline_task_status",
+            "kind": {
+              "Enum": [
+                "PENDING",
+                "STARTED_AUDIO_PROCESSING",
+                "AUDIO_PROCESSING_FINISHED",
+                "STARTED_ASR",
+                "ASR_FINISHED",
+                "STARTED_MODERATION_PROCESSING",
+                "MODERATION_PROCESSING_FINISHED",
+                "SUCCEEDED",
+                "FAILED",
+                "TIMED_OUT",
+                "CANCELLED"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "execution_arn",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "created!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "59e6b603894670dbe541cf4b69c3a07c330a516a91ccd2ebe6e9597fd2032395"
+}
