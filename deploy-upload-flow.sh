@@ -16,9 +16,13 @@ RUN_INTEGRATION_TEST=true
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy.sh [options]
+Usage: ./deploy-upload-flow.sh [options]
 
-Build and push the Lambda images, then deploy the AWS infrastructure.
+Deploy the review submission and file-upload flow to AWS.
+
+This script deploys the submit-audio and confirm-upload Lambdas, plus their
+API Gateway and S3 infrastructure. It does not deploy or test audio
+processing, transcription, or moderation evaluation.
 
 Options:
   --region REGION                 AWS region (default: eu-west-2)
@@ -28,7 +32,7 @@ Options:
   --tenant-id ID                  Stable tenant ID (default: default)
   --image-tag TAG                 Image tag (default: git SHA plus UTC timestamp)
   --auto-approve                  Skip Terraform approval prompts
-  --skip-integration-test         Deploy without running the AWS integration test
+  --skip-integration-test         Deploy without running the upload-flow AWS integration test
   -h, --help                      Show this help
 
 The same values can be supplied through AWS_REGION, PROJECT_NAME, ENVIRONMENT,
@@ -118,10 +122,10 @@ if [[ -z "${ACCOUNT_ID}" || "${ACCOUNT_ID}" == "None" ]]; then
 fi
 
 ECR_REPOSITORY="${PROJECT_NAME}-${ENVIRONMENT}-submit-audio"
-UPLOAD_COMPLETE_ECR_REPOSITORY="${PROJECT_NAME}-${ENVIRONMENT}-upload-complete"
+CONFIRM_UPLOAD_ECR_REPOSITORY="${PROJECT_NAME}-${ENVIRONMENT}-confirm-upload"
 ECR_REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-UPLOAD_COMPLETE_IMAGE_URI="${ECR_REGISTRY}/${UPLOAD_COMPLETE_ECR_REPOSITORY}:${IMAGE_TAG}"
+CONFIRM_UPLOAD_IMAGE_URI="${ECR_REGISTRY}/${CONFIRM_UPLOAD_ECR_REPOSITORY}:${IMAGE_TAG}"
 
 terraform_args=(
     -var="aws_region=${AWS_REGION}"
@@ -130,7 +134,7 @@ terraform_args=(
     -var="database_parameter_name=${DATABASE_URL_PARAMETER}"
     -var="tenant_id=${TENANT_ID}"
     -var="submit_audio_image_tag=${IMAGE_TAG}"
-    -var="upload_complete_image_tag=${IMAGE_TAG}"
+    -var="confirm_upload_image_tag=${IMAGE_TAG}"
 )
 approve_args=()
 if [[ "${AUTO_APPROVE}" == true ]]; then
@@ -140,7 +144,7 @@ fi
 printf 'AWS account: %s\n' "${ACCOUNT_ID}"
 printf 'Environment: %s\n' "${ENVIRONMENT}"
 printf 'Image: %s\n' "${IMAGE_URI}"
-printf 'Image: %s\n' "${UPLOAD_COMPLETE_IMAGE_URI}"
+printf 'Image: %s\n' "${CONFIRM_UPLOAD_IMAGE_URI}"
 
 terraform -chdir="${TERRAFORM_DIR}" init -input=false
 
@@ -152,9 +156,9 @@ terraform -chdir="${TERRAFORM_DIR}" apply \
     -target=aws_ecr_repository.submit_audio \
     -target=aws_ecr_repository_policy.submit_audio_lambda_pull \
     -target=aws_ecr_lifecycle_policy.submit_audio \
-    -target=aws_ecr_repository.upload_complete \
-    -target=aws_ecr_repository_policy.upload_complete_lambda_pull \
-    -target=aws_ecr_lifecycle_policy.upload_complete
+    -target=aws_ecr_repository.confirm_upload \
+    -target=aws_ecr_repository_policy.confirm_upload_lambda_pull \
+    -target=aws_ecr_lifecycle_policy.confirm_upload
 
 existing_image_count="$(aws ecr batch-get-image \
     --region "${AWS_REGION}" \
@@ -167,13 +171,13 @@ if [[ "${existing_image_count}" != 0 ]]; then
     exit 1
 fi
 
-upload_complete_existing_image_count="$(aws ecr batch-get-image \
+confirm_upload_existing_image_count="$(aws ecr batch-get-image \
     --region "${AWS_REGION}" \
-    --repository-name "${UPLOAD_COMPLETE_ECR_REPOSITORY}" \
+    --repository-name "${CONFIRM_UPLOAD_ECR_REPOSITORY}" \
     --image-ids imageTag="${IMAGE_TAG}" \
     --query 'length(images)' \
     --output text)"
-if [[ "${upload_complete_existing_image_count}" != 0 ]]; then
+if [[ "${confirm_upload_existing_image_count}" != 0 ]]; then
     printf 'Image tag already exists; choose a new immutable tag: %s\n' "${IMAGE_TAG}" >&2
     exit 1
 fi
@@ -191,30 +195,30 @@ docker push "${IMAGE_URI}"
 docker build \
     --platform linux/amd64 \
     --provenance=false \
-    --file "${ROOT_DIR}/crates/upload-complete-lambda/Dockerfile" \
-    --tag "${UPLOAD_COMPLETE_IMAGE_URI}" \
+    --file "${ROOT_DIR}/crates/confirm-upload-lambda/Dockerfile" \
+    --tag "${CONFIRM_UPLOAD_IMAGE_URI}" \
     "${ROOT_DIR}"
-docker push "${UPLOAD_COMPLETE_IMAGE_URI}"
+docker push "${CONFIRM_UPLOAD_IMAGE_URI}"
 
 terraform -chdir="${TERRAFORM_DIR}" apply \
     "${terraform_args[@]}" \
     "${approve_args[@]}"
 
 FUNCTION_NAME="$(terraform -chdir="${TERRAFORM_DIR}" output -raw submit_audio_function_name)"
-UPLOAD_COMPLETE_FUNCTION_NAME="$(terraform -chdir="${TERRAFORM_DIR}" output -raw upload_complete_function_name)"
+CONFIRM_UPLOAD_FUNCTION_NAME="$(terraform -chdir="${TERRAFORM_DIR}" output -raw confirm_upload_function_name)"
 aws lambda wait function-updated-v2 \
     --region "${AWS_REGION}" \
     --function-name "${FUNCTION_NAME}"
 aws lambda wait function-updated-v2 \
     --region "${AWS_REGION}" \
-    --function-name "${UPLOAD_COMPLETE_FUNCTION_NAME}"
+    --function-name "${CONFIRM_UPLOAD_FUNCTION_NAME}"
 
-printf 'Deployment complete\n'
+    printf 'Upload-flow deployment complete\n'
 API_ENDPOINT="$(terraform -chdir="${TERRAFORM_DIR}" output -raw api_endpoint)"
 printf 'API endpoint: %s\n' "${API_ENDPOINT}"
 
 if [[ "${RUN_INTEGRATION_TEST}" == true ]]; then
-    printf 'Running deployed integration test\n'
+    printf 'Running deployed upload-flow integration test\n'
     AUDIO_MODERATION_API_ENDPOINT="${API_ENDPOINT}" \
         cargo test \
         --manifest-path "${ROOT_DIR}/Cargo.toml" \

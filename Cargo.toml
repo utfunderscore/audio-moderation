@@ -3,7 +3,7 @@ members = [
     "crates/common",
     "crates/database",
     "crates/audio-processing-lambda",
-    "crates/upload-complete-lambda",
+    "crates/confirm-upload-lambda",
     "crates/submit-audio-lambda",
     "crates/moderation-ingress-lambda",
 ]

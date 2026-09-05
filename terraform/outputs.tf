@@ -10,12 +10,12 @@ output "submit_audio_function_name" {
   value = aws_lambda_function.submit_audio.function_name
 }
 
-output "upload_complete_ecr_repository_url" {
-  value = aws_ecr_repository.upload_complete.repository_url
+output "confirm_upload_ecr_repository_url" {
+  value = aws_ecr_repository.confirm_upload.repository_url
 }
 
-output "upload_complete_function_name" {
-  value = aws_lambda_function.upload_complete.function_name
+output "confirm_upload_function_name" {
+  value = aws_lambda_function.confirm_upload.function_name
 }
 
 output "uploads_bucket_name" {

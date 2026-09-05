@@ -7,9 +7,9 @@ RUN rustup target add x86_64-unknown-linux-musl \
 
 WORKDIR /app
 COPY . .
-RUN cargo build --release --target x86_64-unknown-linux-musl --package upload-complete-lambda
+RUN cargo build --release --target x86_64-unknown-linux-musl --package confirm-upload-lambda
 
 FROM public.ecr.aws/lambda/provided:al2023
 
-COPY --from=build /app/target/x86_64-unknown-linux-musl/release/upload-complete-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
+COPY --from=build /app/target/x86_64-unknown-linux-musl/release/confirm-upload-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
 CMD ["bootstrap"]

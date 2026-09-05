@@ -1035,6 +1035,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "confirm-upload-lambda"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
+ "aws-sdk-ssm",
+ "aws_lambda_events",
+ "common",
+ "database",
+ "lambda_runtime",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "urlencoding",
+]
+
+[[package]]
 name = "connectrpc"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4533,26 +4553,6 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
-
-[[package]]
-name = "upload-complete-lambda"
-version = "0.1.0"
-dependencies = [
- "aws-config",
- "aws-sdk-s3",
- "aws-sdk-ssm",
- "aws_lambda_events",
- "common",
- "database",
- "lambda_runtime",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "urlencoding",
-]
 
 [[package]]
 name = "url"

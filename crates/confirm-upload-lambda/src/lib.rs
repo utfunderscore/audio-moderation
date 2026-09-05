@@ -7,14 +7,14 @@ use lambda_runtime::{Error, LambdaEvent};
 use tracing::info;
 
 #[derive(Clone)]
-pub struct UploadCompleteHandler {
+pub struct ConfirmUploadHandler {
     store: ReviewJobStore,
     s3_client: S3Client,
     uploads_bucket: String,
     tenant_id: String,
 }
 
-impl UploadCompleteHandler {
+impl ConfirmUploadHandler {
     pub fn new(
         store: ReviewJobStore,
         s3_client: S3Client,
@@ -31,7 +31,7 @@ impl UploadCompleteHandler {
 
     pub async fn handle(&self, event: LambdaEvent<S3Event>) -> Result<(), Error> {
         let request_id = event.context.request_id;
-        let objects = uploaded_objects(&event.payload, &self.uploads_bucket)?;
+        let objects = validate_correct_bucket(&event.payload, &self.uploads_bucket)?;
 
         for object in objects {
             self.s3_client
@@ -46,7 +46,7 @@ impl UploadCompleteHandler {
                 .mark_upload_complete(&object.key, &self.tenant_id)
                 .await?;
             let Some(job) = job else {
-                return Err(UploadCompleteError::UnknownObject(object.key).into());
+                return Err(ConfirmUploadError::UnknownObject(object.key).into());
             };
 
             info!(
@@ -72,7 +72,7 @@ struct UploadedObject {
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
-enum UploadCompleteError {
+enum ConfirmUploadError {
     #[error("S3 event did not contain any records")]
     EmptyEvent,
     #[error("S3 event record did not contain a bucket name")]
@@ -87,12 +87,12 @@ enum UploadCompleteError {
     UnknownObject(String),
 }
 
-fn uploaded_objects(
+fn validate_correct_bucket(
     event: &S3Event,
     expected_bucket: &str,
-) -> Result<Vec<UploadedObject>, UploadCompleteError> {
+) -> Result<Vec<UploadedObject>, ConfirmUploadError> {
     if event.records.is_empty() {
-        return Err(UploadCompleteError::EmptyEvent);
+        return Err(ConfirmUploadError::EmptyEvent);
     }
 
     event
@@ -104,9 +104,9 @@ fn uploaded_objects(
                 .bucket
                 .name
                 .clone()
-                .ok_or(UploadCompleteError::MissingBucket)?;
+                .ok_or(ConfirmUploadError::MissingBucket)?;
             if bucket != expected_bucket {
-                return Err(UploadCompleteError::UnexpectedBucket(bucket));
+                return Err(ConfirmUploadError::UnexpectedBucket(bucket));
             }
 
             let encoded_key = record
@@ -114,7 +114,7 @@ fn uploaded_objects(
                 .object
                 .key
                 .as_deref()
-                .ok_or(UploadCompleteError::MissingKey)?;
+                .ok_or(ConfirmUploadError::MissingKey)?;
             let key = decode_s3_key(encoded_key)?;
 
             Ok(UploadedObject { bucket, key })
@@ -122,7 +122,7 @@ fn uploaded_objects(
         .collect()
 }
 
-fn decode_s3_key(encoded_key: &str) -> Result<String, UploadCompleteError> {
+fn decode_s3_key(encoded_key: &str) -> Result<String, ConfirmUploadError> {
     let encoded_key = if encoded_key.contains('+') {
         Cow::Owned(encoded_key.replace('+', " "))
     } else {
@@ -131,7 +131,7 @@ fn decode_s3_key(encoded_key: &str) -> Result<String, UploadCompleteError> {
 
     urlencoding::decode(&encoded_key)
         .map(Cow::into_owned)
-        .map_err(|_| UploadCompleteError::InvalidKeyEncoding)
+        .map_err(|_| ConfirmUploadError::InvalidKeyEncoding)
 }
 
 #[cfg(test)]
@@ -154,7 +154,7 @@ mod tests {
                 },
                 "s3": {
                     "s3SchemaVersion": "1.0",
-                    "configurationId": "upload-complete",
+                    "configurationId": "confirm-upload",
                     "bucket": {
                         "name": bucket,
                         "ownerIdentity": { "principalId": "test" },
@@ -177,7 +177,7 @@ mod tests {
         let event = s3_event("uploads", "reviews%2Ftask+one%2Fsource");
 
         assert_eq!(
-            uploaded_objects(&event, "uploads").unwrap(),
+            validate_correct_bucket(&event, "uploads").unwrap(),
             vec![UploadedObject {
                 bucket: "uploads".to_owned(),
                 key: "reviews/task one/source".to_owned(),
@@ -187,12 +187,12 @@ mod tests {
 
     #[test]
     fn rejects_an_unexpected_bucket() {
-        let error =
-            uploaded_objects(&s3_event("other", "reviews/task/source"), "uploads").unwrap_err();
+        let error = validate_correct_bucket(&s3_event("other", "reviews/task/source"), "uploads")
+            .unwrap_err();
 
         assert_eq!(
             error,
-            UploadCompleteError::UnexpectedBucket("other".to_owned())
+            ConfirmUploadError::UnexpectedBucket("other".to_owned())
         );
     }
 
@@ -201,8 +201,8 @@ mod tests {
         let event: S3Event = serde_json::from_value(serde_json::json!({ "Records": [] })).unwrap();
 
         assert_eq!(
-            uploaded_objects(&event, "uploads").unwrap_err(),
-            UploadCompleteError::EmptyEvent
+            validate_correct_bucket(&event, "uploads").unwrap_err(),
+            ConfirmUploadError::EmptyEvent
         );
     }
 }

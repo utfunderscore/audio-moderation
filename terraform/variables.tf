@@ -19,7 +19,7 @@ variable "submit_audio_image_tag" {
   default     = "latest"
 }
 
-variable "upload_complete_image_tag" {
+variable "confirm_upload_image_tag" {
   description = "Immutable ECR image tag pushed before applying the Lambda configuration"
   type        = string
   default     = "latest"
