@@ -2,6 +2,11 @@ data "aws_caller_identity" "current" {}
 
 locals {
   name_prefix = "${var.project_name}-${var.environment}"
+  resource_tags = {
+    Project     = var.project_name
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
 }
 
 resource "random_id" "upload_bucket_suffix" {

@@ -25,6 +25,12 @@ variable "confirm_upload_image_tag" {
   default     = "latest"
 }
 
+variable "audio_processing_image_tag" {
+  description = "Immutable ECR image tag pushed before applying the audio-processing Lambda configuration"
+  type        = string
+  default     = "latest"
+}
+
 variable "database_parameter_name" {
   type    = string
   default = "/audio-moderation/dev/database-url"
@@ -39,4 +45,15 @@ variable "tenant_id" {
 variable "upload_retention_days" {
   type    = number
   default = 7
+}
+
+variable "artifact_retention_days" {
+  type    = number
+  default = 30
+}
+
+variable "audio_source_bucket_arns" {
+  description = "Additional S3 bucket ARNs from which the audio-processing Lambda may read audio objects"
+  type        = set(string)
+  default     = []
 }
