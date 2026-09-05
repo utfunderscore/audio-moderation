@@ -9,6 +9,7 @@ aws-config = "1.8.11"
 aws-sdk-s3 = "1.115.0"
 aws-sdk-ssm = "1.121.0"
 aws_lambda_events = { version = "1.2.0", features = ["s3"] }
+common = { path = "../common" }
 database = { path = "../database" }
 lambda_runtime = "1.4.0"
 sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }

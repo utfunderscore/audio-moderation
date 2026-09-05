@@ -1,9 +1,9 @@
 use std::env;
-use std::io::Error as IoError;
 
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_ssm::Client as SsmClient;
+use common::load_database_url;
 use connectrpc::ConnectRpcService;
 use database::ReviewJobStore;
 use http_body_util::Full;
@@ -16,23 +16,6 @@ mod service;
 
 use proto::audio::review::v1::AudioReviewServiceServer;
 use service::SubmitReviewService;
-
-async fn load_database_url(ssm_client: &SsmClient) -> Result<String, Error> {
-    let database_parameter_name =
-        env::var("DATABASE_URL_PARAMETER").expect("DATABASE_URL_PARAMETER must be set");
-    let database_parameter = ssm_client
-        .get_parameter()
-        .name(database_parameter_name)
-        .with_decryption(true)
-        .send()
-        .await?;
-
-    database_parameter
-        .parameter()
-        .and_then(|parameter| parameter.value())
-        .map(str::to_owned)
-        .ok_or_else(|| IoError::other("database parameter has no value").into())
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {

@@ -3,3 +3,6 @@ name = "common"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+aws-sdk-ssm = "1.121.0"
