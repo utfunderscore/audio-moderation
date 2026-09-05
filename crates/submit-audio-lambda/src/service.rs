@@ -5,7 +5,6 @@ use aws_sdk_s3::presigning::PresigningConfig;
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest};
 use database::{NewReviewJob, ReviewJobStatus as DatabaseReviewJobStatus, ReviewJobStore};
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 use crate::proto::audio::review::v1::{
     AudioReviewService, ReviewJobStatus, SubmitReviewRequest, SubmitReviewResponse,
@@ -64,20 +63,15 @@ impl AudioReviewService for SubmitReviewService {
             error
         })?;
 
-        let job_id = Uuid::new_v4();
-        let input_file_path = format!("reviews/{job_id}/source");
         let job = self
             .store
             .create_or_get(NewReviewJob {
-                job_id,
                 tenant_id: &self.tenant_id,
                 idempotency_key: Some(&idempotency_key),
-                input_file_path: &input_file_path,
             })
             .await
             .map_err(|database_error| {
                 error!(
-                    jobId = %job_id,
                     tenantId = self.tenant_id,
                     outcome = "failed",
                     error = ?database_error,
@@ -85,7 +79,7 @@ impl AudioReviewService for SubmitReviewService {
                 );
                 ConnectError::internal("failed to create review job")
             })?;
-        let replayed = job.job_id != job_id;
+        let replayed = !job.created;
         if job.status != DatabaseReviewJobStatus::AwaitingUpload {
             info!(
                 jobId = %job.job_id,
@@ -182,10 +176,7 @@ impl AudioReviewService for SubmitReviewService {
     }
 }
 
-fn response_for_existing_job(
-    job_id: Uuid,
-    status: DatabaseReviewJobStatus,
-) -> SubmitReviewResponse {
+fn response_for_existing_job(job_id: i32, status: DatabaseReviewJobStatus) -> SubmitReviewResponse {
     SubmitReviewResponse {
         task_id: job_id.to_string(),
         status: ReviewJobStatus::from(status).into(),
@@ -324,7 +315,7 @@ mod tests {
 
     #[test]
     fn replay_after_upload_returns_existing_job_without_upload_instructions() {
-        let job_id = Uuid::parse_str("b9de9954-8f85-49e7-82ad-fbe8f2b017a4").unwrap();
+        let job_id = 42;
 
         let response = response_for_existing_job(job_id, DatabaseReviewJobStatus::Completed);
 

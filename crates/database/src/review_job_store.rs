@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use uuid::Uuid;
 
 /// Errors returned while accessing persisted review jobs.
 #[derive(Debug, thiserror::Error)]
@@ -21,22 +20,21 @@ pub enum DatabaseError {
 /// The persisted state for a review request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewJob {
-    pub job_id: Uuid,
+    pub job_id: i32,
     pub tenant_id: String,
     pub idempotency_key: Option<String>,
     pub status: ReviewJobStatus,
     pub input_file_path: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub created: bool,
 }
 
 /// Values required to create a review job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewReviewJob<'a> {
-    pub job_id: Uuid,
     pub tenant_id: &'a str,
     pub idempotency_key: Option<&'a str>,
-    pub input_file_path: &'a str,
 }
 
 /// Workflow states persisted in `review_jobs.status`.
@@ -79,17 +77,16 @@ impl ReviewJobStore {
         sqlx::query_as!(
             ReviewJob,
             r#"
-                INSERT INTO review_jobs (job_id, tenant_id, idempotency_key, input_file_path)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO review_jobs (tenant_id, idempotency_key)
+                VALUES ($1, $2)
                 ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
                     SET tenant_id = review_jobs.tenant_id
                 RETURNING job_id, tenant_id, idempotency_key,
-                    status AS "status: ReviewJobStatus", input_file_path, created_at, updated_at
+                    status AS "status: ReviewJobStatus", input_file_path AS "input_file_path!", created_at, updated_at,
+                    (xmax = 0) AS "created!"
             "#,
-            job.job_id,
             job.tenant_id,
             job.idempotency_key,
-            job.input_file_path,
         )
         .fetch_one(&self.pool)
         .await
@@ -99,14 +96,15 @@ impl ReviewJobStore {
     /// Gets a job only when it belongs to `tenant_id`.
     pub async fn get(
         &self,
-        job_id: Uuid,
+        job_id: i32,
         tenant_id: &str,
     ) -> Result<Option<ReviewJob>, DatabaseError> {
         sqlx::query_as!(
             ReviewJob,
             r#"
                 SELECT job_id, tenant_id, idempotency_key,
-                    status AS "status: ReviewJobStatus", input_file_path, created_at, updated_at
+                    status AS "status: ReviewJobStatus", input_file_path AS "input_file_path!", created_at, updated_at,
+                    TRUE AS "created!"
                 FROM review_jobs
                 WHERE job_id = $1 AND tenant_id = $2
             "#,
@@ -121,7 +119,7 @@ impl ReviewJobStore {
     /// Updates a job's workflow status and returns the updated row.
     pub async fn update_status(
         &self,
-        job_id: Uuid,
+        job_id: i32,
         tenant_id: &str,
         status: ReviewJobStatus,
     ) -> Result<Option<ReviewJob>, DatabaseError> {
@@ -132,7 +130,8 @@ impl ReviewJobStore {
                 SET status = $3::text::review_job_status, updated_at = NOW()
                 WHERE job_id = $1 AND tenant_id = $2
                 RETURNING job_id, tenant_id, idempotency_key,
-                    status AS "status: ReviewJobStatus", input_file_path, created_at, updated_at
+                    status AS "status: ReviewJobStatus", input_file_path AS "input_file_path!", created_at, updated_at,
+                    TRUE AS "created!"
             "#,
             job_id,
             tenant_id,
@@ -167,7 +166,8 @@ impl ReviewJobStore {
                     END
                 WHERE input_file_path = $1 AND tenant_id = $2
                 RETURNING job_id, tenant_id, idempotency_key,
-                    status AS "status: ReviewJobStatus", input_file_path, created_at, updated_at
+                    status AS "status: ReviewJobStatus", input_file_path AS "input_file_path!", created_at, updated_at,
+                    TRUE AS "created!"
             "#,
             input_file_path,
             tenant_id,

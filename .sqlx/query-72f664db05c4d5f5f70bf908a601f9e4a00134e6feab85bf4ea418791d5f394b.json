@@ -1,12 +1,12 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                UPDATE review_jobs\n                SET status = $3::text::review_job_status, updated_at = NOW()\n                WHERE job_id = $1 AND tenant_id = $2\n                RETURNING job_id, tenant_id, idempotency_key,\n                    status AS \"status: ReviewJobStatus\", input_file_path, created_at, updated_at\n            ",
+  "query": "\n                SELECT job_id, tenant_id, idempotency_key,\n                    status AS \"status: ReviewJobStatus\", input_file_path AS \"input_file_path!\", created_at, updated_at,\n                    TRUE AS \"created!\"\n                FROM review_jobs\n                WHERE job_id = $1 AND tenant_id = $2\n            ",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
         "name": "job_id",
-        "type_info": "Uuid"
+        "type_info": "Int4"
       },
       {
         "ordinal": 1,
@@ -38,7 +38,7 @@
       },
       {
         "ordinal": 4,
-        "name": "input_file_path",
+        "name": "input_file_path!",
         "type_info": "Text"
       },
       {
@@ -50,12 +50,16 @@
         "ordinal": 6,
         "name": "updated_at",
         "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "created!",
+        "type_info": "Bool"
       }
     ],
     "parameters": {
       "Left": [
-        "Uuid",
-        "Text",
+        "Int4",
         "Text"
       ]
     },
@@ -66,8 +70,9 @@
       false,
       false,
       false,
-      false
+      false,
+      null
     ]
   },
-  "hash": "36680d2f6485876520e163588af952f7ab8aa55eb5325652cd7450fc7365dc76"
+  "hash": "72f664db05c4d5f5f70bf908a601f9e4a00134e6feab85bf4ea418791d5f394b"
 }
