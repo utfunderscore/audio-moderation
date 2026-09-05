@@ -1270,6 +1270,7 @@ dependencies = [
  "sqlx",
  "testcontainers",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

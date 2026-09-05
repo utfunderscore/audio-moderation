@@ -12,3 +12,4 @@ thiserror = "2.0.18"
 
 [dev-dependencies]
 testcontainers = "0.28.0"
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }

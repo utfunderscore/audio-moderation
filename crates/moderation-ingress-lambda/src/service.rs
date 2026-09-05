@@ -12,6 +12,7 @@ use crate::proto::audio::moderation::v1::{
 
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 
+/// Connect RPC ingress that owns evaluation persistence and Step Functions dispatch.
 #[derive(Clone)]
 pub(crate) struct ModerationIngressService {
     store: PipelineTaskStore,
@@ -40,6 +41,8 @@ impl ModerationIngressService {
 }
 
 impl AudioModerationService for ModerationIngressService {
+    /// Creates or replays an evaluation and ensures that one invocation owns
+    /// the attempt to dispatch it.
     async fn start_evaluation<'a>(
         &'a self,
         ctx: RequestContext,
@@ -47,11 +50,16 @@ impl AudioModerationService for ModerationIngressService {
     ) -> connectrpc::ServiceResult<
         impl connectrpc::Encodable<StartEvaluationResponse> + Send + use<'a>,
     > {
+        // Step 1: Validate caller identity for idempotency and normalize the
+        // ordered object references before writing anything to the database.
         let idempotency_key = required_header(&ctx, IDEMPOTENCY_KEY_HEADER)?;
         let audio_s3_uris =
             validate_audio_objects(request.audio_objects.iter().map(|object| object.s3_uri))?;
         let caller_reference = optional_string(request.caller_reference);
 
+        // Step 2: Create the pipeline task and its inputs in one transaction.
+        // If this tenant has already used the idempotency key, the store returns
+        // that existing task and its originally persisted inputs instead.
         let task = self
             .store
             .create_or_get(NewPipelineTask {
@@ -70,6 +78,9 @@ impl AudioModerationService for ModerationIngressService {
                 ConnectError::internal("failed to create evaluation")
             })?;
 
+        // Step 3: Confirm that an idempotent replay is the same logical request.
+        // The key identifies the complete payload, so changed inputs or caller
+        // context are rejected rather than silently returning unrelated work.
         if task.audio_s3_uris != audio_s3_uris
             || task.caller_reference.as_deref() != caller_reference
         {
@@ -83,6 +94,10 @@ impl AudioModerationService for ModerationIngressService {
             ));
         }
 
+        // Step 4: Try to claim responsibility for dispatching an undispatched
+        // task. The database lease allows only one concurrent invocation to
+        // receive an attempt number. A task with an execution ARN, an active
+        // lease, or no retries remaining returns None and is not started here.
         let dispatch_attempt = if task.execution_arn.is_none() {
             self.store
                 .claim_dispatch(task.task_id)
@@ -100,6 +115,8 @@ impl AudioModerationService for ModerationIngressService {
         };
 
         if let Some(dispatch_attempt) = dispatch_attempt {
+            // Step 5: Build the exact JSON contract consumed by the first state
+            // machine task, preserving the caller's audio-object order.
             let input = execution_input(task.task_id, &task.audio_s3_uris, &self.artifacts_bucket)
                 .map_err(|serialization_error| {
                     error!(
@@ -109,6 +126,9 @@ impl AudioModerationService for ModerationIngressService {
                     );
                     ConnectError::internal("failed to dispatch evaluation")
                 })?;
+            // Step 6: Start the Standard workflow. On retries, first check for
+            // an execution that AWS may have started even though an earlier
+            // StartExecution response was lost or timed out.
             let dispatch_result = start_or_recover_execution(
                 &self.sfn_client,
                 &self.state_machine_arn,
@@ -120,6 +140,9 @@ impl AudioModerationService for ModerationIngressService {
             let execution_arn = match dispatch_result {
                 Ok(execution_arn) => execution_arn,
                 Err(dispatch_error) => {
+                    // Step 7a: A confirmed dispatch failure releases the lease
+                    // and persists the error. The same idempotency key can retry
+                    // until the store marks the third failure as terminal.
                     error!(
                         evaluationId = task.task_id,
                         error = ?dispatch_error,
@@ -140,6 +163,8 @@ impl AudioModerationService for ModerationIngressService {
                 }
             };
 
+            // Step 7b: A successful or recovered dispatch stores the execution
+            // ARN and releases the lease. Future replays will skip dispatch.
             self.store
                 .record_execution(task.task_id, &execution_arn)
                 .await
@@ -154,6 +179,9 @@ impl AudioModerationService for ModerationIngressService {
                 })?;
         }
 
+        // Step 8: Return the durable evaluation identity. This also covers an
+        // idempotent replay and a concurrent request whose dispatch is already
+        // being handled by the invocation that acquired the lease.
         info!(
             evaluationId = task.task_id,
             tenantId = self.tenant_id,
@@ -180,6 +208,9 @@ async fn start_or_recover_execution(
     let execution_name = format!("evaluation-{task_id}");
     let expected_execution_arn = execution_arn(state_machine_arn, &execution_name)?;
 
+    // A previous StartExecution request may have reached AWS even when the
+    // caller observed a timeout. Standard workflows have deterministic ARNs,
+    // so retries first recover an execution that already exists.
     if dispatch_attempt > 1 {
         match sfn_client
             .describe_execution()
@@ -209,6 +240,8 @@ async fn start_or_recover_execution(
 
 fn execution_arn(state_machine_arn: &str, execution_name: &str) -> Result<String, String> {
     let parts: Vec<_> = state_machine_arn.split(':').collect();
+    // Qualified state-machine ARNs include extra segments and cannot be mapped
+    // to an execution ARN with this deterministic transformation.
     if parts.len() != 7 || parts[2] != "states" || parts[5] != "stateMachine" {
         return Err("STATE_MACHINE_ARN must be an unqualified Step Functions ARN".to_owned());
     }
@@ -221,6 +254,7 @@ fn execution_arn(state_machine_arn: &str, execution_name: &str) -> Result<String
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+/// Input contract consumed by the first task in the moderation state machine.
 struct PipelineExecutionInput<'a> {
     job_id: String,
     files: Vec<PipelineAudioSource<'a>>,
@@ -239,6 +273,8 @@ fn execution_input(
     audio_s3_uris: &[String],
     artifacts_bucket: &str,
 ) -> Result<String, serde_json::Error> {
+    // Sequence is derived from repeated-field order so callers do not need to
+    // coordinate a second ordering mechanism.
     serde_json::to_string(&PipelineExecutionInput {
         job_id: task_id.to_string(),
         files: audio_s3_uris
@@ -262,6 +298,8 @@ fn validate_audio_objects<'a>(
         ));
     }
 
+    // The ingress accepts references only; callers must upload objects before
+    // creating an evaluation.
     audio_s3_uris
         .into_iter()
         .map(|audio_s3_uri| {
@@ -298,6 +336,8 @@ fn required_header(ctx: &RequestContext, name: &'static str) -> Result<String, C
 }
 
 fn optional_string(value: &str) -> Option<&str> {
+    // Proto3 strings have no presence by default, so an empty value represents
+    // an omitted caller reference.
     let value = value.trim();
     (!value.is_empty()).then_some(value)
 }
