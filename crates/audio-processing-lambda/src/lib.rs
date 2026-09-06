@@ -121,11 +121,6 @@ impl<S> AudioProcessingHandler<S> {
             stitcher: AudioStitcher::default(),
         }
     }
-
-    #[cfg(test)]
-    fn with_stitcher(s3: S, stitcher: AudioStitcher) -> Self {
-        Self { s3, stitcher }
-    }
 }
 
 impl<S: S3Storage> AudioProcessingHandler<S> {
@@ -409,23 +404,19 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
-    async fn downloads_stitches_and_uploads_before_returning_output() {
+    async fn uploads_sequence_ordered_normalized_wav_and_returns_output() {
         let s3 = MockS3::with_objects(HashMap::from([
             (
                 "s3://uploads/reviews/source-2.wav".to_owned(),
-                b"second".to_vec(),
+                test_wav(1_000, 480, 48_000, 2),
             ),
             (
                 "s3://uploads/reviews/source-1.wav".to_owned(),
-                b"first".to_vec(),
+                test_wav(-1_000, 80, 8_000, 1),
             ),
         ]));
-        let directory = tempfile::tempdir().unwrap();
-        let fake_ffmpeg = directory.path().join("ffmpeg");
-        write_fake_ffmpeg(&fake_ffmpeg);
-        let handler = AudioProcessingHandler::with_stitcher(s3, AudioStitcher::new(fake_ffmpeg));
+        let handler = AudioProcessingHandler::new(s3);
 
         let output = handler
             .handle(input(vec![
@@ -437,14 +428,15 @@ mod tests {
 
         assert_eq!(output.job_id, "job-123");
         assert_eq!(output.stitched_s3_uri, "s3://uploads/reviews/stitched.wav");
-        assert_eq!(
-            handler.s3.uploads(),
-            vec![UploadedObject {
-                location: "s3://uploads/reviews/stitched.wav".to_owned(),
-                content_type: "audio/wav".to_owned(),
-                body: b"first".to_vec(),
-            }]
-        );
+        let uploads = handler.s3.uploads();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].location, "s3://uploads/reviews/stitched.wav");
+        assert_eq!(uploads[0].content_type, "audio/wav");
+        assert_eq!(wav_format(&uploads[0].body), (1, 1, 16_000, 16));
+        let samples = wav_samples(&uploads[0].body);
+        assert_eq!(samples.len(), 320);
+        assert!(samples[..160].iter().all(|sample| *sample < 0));
+        assert!(samples[160..].iter().all(|sample| *sample > 0));
     }
 
     #[tokio::test]
@@ -462,6 +454,23 @@ mod tests {
                 .to_string()
                 .contains("failed to download S3 object s3://uploads/reviews/missing.wav")
         );
+        assert!(handler.s3.uploads().is_empty());
+    }
+
+    #[tokio::test]
+    async fn returns_a_stitch_failure_without_uploading() {
+        let s3 = MockS3::with_objects(HashMap::from([(
+            "s3://uploads/reviews/invalid.wav".to_owned(),
+            b"not audio".to_vec(),
+        )]));
+        let handler = AudioProcessingHandler::new(s3);
+
+        let error = handler
+            .handle(input(vec![("s3://uploads/reviews/invalid.wav", 1)]))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("failed to stitch source audio"));
         assert!(handler.s3.uploads().is_empty());
     }
 
@@ -536,15 +545,57 @@ mod tests {
         body: Vec<u8>,
     }
 
-    #[cfg(unix)]
-    fn write_fake_ffmpeg(path: &Path) {
-        use std::os::unix::fs::PermissionsExt;
+    fn test_wav(sample: i16, frame_count: u32, sample_rate: u32, channels: u16) -> Vec<u8> {
+        let block_align = channels * 2;
+        let data_size = frame_count * u32::from(block_align);
+        let mut wav = Vec::with_capacity(44 + data_size as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes());
+        wav.extend_from_slice(&channels.to_le_bytes());
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * u32::from(block_align)).to_le_bytes());
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_size.to_le_bytes());
+        for _ in 0..frame_count * u32::from(channels) {
+            wav.extend_from_slice(&sample.to_le_bytes());
+        }
+        wav
+    }
 
-        fs::write(
-            path,
-            "#!/bin/sh\ninput=''\nwhile [ \"$#\" -gt 0 ]; do\n  case \"$1\" in\n    -i) if [ -z \"$input\" ]; then input=\"$2\"; fi; shift 2 ;;\n    *) output=\"$1\"; shift ;;\n  esac\ndone\ncp \"$input\" \"$output\"\n",
+    fn wav_format(wav: &[u8]) -> (u16, u16, u32, u16) {
+        let format = wav_chunk(wav, b"fmt ");
+        (
+            u16::from_le_bytes(format[0..2].try_into().unwrap()),
+            u16::from_le_bytes(format[2..4].try_into().unwrap()),
+            u32::from_le_bytes(format[4..8].try_into().unwrap()),
+            u16::from_le_bytes(format[14..16].try_into().unwrap()),
         )
-        .unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn wav_samples(wav: &[u8]) -> Vec<i16> {
+        wav_chunk(wav, b"data")
+            .chunks_exact(2)
+            .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+            .collect()
+    }
+
+    fn wav_chunk<'a>(wav: &'a [u8], expected_id: &[u8; 4]) -> &'a [u8] {
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        let mut chunk_offset = 12;
+        loop {
+            let chunk_size =
+                u32::from_le_bytes(wav[chunk_offset + 4..chunk_offset + 8].try_into().unwrap())
+                    as usize;
+            if &wav[chunk_offset..chunk_offset + 4] == expected_id {
+                return &wav[chunk_offset + 8..chunk_offset + 8 + chunk_size];
+            }
+            chunk_offset += 8 + chunk_size + (chunk_size % 2);
+        }
     }
 }
