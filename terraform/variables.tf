@@ -30,6 +30,11 @@ variable "audio_processing_image_tag" {
   type        = string
   default     = "latest"
 }
+variable "task_callback_image_tag" {
+  description = "Immutable ECR image tag pushed before applying the task-callback Lambda configuration"
+  type        = string
+  default     = "latest"
+}
 
 variable "database_parameter_name" {
   type    = string

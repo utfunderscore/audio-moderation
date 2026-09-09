@@ -33,6 +33,13 @@ output "audio_processing_ecr_repository_url" {
 output "audio_processing_function_name" {
   value = aws_lambda_function.audio_processing.function_name
 }
+output "task_callback_ecr_repository_url" {
+  value = aws_ecr_repository.task_callback.repository_url
+}
+
+output "task_callback_function_name" {
+  value = aws_lambda_function.task_callback.function_name
+}
 
 output "audio_processing_state_machine_arn" {
   value = aws_sfn_state_machine.audio_processing.arn
