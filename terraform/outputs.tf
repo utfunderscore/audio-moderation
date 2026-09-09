@@ -26,6 +26,11 @@ output "artifacts_bucket_name" {
   value = aws_s3_bucket.artifacts.bucket
 }
 
+output "modal_stitched_audio_reader_role_arn" {
+  description = "Set as oidc_auth_role_arn on Modal's read-only CloudBucketMount"
+  value       = aws_iam_role.modal_stitched_audio_reader.arn
+}
+
 output "audio_processing_ecr_repository_url" {
   value = aws_ecr_repository.audio_processing.repository_url
 }
@@ -33,6 +38,15 @@ output "audio_processing_ecr_repository_url" {
 output "audio_processing_function_name" {
   value = aws_lambda_function.audio_processing.function_name
 }
+
+output "start_evaluation_ecr_repository_url" {
+  value = aws_ecr_repository.start_evaluation.repository_url
+}
+
+output "start_evaluation_function_name" {
+  value = aws_lambda_function.start_evaluation.function_name
+}
+
 output "task_callback_ecr_repository_url" {
   value = aws_ecr_repository.task_callback.repository_url
 }

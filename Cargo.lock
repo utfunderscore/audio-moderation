@@ -4024,6 +4024,7 @@ dependencies = [
  "database",
  "http-body-util",
  "lambda_http",
+ "reqwest",
  "serde",
  "serde_json",
  "sqlx",
@@ -4032,6 +4033,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

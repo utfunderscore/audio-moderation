@@ -282,9 +282,7 @@ fn execution_input(
             .enumerate()
             .map(|(sequence, s3_uri)| PipelineAudioSource { s3_uri, sequence })
             .collect(),
-        output_s3_uri: format!(
-            "s3://{artifacts_bucket}/{task_id}.wav"
-        ),
+        output_s3_uri: format!("s3://{artifacts_bucket}/evaluations/{task_id}.wav"),
     })
 }
 
@@ -386,10 +384,7 @@ mod tests {
         assert_eq!(input["files"][0]["sequence"], 0);
         assert_eq!(input["files"][0]["s3Uri"], "s3://uploads/second.wav");
         assert_eq!(input["files"][1]["sequence"], 1);
-        assert_eq!(
-            input["outputS3Uri"],
-            "s3://artifacts/42.wav"
-        );
+        assert_eq!(input["outputS3Uri"], "s3://artifacts/evaluations/42.wav");
     }
 
     #[test]
