@@ -4,7 +4,7 @@ data "aws_iam_openid_connect_provider" "modal" {
 
 resource "aws_iam_role" "modal_stitched_audio_reader" {
   name        = "${local.name_prefix}-modal-stitched-audio-reader"
-  description = "Allows the configured Modal workspace to read stitched audio artifacts"
+  description = "Allows the configured Modal workspace to read stitched audio artifacts and invoke task callbacks"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -55,6 +55,12 @@ resource "aws_iam_role_policy" "modal_stitched_audio_reader" {
         Effect   = "Allow"
         Action   = "s3:GetObject"
         Resource = "${aws_s3_bucket.artifacts.arn}/evaluations/*"
+      },
+      {
+        Sid      = "InvokeTaskCallback"
+        Effect   = "Allow"
+        Action   = "lambda:InvokeFunction"
+        Resource = aws_lambda_function.task_callback.arn
       },
     ]
   })

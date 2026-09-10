@@ -137,9 +137,12 @@ resource "aws_iam_role_policy" "audio_processing_state_machine" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = "lambda:InvokeFunction"
-        Resource = aws_lambda_function.audio_processing.arn
+        Effect = "Allow"
+        Action = "lambda:InvokeFunction"
+        Resource = [
+          aws_lambda_function.audio_processing.arn,
+          aws_lambda_function.transcription_caller.arn,
+        ]
       },
       {
         Effect = "Allow"
@@ -195,6 +198,32 @@ resource "aws_sfn_state_machine" "audio_processing" {
           MaxAttempts     = 3
         }]
         TimeoutSeconds = 870
+        Next           = "RequestTranscription"
+      }
+      RequestTranscription = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke.waitForTaskToken"
+        Parameters = {
+          FunctionName = aws_lambda_function.transcription_caller.arn
+          Payload = {
+            "jobId.$"     = "$.jobId"
+            "audioUri.$"  = "$.stitchedS3Uri"
+            "taskToken.$" = "$$.Task.Token"
+          }
+        }
+        Retry = [{
+          ErrorEquals = [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "Lambda.TooManyRequestsException",
+          ]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        ResultPath     = null
+        TimeoutSeconds = 3600
         End            = true
       }
     }

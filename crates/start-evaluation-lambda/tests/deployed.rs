@@ -105,7 +105,7 @@ async fn rejects_invalid_requests_without_writing_tasks() -> Result<(), Box<dyn 
 
 #[tokio::test]
 #[ignore = "requires a deployed start-evaluation Lambda, PostgreSQL, and pre-uploaded S3 audio"]
-async fn dispatches_a_fresh_evaluation_and_replays_without_another_attempt()
+async fn completes_a_fresh_evaluation_and_replays_without_another_attempt()
 -> Result<(), Box<dyn Error>> {
     let environment = Environment::load().await?;
     let client = http_client()?;
@@ -136,6 +136,21 @@ async fn dispatches_a_fresh_evaluation_and_replays_without_another_attempt()
         environment.audio_s3_uris
     );
     assert_dispatched(&task, &environment.audio_s3_uris).await?;
+    let execution_arn = task
+        .execution_arn
+        .as_deref()
+        .expect("dispatched task must have an execution ARN");
+    wait_for_execution_success(execution_arn).await?;
+
+    let store = PipelineTaskStore::new(environment.pool.clone());
+    let completed = seed_task(&store, &environment, &key, &caller_reference).await?;
+    assert!(
+        completed
+            .asr_task_id
+            .as_deref()
+            .is_some_and(|id| !id.is_empty()),
+        "completed workflow must persist an ASR task ID"
+    );
 
     let replayed = successful_json(
         post_start(
@@ -546,4 +561,35 @@ async fn assert_dispatched(
     );
 
     Ok(())
+}
+
+async fn wait_for_execution_success(execution_arn: &str) -> Result<(), Box<dyn Error>> {
+    let sdk_config = aws_config::defaults(BehaviorVersion::latest())
+        .profile_name("admin")
+        .load()
+        .await;
+    let client = SfnClient::new(&sdk_config);
+
+    for _ in 0..300 {
+        let execution = client
+            .describe_execution()
+            .execution_arn(execution_arn)
+            .send()
+            .await?;
+        match execution.status().as_str() {
+            "SUCCEEDED" => return Ok(()),
+            "FAILED" | "TIMED_OUT" | "ABORTED" => {
+                return Err(format!(
+                    "workflow {execution_arn} ended as {}: {}: {}",
+                    execution.status().as_str(),
+                    execution.error().unwrap_or("unknown error"),
+                    execution.cause().unwrap_or("no cause"),
+                )
+                .into());
+            }
+            _ => tokio::time::sleep(Duration::from_secs(2)).await,
+        }
+    }
+
+    Err(format!("workflow {execution_arn} did not complete within 10 minutes").into())
 }

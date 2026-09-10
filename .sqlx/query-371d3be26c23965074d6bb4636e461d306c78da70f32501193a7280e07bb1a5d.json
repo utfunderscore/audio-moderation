@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                INSERT INTO pipeline_tasks (tenant_id, idempotency_key, caller_reference)\n                VALUES ($1, $2, $3)\n                ON CONFLICT (tenant_id, idempotency_key) DO UPDATE\n                    SET tenant_id = pipeline_tasks.tenant_id\n                RETURNING task_id, tenant_id, idempotency_key, caller_reference,\n                    status AS \"status: PipelineTaskStatus\", execution_arn, created_at, updated_at,\n                    (xmax = 0) AS \"created!\"\n            ",
+  "query": "\n                INSERT INTO pipeline_tasks (tenant_id, idempotency_key, caller_reference)\n                VALUES ($1, $2, $3)\n                ON CONFLICT (tenant_id, idempotency_key) DO UPDATE\n                    SET tenant_id = pipeline_tasks.tenant_id\n                RETURNING task_id, tenant_id, idempotency_key, caller_reference,\n                    status AS \"status: PipelineTaskStatus\", execution_arn, asr_task_id,\n                    created_at, updated_at,\n                    (xmax = 0) AS \"created!\"\n            ",
   "describe": {
     "columns": [
       {
@@ -54,16 +54,21 @@
       },
       {
         "ordinal": 6,
+        "name": "asr_task_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "created!",
         "type_info": "Bool"
       }
@@ -82,10 +87,11 @@
       true,
       false,
       true,
+      true,
       false,
       false,
       null
     ]
   },
-  "hash": "59e6b603894670dbe541cf4b69c3a07c330a516a91ccd2ebe6e9597fd2032395"
+  "hash": "371d3be26c23965074d6bb4636e461d306c78da70f32501193a7280e07bb1a5d"
 }

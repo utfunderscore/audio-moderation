@@ -10,6 +10,12 @@ pub enum PipelineTaskError {
     #[error("failed to record pipeline task execution")]
     RecordExecution(#[source] sqlx::Error),
 
+    #[error("failed to record ASR task ID")]
+    RecordAsrTask(#[source] sqlx::Error),
+
+    #[error("pipeline task already has a different ASR task ID")]
+    AsrTaskConflict,
+
     #[error("failed to claim pipeline task dispatch")]
     ClaimDispatch(#[source] sqlx::Error),
 
@@ -26,6 +32,7 @@ pub struct PipelineTask {
     pub caller_reference: Option<String>,
     pub status: PipelineTaskStatus,
     pub execution_arn: Option<String>,
+    pub asr_task_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub audio_s3_uris: Vec<String>,
@@ -94,7 +101,8 @@ impl PipelineTaskStore {
                 ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
                     SET tenant_id = pipeline_tasks.tenant_id
                 RETURNING task_id, tenant_id, idempotency_key, caller_reference,
-                    status AS "status: PipelineTaskStatus", execution_arn, created_at, updated_at,
+                    status AS "status: PipelineTaskStatus", execution_arn, asr_task_id,
+                    created_at, updated_at,
                     (xmax = 0) AS "created!"
             "#,
             task.tenant_id,
@@ -147,6 +155,7 @@ impl PipelineTaskStore {
             caller_reference: persisted.caller_reference,
             status: persisted.status,
             execution_arn: persisted.execution_arn,
+            asr_task_id: persisted.asr_task_id,
             created_at: persisted.created_at,
             updated_at: persisted.updated_at,
             audio_s3_uris,
@@ -176,6 +185,37 @@ impl PipelineTaskStore {
         .execute(&self.pool)
         .await
         .map_err(PipelineTaskError::RecordExecution)?;
+
+        Ok(())
+    }
+
+    /// Records the external ASR task ID returned for a pipeline task.
+    ///
+    /// Repeating the same ID is safe after a retry, but a different ID would
+    /// indicate an idempotency failure at the external service.
+    pub async fn record_asr_task(
+        &self,
+        task_id: i32,
+        asr_task_id: &str,
+    ) -> Result<(), PipelineTaskError> {
+        let result = sqlx::query!(
+            r#"
+                UPDATE pipeline_tasks
+                SET asr_task_id = $2,
+                    updated_at = NOW()
+                WHERE task_id = $1
+                    AND (asr_task_id IS NULL OR asr_task_id = $2)
+            "#,
+            task_id,
+            asr_task_id,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(PipelineTaskError::RecordAsrTask)?;
+
+        if result.rows_affected() == 0 {
+            return Err(PipelineTaskError::AsrTaskConflict);
+        }
 
         Ok(())
     }

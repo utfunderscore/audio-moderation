@@ -19,6 +19,7 @@ CREATE TABLE pipeline_tasks (
     caller_reference TEXT,
     status         pipeline_task_status NOT NULL DEFAULT 'PENDING',
     execution_arn  TEXT,
+    asr_task_id    TEXT UNIQUE,
     dispatch_started_at TIMESTAMPTZ,
     attempt_count  INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     error_code     TEXT,

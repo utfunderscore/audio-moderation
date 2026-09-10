@@ -55,6 +55,26 @@ output "task_callback_function_name" {
   value = aws_lambda_function.task_callback.function_name
 }
 
+output "transcription_caller_ecr_repository_url" {
+  value = aws_ecr_repository.transcription_caller.repository_url
+}
+
+output "transcription_caller_function_name" {
+  value = aws_lambda_function.transcription_caller.function_name
+}
+
+output "aws_region" {
+  value = var.aws_region
+}
+
+output "database_parameter_name" {
+  value = var.database_parameter_name
+}
+
+output "tenant_id" {
+  value = var.tenant_id
+}
+
 output "audio_processing_state_machine_arn" {
   value = aws_sfn_state_machine.audio_processing.arn
 }

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE pipeline_tasks\n                SET asr_task_id = $2,\n                    updated_at = NOW()\n                WHERE task_id = $1\n                    AND (asr_task_id IS NULL OR asr_task_id = $2)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2ce08c92962e83c0bbd19288745dab1f6b8d0883374da6a492659fa2d94d6195"
+}

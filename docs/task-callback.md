@@ -1,5 +1,20 @@
 # External task callback
 
+## Direct invocation from Modal
+
+The Modal OIDC role (`modal_stitched_audio_reader`) grants
+`lambda:InvokeFunction` on the task-callback Lambda. Modal can use temporary AWS
+credentials obtained by assuming that role with its OIDC token to invoke the
+function directly through boto3. The function name is available in the Terraform
+output `task_callback_function_name`.
+
+The current Lambda entry point uses `lambda_http` and expects an API Gateway
+event envelope, with the callback JSON serialized in its `body` field. Direct
+invocation does not yet accept a plain callback JSON object. Callers should check
+both Lambda invocation errors and the HTTP-style response returned by the handler.
+
+## HTTP invocation
+
 `POST /callbacks/external-task` is protected by API Gateway HTTP API `AWS_IAM`
 authorization. Callers must send a SigV4-signed request and have an
 `execute-api:Invoke` policy scoped to this route, for example:

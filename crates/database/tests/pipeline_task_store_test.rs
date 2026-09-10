@@ -36,9 +36,59 @@ async fn creates_ordered_inputs_and_replays_by_tenant_idempotency_key() {
     assert!(created.created);
     assert_eq!(created.audio_s3_uris, inputs);
     assert_eq!(created.caller_reference.as_deref(), Some("review-42"));
+    assert!(created.asr_task_id.is_none());
     assert!(!replayed.created);
     assert_eq!(replayed.task_id, created.task_id);
     assert_eq!(replayed.audio_s3_uris, created.audio_s3_uris);
+}
+
+#[tokio::test]
+async fn records_an_asr_task_id_once_and_allows_identical_retries() {
+    let database = TestDatabase::start().await;
+    let store = PipelineTaskStore::new(database.pool.clone());
+    let task = store
+        .create_or_get(NewPipelineTask {
+            tenant_id: "tenant-a",
+            idempotency_key: "request-1",
+            caller_reference: None,
+            audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
+        })
+        .await
+        .unwrap();
+
+    store.record_asr_task(task.task_id, "fc-123").await.unwrap();
+    store.record_asr_task(task.task_id, "fc-123").await.unwrap();
+
+    let asr_task_id = sqlx::query_scalar!(
+        "SELECT asr_task_id FROM pipeline_tasks WHERE task_id = $1",
+        task.task_id,
+    )
+    .fetch_one(&database.pool)
+    .await
+    .unwrap();
+    assert_eq!(asr_task_id.as_deref(), Some("fc-123"));
+}
+
+#[tokio::test]
+async fn rejects_replacing_an_asr_task_id() {
+    let database = TestDatabase::start().await;
+    let store = PipelineTaskStore::new(database.pool.clone());
+    let task = store
+        .create_or_get(NewPipelineTask {
+            tenant_id: "tenant-a",
+            idempotency_key: "request-1",
+            caller_reference: None,
+            audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
+        })
+        .await
+        .unwrap();
+
+    store.record_asr_task(task.task_id, "fc-123").await.unwrap();
+
+    assert!(matches!(
+        store.record_asr_task(task.task_id, "fc-456").await,
+        Err(database::PipelineTaskError::AsrTaskConflict)
+    ));
 }
 
 #[tokio::test]
