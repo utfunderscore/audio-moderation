@@ -1,13 +1,13 @@
 """Model-agnostic contracts for voice-safety classification workers."""
 
-from enum import Enum
+from enum import StrEnum
 from typing import Annotated, ClassVar
 
 import modal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class VoiceSafetyModel(str, Enum):
+class VoiceSafetyModel(StrEnum):
     """Voice-safety worker implementations."""
 
     ROBLOX = "roblox"

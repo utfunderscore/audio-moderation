@@ -5,15 +5,17 @@ import json
 import sys
 from collections.abc import Iterator
 from functools import cache
+from http.client import HTTPMessage
 from pathlib import Path
 from shutil import copyfileobj
 from tempfile import TemporaryDirectory
-from typing import NotRequired, Protocol, TypedDict, cast
+from typing import IO, NotRequired, Protocol, TypedDict, cast, override
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 import modal
 
+from socialguard_models.api.networking import UnsafeUrlError, validate_url
 from socialguard_models.voice_safety.models import (
     VoiceSafetyJob,
     VoiceSafetyResult,
@@ -37,10 +39,23 @@ MODEL_DOWNLOAD_COMMAND = (
     "src/socialguard_models/voice_safety/models/roblox/roblox_model.py"
     "::download_roblox_model"
 )
+MODEL_NOT_READY_MESSAGE = (
+    "Roblox voice-safety model weights are missing. Run "
+    f"`{MODEL_DOWNLOAD_COMMAND}` before using or deploying the worker."
+)
+MODEL_CONFIG_ERROR = "Roblox voice-safety config must be a JSON object"
+DOWNLOAD_AUDIO_ERROR = "Unable to download audio object"
+INVALID_AUDIO_FORMAT_ERROR = "Audio must be a 16 kHz PCM WAV"
+EMPTY_AUDIO_ERROR = "Audio object contains no samples"
+AUDIO_TOO_LONG_ERROR = "Audio must not exceed 10 minutes"
+AUDIO_TRUNCATED_ERROR = "Audio ended before its declared sample count"
+LANGUAGE_HEADS_CHANGED_ERROR = "Language probability heads changed between audio chunks"
+INFERENCE_LOAD_ERROR = "Unable to load Roblox voice-safety inference module"
 
 
 class _Audio(Protocol):
-    shape: tuple[int, ...]
+    @property
+    def shape(self) -> tuple[int, ...]: ...
 
 
 class _RawInference(TypedDict):
@@ -71,6 +86,7 @@ class _InferenceModule(Protocol):
         index: int,
     ) -> _ExtractedScores: ...
 
+
 roblox_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("libsndfile1")
@@ -92,17 +108,21 @@ model_download_image = (
     )
     .add_local_python_source("socialguard_models")
 )
-model_volume = modal.Volume.from_name("socialguard-model-weights", create_if_missing=True)
+model_volume = modal.Volume.from_name(
+    "socialguard-model-weights", create_if_missing=True
+)
 
 
-@app.function(
+@app.function(  # pyright: ignore[reportUnknownMemberType]
     image=model_download_image,
     volumes={"/models": model_volume},
     max_containers=1,
 )
 def download_roblox_model() -> None:
     """Download the pinned model and inference code into the persistent Volume."""
-    from huggingface_hub import snapshot_download  # pyright: ignore[reportMissingImports]
+    from huggingface_hub import (  # pyright: ignore[reportMissingModuleSource]
+        snapshot_download,
+    )
 
     if MODEL_READY_MARKER.exists():
         return
@@ -122,10 +142,7 @@ def _ensure_model_ready() -> None:
     if not MODEL_READY_MARKER.exists():
         model_volume.reload()
     if not MODEL_READY_MARKER.exists():
-        raise RuntimeError(
-            "Roblox voice-safety model weights are missing. Run "
-            + f"`{MODEL_DOWNLOAD_COMMAND}` before using or deploying the worker."
-        )
+        raise RuntimeError(MODEL_NOT_READY_MESSAGE)
 
 
 @cache
@@ -133,9 +150,11 @@ def _load_inference_module() -> _InferenceModule:
     """Load the inference implementation from the immutable model snapshot."""
     _ensure_model_ready()
     module_name = "_socialguard_roblox_voice_safety_inference"
-    spec = importlib.util.spec_from_file_location(module_name, MODEL_DIRECTORY / "inference.py")
+    spec = importlib.util.spec_from_file_location(
+        module_name, MODEL_DIRECTORY / "inference.py"
+    )
     if spec is None or spec.loader is None:
-        raise RuntimeError("Unable to load Roblox voice-safety inference module")
+        raise RuntimeError(INFERENCE_LOAD_ERROR)
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
@@ -144,17 +163,17 @@ def _load_inference_module() -> _InferenceModule:
     except Exception:
         _ = sys.modules.pop(module_name, None)
         raise
-    return cast(_InferenceModule, cast(object, module))
+    return cast("_InferenceModule", cast("object", module))
 
 
 @cache
 def _load_config() -> dict[str, object]:
     _ensure_model_ready()
     with (MODEL_DIRECTORY / "config.json").open(encoding="utf-8") as config_file:
-        config = cast(object, json.load(config_file))
+        config = cast("object", json.load(config_file))
     if not isinstance(config, dict):
-        raise RuntimeError("Roblox voice-safety config must be a JSON object")
-    return cast(dict[str, object], config)
+        raise TypeError(MODEL_CONFIG_ERROR)
+    return cast("dict[str, object]", config)
 
 
 @cache
@@ -165,17 +184,39 @@ def _load_model() -> object:
     return model
 
 
+class _ValidatedRedirectHandler(HTTPRedirectHandler):
+    """Validate every redirect before urllib follows it."""
+
+    @override
+    def redirect_request(
+        self,
+        req: Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: HTTPMessage,
+        newurl: str,
+    ) -> Request | None:
+        """Reject redirects that violate the standard network policy."""
+        validate_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _download_audio(download_url: str, destination: Path) -> None:
     """Stream an internally generated presigned URL into a temporary file."""
     try:
-        with urlopen(download_url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
-            with destination.open("wb") as audio:
-                copyfileobj(response, audio, length=DOWNLOAD_CHUNK_SIZE)
+        validate_url(download_url)
+        opener = build_opener(_ValidatedRedirectHandler())
+        with (
+            opener.open(download_url, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response,
+            destination.open("wb") as audio,
+        ):
+            copyfileobj(response, audio, length=DOWNLOAD_CHUNK_SIZE)
     except HTTPError as error:
         error.close()
-        raise RuntimeError("Unable to download audio object") from None
-    except (URLError, TimeoutError, OSError):
-        raise RuntimeError("Unable to download audio object") from None
+        raise RuntimeError(DOWNLOAD_AUDIO_ERROR) from None
+    except (URLError, UnsafeUrlError, TimeoutError, OSError):
+        raise RuntimeError(DOWNLOAD_AUDIO_ERROR) from None
 
 
 def _chunk_ranges(sample_count: int) -> list[tuple[int, int]]:
@@ -195,7 +236,7 @@ def _chunk_ranges(sample_count: int) -> list[tuple[int, int]]:
 
 def _validate_audio(audio_path: Path) -> int:
     """Validate the WAV metadata before loading the GPU model."""
-    import soundfile as sf  # pyright: ignore[reportMissingImports]
+    import soundfile as sf  # pyright: ignore[reportMissingModuleSource]
 
     with sf.SoundFile(audio_path) as recording:
         if (
@@ -204,13 +245,13 @@ def _validate_audio(audio_path: Path) -> int:
             or recording.format not in {"WAV", "WAVEX"}
             or not recording.subtype.startswith("PCM_")
         ):
-            raise ValueError("Audio must be a 16 kHz PCM WAV")
+            raise ValueError(INVALID_AUDIO_FORMAT_ERROR)
         sample_count = len(recording)
 
     if sample_count == 0:
-        raise ValueError("Audio object contains no samples")
+        raise ValueError(EMPTY_AUDIO_ERROR)
     if sample_count > SAMPLE_RATE * MAX_AUDIO_SECONDS:
-        raise ValueError("Audio must not exceed 10 minutes")
+        raise ValueError(AUDIO_TOO_LONG_ERROR)
     return sample_count
 
 
@@ -218,8 +259,8 @@ def _load_audio_chunks(
     audio_path: Path, ranges: list[tuple[int, int]]
 ) -> Iterator[_Audio]:
     """Read one first-channel float32 window at a time from the validated WAV."""
-    import soundfile as sf  # pyright: ignore[reportMissingImports]
-    import torch  # pyright: ignore[reportMissingImports]
+    import soundfile as sf  # pyright: ignore[reportMissingModuleSource]
+    import torch  # pyright: ignore[reportMissingModuleSource]
 
     with sf.SoundFile(audio_path) as recording:
         for start, end in ranges:
@@ -230,11 +271,11 @@ def _load_audio_chunks(
                 always_2d=True,
             )
             if samples.shape[0] != end - start:
-                raise ValueError("Audio ended before its declared sample count")
+                raise ValueError(AUDIO_TRUNCATED_ERROR)
             yield torch.from_numpy(samples[:, 0].copy()).unsqueeze(0)
 
 
-@app.function(
+@app.function(  # pyright: ignore[reportUnknownMemberType]
     image=roblox_image,
     gpu="L4",
     volumes={"/models": model_volume.with_mount_options(read_only=True)},
@@ -271,13 +312,16 @@ def classify_roblox(job: VoiceSafetyJob) -> VoiceSafetyResult:
                 language_probs=extracted.get("language_probs", {}),
             )
 
-            chunk_scores = cast(dict[str, float], chunk_result.scores.model_dump())
+            chunk_scores = cast("dict[str, float]", chunk_result.scores.model_dump())
             for category, score in chunk_scores.items():
                 score_maxima[category] = max(score_maxima.get(category, 0.0), score)
 
             if chunk_result.language_probs:
-                if language_totals and language_totals.keys() != chunk_result.language_probs.keys():
-                    raise RuntimeError("Language probability heads changed between audio chunks")
+                if (
+                    language_totals
+                    and language_totals.keys() != chunk_result.language_probs.keys()
+                ):
+                    raise RuntimeError(LANGUAGE_HEADS_CHANGED_ERROR)
                 chunk_samples = audio.shape[-1]
                 for language, probability in chunk_result.language_probs.items():
                     language_totals[language] = (

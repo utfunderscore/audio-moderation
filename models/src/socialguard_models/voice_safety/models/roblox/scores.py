@@ -5,7 +5,6 @@ from math import isfinite
 
 from socialguard_models.voice_safety.models import VoiceSafetyScores
 
-
 CATEGORY_LABELS: dict[str, tuple[str, ...]] = {
     "sexual": ("sexual_content", "dating_and_romantic_content"),
     "hate_or_discrimination": ("discriminatory",),
@@ -30,7 +29,8 @@ def normalize_scores(label_scores: Mapping[str, float]) -> VoiceSafetyScores:
             # Validate before max(): NaN or an invalid non-winning head must not
             # disappear behind a valid score from another subcategory.
             if not isfinite(value) or not 0 <= value <= 1:
-                raise ValueError(f"Invalid probability for {key}")
+                message = f"Invalid probability for {key}"
+                raise ValueError(message)
             values.append(value)
         scores[category] = max(values)
     return VoiceSafetyScores.model_validate(scores)

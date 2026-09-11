@@ -67,8 +67,12 @@ ignore = [
 "src/socialguard_models/deployments/granite.py" = [
     "PLC0415", # The local API image intentionally omits Modal-only ML dependencies.
 ]
+"src/socialguard_models/voice_safety/models/roblox/roblox_model.py" = [
+    "PLC0415", # The local environment intentionally omits the Modal-only ML dependencies.
+]
 "tests/unit/test_gateway_runtime.py" = ["ARG005", "D102", "D107", "PLR2004", "PT018"]
 "tests/unit/test_s3_audio.py" = ["D102", "D107", "S105", "S106", "SLF001"]
+"tests/unit/test_roblox_model.py" = ["SLF001"]
 "tests/**/*.py" = ["S101"]
 
 [tool.ruff.format]
