@@ -20,7 +20,9 @@ PREFETCH_APP = modal.App("socialguard-granite-prefetch")
 )
 def prefetch_model() -> str:
     """Download the immutable Granite snapshot and commit it to the Volume."""
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import (  # pyright: ignore[reportMissingModuleSource]
+        snapshot_download,
+    )
 
     snapshot_path = snapshot_download(
         repo_id=MODEL_ID,
