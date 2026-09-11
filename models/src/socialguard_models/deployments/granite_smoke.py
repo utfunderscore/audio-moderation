@@ -35,10 +35,15 @@ SMOKE_APP = modal.App("socialguard-granite-smoke")
 )
 def smoke_transcription() -> str:
     """Transcribe IBM's bundled sample with one L40S GPU."""
-    import torch
-    import torchaudio
-    from huggingface_hub import snapshot_download
-    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+    import torch  # pyright: ignore[reportMissingModuleSource]
+    import torchaudio  # pyright: ignore[reportMissingModuleSource]
+    from huggingface_hub import (  # pyright: ignore[reportMissingModuleSource]
+        snapshot_download,
+    )
+    from transformers import (  # pyright: ignore[reportMissingModuleSource]
+        AutoModelForSpeechSeq2Seq,
+        AutoProcessor,
+    )
 
     snapshot_directory = Path(
         snapshot_download(

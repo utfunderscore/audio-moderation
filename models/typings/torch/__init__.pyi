@@ -1,5 +1,5 @@
 from contextlib import AbstractContextManager
-from typing import Final
+from typing import Final, Protocol
 
 class Tensor:
     @property
@@ -8,6 +8,11 @@ class Tensor:
     def unsqueeze(self, dim: int) -> Tensor: ...
     def mean(self, dim: int, *, keepdim: bool) -> Tensor: ...
 
+class _NumpyArray(Protocol):
+    @property
+    def __array_interface__(self) -> object: ...
+
 bfloat16: Final[object]
 
+def from_numpy(ndarray: _NumpyArray) -> Tensor: ...
 def inference_mode() -> AbstractContextManager[None]: ...

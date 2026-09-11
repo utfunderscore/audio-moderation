@@ -13,7 +13,10 @@ from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from transformers import Processor, SpeechModel
+    from transformers import (  # pyright: ignore[reportMissingModuleSource]
+        Processor,
+        SpeechModel,
+    )
 
 import modal
 
@@ -68,9 +71,11 @@ from socialguard_models.deployments.s3_audio import (
 APP = modal.App("socialguard-asr-gateway")
 # Modal CLI deployment defaults to a module-level variable named ``app``.
 app = APP
-API_IMAGE = modal.Image.debian_slim(python_version="3.12").uv_sync(
-    uv_project_dir=".", frozen=True, extra_options="--no-dev"
-).add_local_python_source("socialguard_models")
+API_IMAGE = (
+    modal.Image.debian_slim(python_version="3.12")
+    .uv_sync(uv_project_dir=".", frozen=True, extra_options="--no-dev")
+    .add_local_python_source("socialguard_models")
+)
 GATEWAY_SECRET = modal.Secret.from_name(
     "socialguard-gateway-api", required_keys=["SOCIALGUARD_GATEWAY_API_TOKEN"]
 )
@@ -547,9 +552,14 @@ class GraniteModel:
     @modal.enter()  # pyright: ignore[reportUnknownMemberType]
     def load(self) -> None:
         """Load only the immutable pre-fetched snapshot; never download on requests."""
-        import torch
-        from huggingface_hub import snapshot_download
-        from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor
+        import torch  # pyright: ignore[reportMissingModuleSource]
+        from huggingface_hub import (  # pyright: ignore[reportMissingModuleSource]
+            snapshot_download,
+        )
+        from transformers import (  # pyright: ignore[reportMissingModuleSource]
+            AutoModelForSpeechSeq2Seq,
+            AutoProcessor,
+        )
 
         log_event(
             "granite_model_loading",
@@ -582,8 +592,8 @@ class GraniteModel:
     @modal.method()  # pyright: ignore[reportUnknownMemberType]
     def transcribe_bytes(self, audio_bytes: bytes, transcription_id: str) -> str:
         """Normalize uploaded audio then generate deterministic Granite output."""
-        import torch
-        import torchaudio
+        import torch  # pyright: ignore[reportMissingModuleSource]
+        import torchaudio  # pyright: ignore[reportMissingModuleSource]
 
         log_event(
             "granite_inference_started",
