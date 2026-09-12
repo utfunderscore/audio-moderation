@@ -26,31 +26,38 @@ uv run basedpyright
 
 `src/socialguard_models/api/transcription_api.py` defines the `POST /` route.
 `src/socialguard_models/cpu_worker.py` serves it as a FastAPI application and
-defines the shared CPU deployment. The route runs orchestration on CPU and
-submits inference to a separate GPU worker:
+defines the shared CPU deployment. The route atomically claims each idempotency
+key in a shared Modal Dict, starts CPU orchestration in a separate Modal function,
+and returns immediately:
 
 ```text
-HTTP endpoint + transcription control plane (CPU)
+HTTP endpoint
+  -> shared idempotency claim (Modal Dict)
+  -> spawned transcription control plane (CPU)
   -> selected transcription worker (GPU)
-  <- completed or failed outcome
-<- HTTP response
+  -> completion callback API (TODO)
 ```
 
 The CPU deployment uses one container (`max_containers=1`) with up to 32 concurrent
-requests (`modal.concurrent(max_inputs=32)`). Each request runs on its own thread,
-so waiting for a GPU result does not block other requests. Requests above that
-limit queue; GPU workers scale separately. The CPU container scales to zero when
+requests (`modal.concurrent(max_inputs=32)`). Requests only claim and schedule work,
+so GPU inference does not occupy an HTTP request. The idempotency entry is retained
+by Modal for up to seven days of inactivity. The CPU container scales to zero when
 idle. Adjust `MAX_CONCURRENT_REQUESTS` in `cpu_worker.py` to tune concurrency.
 
-The endpoint calls `run_transcription()` in `src/socialguard_models/transcription.py`
-directly. That function creates a short-lived S3 URL using Modal OIDC credentials,
-selects the GPU worker with an explicit `match` on the model, submits it with
-`spawn()`, and waits for its result within a deadline that includes preparation
-and submission time. Failures produce a failed outcome and trigger best-effort
-cancellation if a worker was submitted.
+Each spawned orchestration worker also handles up to 32 tasks concurrently. It uses
+Modal's asynchronous remote-call APIs while waiting for GPU work, so those waits do
+not occupy one thread per transcription.
+
+The spawned task calls `run_transcription()` in
+`src/socialguard_models/transcription.py`. That function creates a short-lived S3
+URL using Modal OIDC credentials, selects the GPU worker with an explicit `match`
+on the model, submits it with `spawn()`, and waits for its result within a deadline
+that includes preparation and submission time. Failures produce a failed outcome and
+trigger best-effort cancellation if a worker was submitted.
 
 The function logs success or failure without transcript text, task tokens, or
-exception messages. The endpoint converts its outcome into the HTTP response.
+exception messages. Posting the terminal outcome to the callback HTTP API remains
+to be implemented.
 
 Granite runs on an L4 GPU and normalizes any FFmpeg-supported audio input to
 mono 16 kHz. Inputs are limited to 512 MiB and five minutes of decoded audio.
@@ -100,30 +107,18 @@ curl -X POST "$MODAL_ENDPOINT_URL" \
   }'
 ```
 
-The request remains open while transcription runs and returns a completed
-response:
+The endpoint returns `202 Accepted` as soon as work has been scheduled:
 
 ```json
 {
-  "status": "completed",
-  "model": "granite",
-  "text": "The transcribed speech appears here.",
-  "idempotency_key": "request-123",
-  "pipeline_task_id": "task-123"
+  "status": "queued",
+  "task_id": "transcription_0123456789abcdef0123456789abcdef"
 }
 ```
 
-If transcription fails, the endpoint returns a handled failure:
-
-```json
-{
-  "status": "failed",
-  "model": "granite",
-  "error_code": "transcription_failed",
-  "idempotency_key": "request-123",
-  "pipeline_task_id": "task-123"
-}
-```
+An identical retry returns the original `task_id` without scheduling another task.
+Retries that arrive while Modal is acknowledging the original `spawn()` wait briefly
+for that scheduling result, so they are never told that an unscheduled task is queued.
 
 ## Adding A Model
 

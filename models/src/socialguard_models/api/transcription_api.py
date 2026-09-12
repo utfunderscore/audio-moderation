@@ -1,16 +1,16 @@
-"""Transcription HTTP route and request/response contracts."""
+"""Transcription submission HTTP route and request/response contracts."""
 
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 
+
+from socialguard_models.idempotency import SchedulingUnavailableError, schedule_idempotently
 from socialguard_models.transcription import (
-    CompletedOutcome,
     ModelType,
-    TranscriptionOutcome,
     TranscriptionTask,
-    run_transcription,
+    process_transcription,
 )
 
 router = APIRouter()
@@ -31,31 +31,18 @@ class TranscriptionRequest(BaseModel):
     task_token: str
 
 
-class _BaseTranscriptionResponse(BaseModel):
+class QueuedTranscriptionResponse(BaseModel):
+    """An accepted transcription task that will complete asynchronously."""
+
     model_config = ConfigDict(extra="forbid")
 
-    model: ModelType
-    idempotency_key: str
-    pipeline_task_id: str
+    status: Literal["queued"] = "queued"
+    task_id: str
 
 
-class CompletedTranscriptionResponse(_BaseTranscriptionResponse):
-    status: Literal["completed"] = "completed"
-    text: str
-
-
-class FailedTranscriptionResponse(_BaseTranscriptionResponse):
-    status: Literal["failed"] = "failed"
-    error_code: Literal["transcription_failed"] = "transcription_failed"
-
-
-type TranscriptionResponse = (
-    CompletedTranscriptionResponse | FailedTranscriptionResponse
-)
-
-
-@router.post("/")
-def transcribe(request: TranscriptionRequest) -> TranscriptionResponse:
+@router.post("/", status_code=status.HTTP_202_ACCEPTED)
+def transcribe(request: TranscriptionRequest) -> QueuedTranscriptionResponse:
+    """Atomically accept one task per idempotency key without awaiting execution."""
     task = TranscriptionTask(
         model=request.model,
         audio_uri=request.audio_uri,
@@ -63,24 +50,15 @@ def transcribe(request: TranscriptionRequest) -> TranscriptionResponse:
         pipeline_task_id=request.pipeline_task_id,
         task_token=request.task_token,
     )
-    outcome = run_transcription(task)
-    return response_for_outcome(task, outcome)
 
+    def dispatch(task_id: str) -> None:
+        process_transcription.spawn(task, task_id)  # pyright: ignore[reportFunctionMemberAccess]
 
-def response_for_outcome(
-    task: TranscriptionTask,
-    outcome: TranscriptionOutcome,
-) -> TranscriptionResponse:
-    if isinstance(outcome, CompletedOutcome):
-        return CompletedTranscriptionResponse(
-            model=task.model,
-            text=outcome.text,
-            idempotency_key=task.idempotency_key,
-            pipeline_task_id=task.pipeline_task_id,
-        )
-
-    return FailedTranscriptionResponse(
-        model=task.model,
-        idempotency_key=task.idempotency_key,
-        pipeline_task_id=task.pipeline_task_id,
-    )
+    try:
+        task_id = schedule_idempotently(task.idempotency_key, dispatch)
+    except SchedulingUnavailableError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="unable to schedule transcription",
+        ) from error
+    return QueuedTranscriptionResponse(task_id=task_id)
