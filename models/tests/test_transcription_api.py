@@ -8,7 +8,7 @@ from pydantic import ValidationError
 import socialguard_models.idempotency as idempotency
 import socialguard_models.api.transcription_api as transcription_api
 from socialguard_models.api.transcription_api import TranscriptionRequest
-from socialguard_models.transcription import ModelType, TranscriptionTask
+from socialguard_models.transcription_contracts import ModelType, TranscriptionTask
 
 
 class TaskIds:

@@ -2,54 +2,31 @@
 
 import asyncio
 import logging
-from dataclasses import dataclass
-from enum import StrEnum
 from time import monotonic
 from typing import Awaitable, Protocol, cast
 
 import modal
 
 from socialguard_models.aws import assume_modal_oidc_role, create_presigned_download_url
+from socialguard_models.callbacks import (
+    CALLBACK_MAX_DURATION_SECONDS,
+    get_callback_uri,
+    post_completion_callback,
+)
 from socialguard_models.granite import GraniteSpeech
 from socialguard_models.modal_app import app, cpu_image
+from socialguard_models.transcription_contracts import (
+    CompletedOutcome,
+    FailedOutcome,
+    ModelType,
+    TranscriptionTask,
+    TranscriptionOutcome,
+)
 
 logger = logging.getLogger(__name__)
 WORKER_TIMEOUT_SECONDS = 660
 MAX_CONCURRENT_TRANSCRIPTIONS = 32
-
-
-class ModelType(StrEnum):
-    """Transcription models exposed by the service."""
-
-    GRANITE = "granite"
-
-
-@dataclass(frozen=True, slots=True)
-class TranscriptionTask:
-    """A transcription request and its workflow correlation data."""
-
-    model: ModelType
-    audio_uri: str
-    idempotency_key: str
-    pipeline_task_id: str
-    task_token: str
-
-
-@dataclass(frozen=True, slots=True)
-class CompletedOutcome:
-    """The successful outcome of a transcription worker."""
-
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class FailedOutcome:
-    """The handled failure of a transcription worker."""
-
-    error_type: str
-
-
-type TranscriptionOutcome = CompletedOutcome | FailedOutcome
+PROCESS_TIMEOUT_SECONDS = WORKER_TIMEOUT_SECONDS + CALLBACK_MAX_DURATION_SECONDS
 
 
 class _AsyncResult(Protocol):
@@ -109,7 +86,9 @@ async def run_transcription(task: TranscriptionTask) -> TranscriptionOutcome:
             task.model,
             type(error).__name__,
         )
-        return FailedOutcome(error_type=type(error).__name__)
+        return FailedOutcome(
+            cause=type(error).__name__,
+        )
 
     logger.info(
         "transcription worker completed: pipeline_task_id=%s model=%s",
@@ -121,13 +100,21 @@ async def run_transcription(task: TranscriptionTask) -> TranscriptionOutcome:
 
 @app.function(  # pyright: ignore[reportUnknownMemberType]
     image=cpu_image,
-    timeout=WORKER_TIMEOUT_SECONDS,
+    timeout=PROCESS_TIMEOUT_SECONDS,
 )
 @modal.concurrent(max_inputs=MAX_CONCURRENT_TRANSCRIPTIONS)  # pyright: ignore[reportUnknownMemberType]
 async def process_transcription(task: TranscriptionTask, task_id: str) -> None:
     """Run accepted work outside the HTTP request lifecycle."""
+    callback_uri = get_callback_uri()
     outcome = await run_transcription(task)
-    # TODO: POST task_id and outcome to the transcription completion callback API.
+    await asyncio.to_thread(
+        post_completion_callback,
+        callback_uri=callback_uri,
+        task_token=task.task_token,
+        job_id=task.pipeline_task_id,
+        asr_task_id=task_id,
+        outcome=outcome,
+    )
     logger.info(
         "transcription task reached a terminal outcome: task_id=%s outcome_type=%s",
         task_id,

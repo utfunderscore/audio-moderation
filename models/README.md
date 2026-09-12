@@ -35,7 +35,7 @@ HTTP endpoint
   -> shared idempotency claim (Modal Dict)
   -> spawned transcription control plane (CPU)
   -> selected transcription worker (GPU)
-  -> completion callback API (TODO)
+  -> completion callback API
 ```
 
 The CPU deployment uses one container (`max_containers=1`) with up to 32 concurrent
@@ -56,8 +56,13 @@ that includes preparation and submission time. Failures produce a failed outcome
 trigger best-effort cancellation if a worker was submitted.
 
 The function logs success or failure without transcript text, task tokens, or
-exception messages. Posting the terminal outcome to the callback HTTP API remains
-to be implemented.
+exception messages. It posts the terminal outcome to the URI configured by the
+required `TRANSCRIPTION_CALLBACK_URI` environment variable, which each orchestration
+validates before starting transcription. Failure callbacks
+identify the exception type but omit its message to avoid exposing signed URLs,
+credentials, internal paths, or provider response bodies. Callback delivery makes
+up to three attempts for network errors, request timeouts, HTTP 408/425/429, and
+server errors, with exponential backoff between attempts.
 
 Granite runs on an L4 GPU and normalizes any FFmpeg-supported audio input to
 mono 16 kHz. Inputs are limited to 512 MiB and five minutes of decoded audio.

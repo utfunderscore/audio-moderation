@@ -7,11 +7,8 @@ from pydantic import BaseModel, ConfigDict
 
 
 from socialguard_models.idempotency import SchedulingUnavailableError, schedule_idempotently
-from socialguard_models.transcription import (
-    ModelType,
-    TranscriptionTask,
-    process_transcription,
-)
+from socialguard_models.transcription import process_transcription
+from socialguard_models.transcription_contracts import ModelType, TranscriptionTask
 
 router = APIRouter()
 
