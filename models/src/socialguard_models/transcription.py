@@ -14,7 +14,7 @@ from socialguard_models.callbacks import (
     post_completion_callback,
 )
 from socialguard_models.granite import GraniteSpeech
-from socialguard_models.modal_app import app, cpu_image
+from socialguard_models.modal_app import app, cpu_image, runtime_secret
 from socialguard_models.transcription_contracts import (
     CompletedOutcome,
     FailedOutcome,
@@ -100,6 +100,7 @@ async def run_transcription(task: TranscriptionTask) -> TranscriptionOutcome:
 
 @app.function(  # pyright: ignore[reportUnknownMemberType]
     image=cpu_image,
+    secrets=[runtime_secret],
     timeout=PROCESS_TIMEOUT_SECONDS,
 )
 @modal.concurrent(max_inputs=MAX_CONCURRENT_TRANSCRIPTIONS)  # pyright: ignore[reportUnknownMemberType]

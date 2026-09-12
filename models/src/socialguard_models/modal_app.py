@@ -5,6 +5,11 @@ import modal
 
 app = modal.App("socialguard-transcription")
 
+runtime_secret = modal.Secret.from_name(
+    "socialguard-transcription-runtime",
+    required_keys=["TRANSCRIPTION_CALLBACK_URI", "AWS_ROLE_ARN"],
+)
+
 cpu_image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(

@@ -73,6 +73,20 @@ The AWS role named by `AWS_ROLE_ARN` must trust Modal's OIDC provider and permit
 `s3:GetObject` for input objects. The endpoint also requires Modal proxy
 authentication.
 
+Create the named Modal Secret that injects the required runtime configuration
+into the remote orchestration worker. Setting these variables only in the shell
+that runs `modal deploy` does not automatically expose them to Modal containers:
+
+```sh
+uv run modal secret create socialguard-transcription-runtime \
+  TRANSCRIPTION_CALLBACK_URI="${TRANSCRIPTION_CALLBACK_URI:?required}" \
+  AWS_ROLE_ARN="${AWS_ROLE_ARN:?required}"
+```
+
+Use `--force` when intentionally replacing an existing secret. The secret must
+exist in the same Modal environment used by `modal serve` or `modal deploy`.
+Deployment validates that both keys exist before starting the application.
+
 Preload the pinned Granite model revision into the automatically created
 `socialguard-transcription-models` Modal volume:
 
