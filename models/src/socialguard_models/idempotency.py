@@ -2,7 +2,8 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from time import sleep
+from threading import Lock
+from time import sleep, time
 from typing import Literal
 from uuid import uuid4
 
@@ -14,6 +15,8 @@ task_ids = modal.Dict.from_name(
 )
 SCHEDULING_RESOLUTION_ATTEMPTS = 20
 SCHEDULING_RESOLUTION_INTERVAL_SECONDS = 0.05
+SCHEDULING_LEASE_SECONDS = 30
+_claim_locks = tuple(Lock() for _ in range(64))
 
 
 class SchedulingUnavailableError(RuntimeError):
@@ -22,40 +25,116 @@ class SchedulingUnavailableError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class _TaskSchedule:
+    """Legacy scheduling record retained for persisted Modal Dict values."""
+
+    task_id: str
+    status: Literal["pending", "scheduled"]
+
+
+@dataclass(frozen=True, slots=True)
+class TaskSchedule:
     """The shared scheduling state for one idempotency key."""
 
     task_id: str
     status: Literal["pending", "scheduled"]
+    lease_expires_at: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Claim:
+    schedule: TaskSchedule
+    acquired: bool
+
+
+def _claim_lock_for(idempotency_key: str) -> Lock:
+    return _claim_locks[hash(idempotency_key) % len(_claim_locks)]
+
+
+def _normalize_schedule(value: object) -> TaskSchedule | None:
+    if isinstance(value, TaskSchedule):
+        return value
+    if isinstance(value, _TaskSchedule):
+        return TaskSchedule(task_id=value.task_id, status=value.status)
+    return None
+
+
+def _claim_or_read(idempotency_key: str, claim_lock: Lock) -> _Claim | None:
+    with claim_lock:
+        stored = task_ids.get(idempotency_key)
+        schedule = _normalize_schedule(stored)
+        if schedule is not None and schedule.status == "scheduled":
+            return _Claim(schedule=schedule, acquired=False)
+        if (
+            schedule is not None
+            and schedule.lease_expires_at is not None
+            and schedule.lease_expires_at > time()
+        ):
+            return _Claim(schedule=schedule, acquired=False)
+
+        if schedule is not None:
+            task_id = schedule.task_id
+        elif stored is None:
+            task_id = f"transcription_{uuid4().hex}"
+        else:
+            return None
+
+        pending = TaskSchedule(
+            task_id=task_id,
+            status="pending",
+            lease_expires_at=time() + SCHEDULING_LEASE_SECONDS,
+        )
+        acquired = task_ids.put(
+            idempotency_key,
+            pending,
+            skip_if_exists=stored is None,
+        )
+        return _Claim(schedule=pending, acquired=acquired) if acquired else None
+
+
+def _finalize_if_owned(
+    idempotency_key: str,
+    schedule: TaskSchedule,
+    claim_lock: Lock,
+) -> bool:
+    with claim_lock:
+        if task_ids.get(idempotency_key) != schedule:
+            return False
+        task_ids.put(
+            idempotency_key,
+            TaskSchedule(task_id=schedule.task_id, status="scheduled"),
+        )
+        return True
+
+
+def _wait_before_retry(attempt: int) -> None:
+    if attempt < SCHEDULING_RESOLUTION_ATTEMPTS - 1:
+        sleep(SCHEDULING_RESOLUTION_INTERVAL_SECONDS)
 
 
 def schedule_idempotently(
     idempotency_key: str,
     dispatch: Callable[[str], None],
 ) -> str:
-    """Schedule work once and return its task ID after the dispatch is accepted."""
+    """Schedule logical work and return its stable ID after dispatch is accepted."""
+    claim_lock = _claim_lock_for(idempotency_key)
     for attempt in range(SCHEDULING_RESOLUTION_ATTEMPTS):
-        task_id = f"transcription_{uuid4().hex}"
-        pending = _TaskSchedule(task_id=task_id, status="pending")
-        if task_ids.put(idempotency_key, pending, skip_if_exists=True):
-            try:
-                dispatch(task_id)
-            except Exception as error:
-                task_ids.pop(idempotency_key, None)
-                raise SchedulingUnavailableError from error
+        claim = _claim_or_read(idempotency_key, claim_lock)
+        if claim is not None and claim.schedule.status == "scheduled":
+            return claim.schedule.task_id
 
+        if claim is not None and claim.acquired:
             try:
-                task_ids.put(
+                dispatch(claim.schedule.task_id)
+                finalized = _finalize_if_owned(
                     idempotency_key,
-                    _TaskSchedule(task_id=task_id, status="scheduled"),
+                    claim.schedule,
+                    claim_lock,
                 )
             except Exception as error:
                 raise SchedulingUnavailableError from error
-            return task_id
+            if finalized:
+                return claim.schedule.task_id
 
-        existing = task_ids.get(idempotency_key)
-        if isinstance(existing, _TaskSchedule) and existing.status == "scheduled":
-            return existing.task_id
-        if attempt < SCHEDULING_RESOLUTION_ATTEMPTS - 1:
-            sleep(SCHEDULING_RESOLUTION_INTERVAL_SECONDS)
+        _wait_before_retry(attempt)
 
     raise SchedulingUnavailableError

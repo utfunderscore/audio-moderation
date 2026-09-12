@@ -39,6 +39,18 @@ class TaskIds:
             return self.values.pop(key, default)
 
 
+class FinalWriteFailsTaskIds(TaskIds):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_scheduled_write = True
+
+    def put(self, key: str, value: object, *, skip_if_exists: bool = False) -> bool:
+        if getattr(value, "status", None) == "scheduled" and self.fail_scheduled_write:
+            self.fail_scheduled_write = False
+            raise RuntimeError("Modal Dict is unavailable")
+        return super().put(key, value, skip_if_exists=skip_if_exists)
+
+
 class Scheduler:
     def __init__(self, failure: Exception | None = None) -> None:
         self.failure = failure
@@ -61,6 +73,24 @@ class FirstAttemptFailsScheduler(Scheduler):
         if len(self.calls) == 1:
             self.first_started.set()
             assert self.release_first.wait(timeout=5)
+            raise RuntimeError("Modal is unavailable")
+
+
+class LateDispatcherScheduler(Scheduler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock = Lock()
+        self.first_started = Event()
+        self.release_first = Event()
+
+    def spawn(self, task: TranscriptionTask, task_id: str) -> None:
+        with self.lock:
+            call_index = len(self.calls)
+            self.calls.append((task, task_id))
+        if call_index == 0:
+            self.first_started.set()
+            assert self.release_first.wait(timeout=5)
+        elif call_index == 1:
             raise RuntimeError("Modal is unavailable")
 
 
@@ -123,7 +153,7 @@ def test_concurrent_retries_schedule_only_the_atomic_claimant(
     assert len(scheduler.calls) == 1
 
 
-def test_retry_waits_for_pending_schedule_before_returning_a_task_id(
+def test_concurrent_retry_does_not_steal_live_claim(
     monkeypatch: pytest.MonkeyPatch, transcription_request: TranscriptionRequest,
 ) -> None:
     pending_observed = Event()
@@ -146,31 +176,144 @@ def test_retry_waits_for_pending_schedule_before_returning_a_task_id(
         scheduler.release_first.set()
         outcomes = [first.result(timeout=5), second.result(timeout=5)]
 
-    assert sum(isinstance(outcome, HTTPException) for outcome in outcomes) == 1
-    queued = next(
-        outcome
-        for outcome in outcomes
-        if isinstance(outcome, transcription_api.QueuedTranscriptionResponse)
-    )
-    assert queued.task_id == scheduler.calls[1][1]
+    assert all(isinstance(outcome, HTTPException) for outcome in outcomes)
+    assert len(scheduler.calls) == 1
+    stored = task_ids.values[transcription_request.idempotency_key]
+    assert getattr(stored, "task_id") == scheduler.calls[0][1]
 
 
-def test_transcribe_releases_claim_when_scheduling_fails(
+def test_transcribe_retains_claim_when_scheduling_fails(
     monkeypatch: pytest.MonkeyPatch, transcription_request: TranscriptionRequest,
 ) -> None:
+    now = [100.0]
     task_ids = TaskIds()
+    failing_scheduler = Scheduler(RuntimeError("Modal is unavailable"))
     monkeypatch.setattr(idempotency, "task_ids", task_ids)
-    monkeypatch.setattr(
-        transcription_api,
-        "process_transcription",
-        Scheduler(RuntimeError("Modal is unavailable")),
-    )
+    monkeypatch.setattr(idempotency, "time", lambda: now[0])
+    monkeypatch.setattr(idempotency, "SCHEDULING_LEASE_SECONDS", 10)
+    monkeypatch.setattr(idempotency, "SCHEDULING_RESOLUTION_ATTEMPTS", 1)
+    monkeypatch.setattr(transcription_api, "process_transcription", failing_scheduler)
 
     with pytest.raises(HTTPException) as error:
         transcription_api.transcribe(transcription_request)
 
     assert error.value.status_code == 503
-    assert task_ids.values == {}
+    stored = task_ids.values[transcription_request.idempotency_key]
+    original_task_id = getattr(stored, "task_id")
+
+    now[0] = 111.0
+    scheduler = Scheduler()
+    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+    response = transcription_api.transcribe(transcription_request)
+
+    assert response.task_id == original_task_id
+    assert scheduler.calls[0][1] == original_task_id
+
+
+def test_retry_recovers_claim_after_final_write_fails(
+    monkeypatch: pytest.MonkeyPatch, transcription_request: TranscriptionRequest,
+) -> None:
+    now = [100.0]
+    task_ids = FinalWriteFailsTaskIds()
+    scheduler = Scheduler()
+    monkeypatch.setattr(idempotency, "task_ids", task_ids)
+    monkeypatch.setattr(idempotency, "time", lambda: now[0], raising=False)
+    monkeypatch.setattr(idempotency, "SCHEDULING_LEASE_SECONDS", 10, raising=False)
+    monkeypatch.setattr(idempotency, "SCHEDULING_RESOLUTION_ATTEMPTS", 1)
+    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+
+    with pytest.raises(HTTPException) as error:
+        transcription_api.transcribe(transcription_request)
+    assert error.value.status_code == 503
+
+    now[0] = 111.0
+    response = transcription_api.transcribe(transcription_request)
+
+    assert response.task_id == scheduler.calls[0][1]
+    assert [task_id for _, task_id in scheduler.calls] == [
+        response.task_id,
+        response.task_id,
+    ]
+
+
+def test_retry_recovers_expired_claim_left_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch, transcription_request: TranscriptionRequest,
+) -> None:
+    task_ids = TaskIds()
+    task_ids.values[transcription_request.idempotency_key] = (
+        idempotency.TaskSchedule(
+            task_id="transcription_abandoned",
+            status="pending",
+            lease_expires_at=100.0,
+        )
+    )
+    scheduler = Scheduler()
+    monkeypatch.setattr(idempotency, "task_ids", task_ids)
+    monkeypatch.setattr(idempotency, "time", lambda: 101.0)
+    monkeypatch.setattr(idempotency, "SCHEDULING_RESOLUTION_ATTEMPTS", 1)
+    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+
+    response = transcription_api.transcribe(transcription_request)
+
+    assert response.task_id == "transcription_abandoned"
+    assert scheduler.calls[0][1] == response.task_id
+
+
+@pytest.mark.parametrize("status", ["pending", "scheduled"])
+def test_retry_normalizes_legacy_schedule_records(
+    monkeypatch: pytest.MonkeyPatch,
+    transcription_request: TranscriptionRequest,
+    status: str,
+) -> None:
+    task_ids = TaskIds()
+    task_ids.values[transcription_request.idempotency_key] = (
+        idempotency._TaskSchedule(  # pyright: ignore[reportPrivateUsage]
+            task_id="transcription_legacy",
+            status=status,  # type: ignore[arg-type]
+        )
+    )
+    scheduler = Scheduler()
+    monkeypatch.setattr(idempotency, "task_ids", task_ids)
+    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+
+    response = transcription_api.transcribe(transcription_request)
+
+    assert response.task_id == "transcription_legacy"
+    assert len(scheduler.calls) == (1 if status == "pending" else 0)
+
+
+def test_late_dispatcher_does_not_overwrite_newer_scheduled_claim(
+    monkeypatch: pytest.MonkeyPatch, transcription_request: TranscriptionRequest,
+) -> None:
+    now = [100.0]
+    task_ids = TaskIds()
+    scheduler = LateDispatcherScheduler()
+    monkeypatch.setattr(idempotency, "task_ids", task_ids)
+    monkeypatch.setattr(idempotency, "time", lambda: now[0])
+    monkeypatch.setattr(idempotency, "SCHEDULING_LEASE_SECONDS", 10)
+    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        late_response = executor.submit(
+            transcription_api.transcribe, transcription_request
+        )
+        assert scheduler.first_started.wait(timeout=5)
+        now[0] = 111.0
+        try:
+            with pytest.raises(HTTPException):
+                transcription_api.transcribe(transcription_request)
+            now[0] = 122.0
+            current_response = transcription_api.transcribe(transcription_request)
+        finally:
+            scheduler.release_first.set()
+        resolved_late_response = late_response.result(timeout=5)
+
+    assert resolved_late_response.task_id == current_response.task_id
+    stored = task_ids.values[transcription_request.idempotency_key]
+    assert getattr(stored, "task_id") == current_response.task_id
+    assert scheduler.calls[0][1] == scheduler.calls[1][1]
+    assert scheduler.calls[1][1] == scheduler.calls[2][1]
+    assert scheduler.calls[2][1] == current_response.task_id
 
 
 def test_request_rejects_unknown_fields() -> None:

@@ -135,9 +135,16 @@ The endpoint returns `202 Accepted` as soon as work has been scheduled:
 }
 ```
 
-An identical retry returns the original `task_id` without scheduling another task.
-Retries that arrive while Modal is acknowledging the original `spawn()` wait briefly
-for that scheduling result, so they are never told that an unscheduled task is queued.
+Once scheduling is recorded, an identical retry returns the original `task_id`
+without scheduling another task. Retries that arrive while Modal is acknowledging
+the original `spawn()` wait briefly for that scheduling result, so they are never
+told that an unscheduled task is queued.
+Pending scheduling claims expire after 30 seconds. A later retry recovers an expired
+claim with the same `task_id`, preventing a process exit or failed state write from
+blocking that idempotency key permanently. Because dispatch and state persistence are
+separate remote operations, recovery may resubmit a call whose acceptance could not be
+recorded; both calls retain the same logical task ID. Claims are never deleted, so an
+idempotency key cannot be reassigned to a different task after partial failure.
 
 ## Adding A Model
 
