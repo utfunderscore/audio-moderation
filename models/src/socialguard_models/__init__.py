@@ -1,1 +1,1 @@
-"""Typed ASR model deployments for Modal."""
+"""SocialGuard model package."""

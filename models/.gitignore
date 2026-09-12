@@ -1,31 +1,8 @@
-# Python bytecode and caches
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.ruff_cache/
-.pyright/
-
-# Virtual environments
 .venv/
-
-# Coverage and build artifacts
-.coverage
-.coverage.*
-htmlcov/
-build/
+.basedpyright/
+.pytest_cache/
 dist/
+build/
 *.egg-info/
-
-# Local configuration and secrets
-.env
-.env.*
-!.env.example
-.modal-proxy-token.env
-
-# Editors and operating systems
-.idea/
-.vscode/
-.DS_Store
-
-# Generated/tooling artifacts
-.pi-subagents/

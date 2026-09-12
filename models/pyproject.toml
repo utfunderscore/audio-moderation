@@ -1,79 +1,29 @@
 [project]
 name = "socialguard-models"
 version = "0.1.0"
-description = "Typed ASR model deployments for Modal"
+description = "Models and integrations for SocialGuard"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "boto3>=1.42,<2",
-    "fastapi>=0.115,<1",
-    "httpx>=0.28,<1",
-    "modal>=1,<2",
-    "pydantic>=2.10,<3",
-    "python-multipart>=0.0.20,<1",
+    "boto3>=1.35",
+    "fastapi>=0.115",
+    "modal>=1.0",
+    "pydantic>=2.9",
+]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.22",
+    "httpx>=0.27",
+    "pytest>=8.3",
 ]
 
 [build-system]
-requires = ["uv_build>=0.11.0,<0.12.0"]
-build-backend = "uv_build"
-
-[dependency-groups]
-backend-granite = [
-    "huggingface-hub==0.34.4",
-    "soundfile==0.13.1",
-    "torch==2.7.1",
-    "torchaudio==2.7.1",
-    "transformers==4.54.0",
-]
-dev = [
-    "basedpyright>=1.39,<2",
-    "boto3-stubs[s3]>=1.42,<2",
-    "pytest>=9,<10",
-    "ruff>=0.15,<1",
-]
-
-[tool.uv]
-package = true
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.basedpyright]
-include = ["src", "tests", "typings"]
-exclude = [".venv"]
-stubPath = "typings"
-pythonVersion = "3.12"
+include = ["src"]
 typeCheckingMode = "strict"
-failOnWarnings = true
-
-[tool.pytest.ini_options]
-addopts = ["--strict-config", "--strict-markers", "-ra"]
-testpaths = ["tests"]
-
-[tool.ruff]
-line-length = 88
-target-version = "py312"
-
-[tool.ruff.lint]
-select = ["ALL"]
-ignore = [
-    "COM812", # Conflicts with the formatter.
-    "CPY001", # The project does not require per-file copyright notices.
-    "D203",   # Prefer no blank line before class docstrings.
-    "D213",   # Prefer summary on the first docstring line.
-]
-
-[tool.ruff.lint.per-file-ignores]
-"src/socialguard_models/deployments/granite_{prefetch,smoke}.py" = [
-    "PLC0415", # Modal-only ML imports must not load in the default local environment.
-]
-"src/socialguard_models/deployments/granite.py" = [
-    "PLC0415", # The local API image intentionally omits Modal-only ML dependencies.
-]
-"src/socialguard_models/voice_safety/models/roblox/roblox_model.py" = [
-    "PLC0415", # The local environment intentionally omits the Modal-only ML dependencies.
-]
-"tests/unit/test_gateway_runtime.py" = ["ARG005", "D102", "D107", "PLR2004", "PT018"]
-"tests/unit/test_s3_audio.py" = ["D102", "D107", "S105", "S106", "SLF001"]
-"tests/unit/test_roblox_model.py" = ["SLF001"]
-"tests/**/*.py" = ["S101"]
-
-[tool.ruff.format]
-docstring-code-format = true
+pythonVersion = "3.12"
+reportMissingTypeStubs = "warning"
