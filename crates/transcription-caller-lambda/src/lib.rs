@@ -40,7 +40,7 @@ impl TranscriptionService for ModalAsrClient {
     ) -> Result<TranscriptionResponse, TranscriptionServiceError> {
         let response = self
             .client
-            .put(&self.endpoint)
+            .post(&self.endpoint)
             .bearer_auth(&self.token)
             .json(&request)
             .send()

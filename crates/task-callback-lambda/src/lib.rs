@@ -3,8 +3,7 @@ use std::future::Future;
 use aws_sdk_sfn::Client as SfnClient;
 use aws_sdk_sfn::error::{ProvideErrorMetadata, SdkError};
 use lambda_http::Body;
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
 use tracing::info;
 
 const MAX_TASK_TOKEN_BYTES: usize = 2_048;
@@ -127,8 +126,10 @@ impl<S: StepFunctions> TaskCallbackHandler<S> {
         }
 
         let result = match callback.outcome {
-            Outcome::Success { result } => {
-                let output = match serde_json::to_string(&result) {
+            Outcome::Success {
+                transcription_result,
+            } => {
+                let output = match serde_json::to_string(&transcription_result) {
                     Ok(output) if output.len() <= MAX_SUCCESS_OUTPUT_BYTES => output,
                     _ => return 400,
                 };
@@ -175,15 +176,25 @@ struct CallbackRequest {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[serde(tag = "type")]
 enum Outcome {
+    #[serde(rename = "success", rename_all = "camelCase")]
     Success {
-        result: Value,
+        transcription_result: TranscriptionResult,
     },
+    #[serde(rename = "failure")]
     Failure {
         error: Option<String>,
         cause: Option<String>,
     },
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TranscriptionResult {
+    job_id: String,
+    asr_task_id: String,
+    transcription: String,
 }
 
 pub fn response(status: u16) -> lambda_http::Response<Body> {
@@ -265,17 +276,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forwards_success_result_without_the_task_token() {
+    async fn forwards_transcription_result_without_the_task_token() {
         let step_functions = MockStepFunctions::default();
         let handler = TaskCallbackHandler::new(step_functions);
-        let body = br#"{"taskToken":"token-123","outcome":{"type":"success","result":{"nested":[null,{"ok":true}],"count":2}}}"#;
+        let body = br#"{"taskToken":"token-123","outcome":{"type":"success","transcriptionResult":{"jobId":"42","asrTaskId":"fc-123","transcription":"hello world"}}}"#;
 
         assert_eq!(handler.handle(body).await, 204);
         assert_eq!(
             handler.step_functions.calls(),
             vec![Call::Success {
                 task_token: "token-123".to_owned(),
-                output: r#"{"count":2,"nested":[null,{"ok":true}]}"#.to_owned(),
+                output: r#"{"jobId":"42","asrTaskId":"fc-123","transcription":"hello world"}"#
+                    .to_owned(),
             }]
         );
     }
@@ -321,8 +333,10 @@ mod tests {
 
         for body in [
             br#"{"taskToken":"token","outcome":"success"}"#.as_slice(),
-            br#"{"outcome":{"type":"success","result":null}}"#.as_slice(),
+            br#"{"outcome":{"type":"success","transcriptionResult":{"jobId":"42","asrTaskId":"fc-123","transcription":"hello"}}}"#.as_slice(),
+            br#"{"taskToken":"token","outcome":{"type":"success","result":null}}"#.as_slice(),
             br#"{"taskToken":"token","outcome":{"type":"success"}}"#.as_slice(),
+            br#"{"taskToken":"token","outcome":{"type":"success","transcriptionResult":{"jobId":"42"}}}"#.as_slice(),
             br#"not json"#.as_slice(),
         ] {
             assert_eq!(handler.handle(body).await, 400);
@@ -335,23 +349,20 @@ mod tests {
         let step_functions = MockStepFunctions::default();
         let handler = TaskCallbackHandler::new(step_functions);
 
-        assert_eq!(handler.handle(&success_body("x", Value::Null)).await, 204);
-        assert_eq!(handler.handle(&success_body("", Value::Null)).await, 400);
+        let empty = transcription_result(String::new());
+        let output_base = serde_json::to_string(&empty).unwrap().len();
+
+        assert_eq!(handler.handle(&success_body("x", &empty)).await, 204);
+        assert_eq!(handler.handle(&success_body("", &empty)).await, 400);
         assert_eq!(
             handler
-                .handle(&success_body(
-                    &"t".repeat(MAX_TASK_TOKEN_BYTES),
-                    Value::Null
-                ))
+                .handle(&success_body(&"t".repeat(MAX_TASK_TOKEN_BYTES), &empty))
                 .await,
             204
         );
         assert_eq!(
             handler
-                .handle(&success_body(
-                    &"t".repeat(MAX_TASK_TOKEN_BYTES + 1),
-                    Value::Null
-                ))
+                .handle(&success_body(&"t".repeat(MAX_TASK_TOKEN_BYTES + 1), &empty))
                 .await,
             400
         );
@@ -359,7 +370,7 @@ mod tests {
             handler
                 .handle(&success_body(
                     "token",
-                    Value::String("x".repeat(MAX_SUCCESS_OUTPUT_BYTES - 2)),
+                    &transcription_result("x".repeat(MAX_SUCCESS_OUTPUT_BYTES - output_base)),
                 ))
                 .await,
             204
@@ -368,7 +379,7 @@ mod tests {
             handler
                 .handle(&success_body(
                     "token",
-                    Value::String("x".repeat(MAX_SUCCESS_OUTPUT_BYTES - 1)),
+                    &transcription_result("x".repeat(MAX_SUCCESS_OUTPUT_BYTES - output_base + 1)),
                 ))
                 .await,
             400
@@ -418,6 +429,7 @@ mod tests {
 
     #[tokio::test]
     async fn maps_step_functions_errors_to_http_statuses() {
+        let empty = transcription_result(String::new());
         for (error, expected_status) in [
             (StepFunctionsError::InvalidToken, 409),
             (StepFunctionsError::TaskTimedOut, 409),
@@ -430,7 +442,7 @@ mod tests {
             let handler = TaskCallbackHandler::new(step_functions);
 
             assert_eq!(
-                handler.handle(&success_body("token", Value::Null)).await,
+                handler.handle(&success_body("token", &empty)).await,
                 expected_status
             );
         }
@@ -444,10 +456,18 @@ mod tests {
         assert!(callback_response.body().as_ref().is_empty());
     }
 
-    fn success_body(task_token: &str, result: Value) -> Vec<u8> {
+    fn transcription_result(transcription: String) -> TranscriptionResult {
+        TranscriptionResult {
+            job_id: "42".to_owned(),
+            asr_task_id: "fc-123".to_owned(),
+            transcription,
+        }
+    }
+
+    fn success_body(task_token: &str, transcription_result: &TranscriptionResult) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "taskToken": task_token,
-            "outcome": { "type": "success", "result": result },
+            "outcome": { "type": "success", "transcriptionResult": transcription_result },
         }))
         .unwrap()
     }

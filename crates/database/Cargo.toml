@@ -3,11 +3,12 @@ name = "database"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [dependencies]
 common = { path = "../common" }
 chrono = { version = "0.4.44", default-features = false, features = ["std"] }
-sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "macros", "postgres", "runtime-tokio-rustls"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio-rustls"] }
 thiserror = "2.0.18"
 
 [dev-dependencies]

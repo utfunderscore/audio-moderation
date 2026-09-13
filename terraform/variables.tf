@@ -69,7 +69,7 @@ variable "modal_proxy_token_secret_parameter_name" {
 variable "transcription_endpoint_url" {
   description = "Modal transcription API endpoint URL"
   type        = string
-  default     = "https://utfunderscore--socialguard-transcription-api-submit-tran-0a77af.modal.run"
+  default     = "https://utfunderscore-development--socialguard-transcription-serve-api.modal.run"
 }
 
 variable "tenant_id" {

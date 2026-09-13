@@ -56,4 +56,19 @@ callback task, for example:
 
 `ConvertAudio` should transition to that state only once the dispatcher exists
 and can securely hand the token to the external system. The callback success
-`result` becomes the state output; the token must not be included in it.
+`transcriptionResult` becomes the state output; the token must not be included
+in it. A successful callback body looks like:
+
+```json
+{
+  "taskToken": "<task-token>",
+  "outcome": {
+    "type": "success",
+    "transcriptionResult": {
+      "jobId": "42",
+      "asrTaskId": "fc-123",
+      "transcription": "spoken words..."
+    }
+  }
+}
+```

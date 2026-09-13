@@ -5,6 +5,8 @@ use testcontainers::{
     runners::AsyncRunner,
 };
 
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
+
 pub struct TestDatabase {
     _container: ContainerAsync<GenericImage>,
     pub pool: PgPool,
@@ -37,18 +39,10 @@ impl TestDatabase {
             .await
             .expect("test database should accept connections");
 
-        sqlx::raw_sql(include_str!(
-            "../../../../migrations/V1__create_review_jobs.sql"
-        ))
-        .execute(&pool)
-        .await
-        .expect("review job migration should apply");
-        sqlx::raw_sql(include_str!(
-            "../../../../migrations/V2__create_pipeline_tasks.sql"
-        ))
-        .execute(&pool)
-        .await
-        .expect("pipeline task migration should apply");
+        MIGRATOR
+            .run(&pool)
+            .await
+            .expect("test database migrations should apply");
 
         Self {
             _container: container,
