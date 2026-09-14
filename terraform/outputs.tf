@@ -55,6 +55,11 @@ output "task_callback_function_name" {
   value = aws_lambda_function.task_callback.function_name
 }
 
+output "task_callback_url" {
+  description = "SigV4-protected endpoint the external transcription service must call back"
+  value       = "${trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")}/callbacks/external-task"
+}
+
 output "transcription_caller_ecr_repository_url" {
   value = aws_ecr_repository.transcription_caller.repository_url
 }
@@ -75,8 +80,17 @@ output "tenant_id" {
   value = var.tenant_id
 }
 
+output "transcription_endpoint_url" {
+  value = var.transcription_endpoint_url
+}
+
 output "audio_processing_state_machine_arn" {
   value = aws_sfn_state_machine.audio_processing.arn
+}
+
+output "task_callback_test_state_machine_arn" {
+  description = "Test-only state machine used to supply a real callback task token"
+  value       = try(aws_sfn_state_machine.task_callback_test[0].arn, "")
 }
 
 output "resource_group_name" {

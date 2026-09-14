@@ -10,7 +10,7 @@ const SUBMIT_REVIEW_PATH: &str = "/audio.review.v1.AudioReviewService/SubmitRevi
 
 #[tokio::test]
 #[ignore = "requires AUDIO_MODERATION_API_ENDPOINT and a deployed AWS environment"]
-async fn submits_uploads_and_replays_against_aws() -> Result<(), Box<dyn std::error::Error>> {
+async fn submits_review_against_aws() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = env::var("AUDIO_MODERATION_API_ENDPOINT")?;
     let submit_url = format!("{}{}", endpoint.trim_end_matches('/'), SUBMIT_REVIEW_PATH);
     let idempotency_key = format!("deployed-test-{}", Uuid::new_v4());
@@ -22,9 +22,34 @@ async fn submits_uploads_and_replays_against_aws() -> Result<(), Box<dyn std::er
         Value::String("REVIEW_JOB_STATUS_AWAITING_UPLOAD".to_owned())
     );
 
+    assert!(
+        submitted["taskId"]
+            .as_str()
+            .is_some_and(|task_id| !task_id.is_empty())
+    );
+    assert!(
+        submitted["uploadUrl"]
+            .as_str()
+            .is_some_and(|upload_url| !upload_url.is_empty())
+    );
+    assert!(submitted["uploadHeaders"].is_object());
+
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires AUDIO_MODERATION_API_ENDPOINT and a deployed AWS environment"]
+async fn confirms_uploaded_review_against_aws() -> Result<(), Box<dyn std::error::Error>> {
+    let endpoint = env::var("AUDIO_MODERATION_API_ENDPOINT")?;
+    let submit_url = format!("{}{}", endpoint.trim_end_matches('/'), SUBMIT_REVIEW_PATH);
+    let idempotency_key = format!("deployed-test-{}", Uuid::new_v4());
+    let client = reqwest::Client::new();
+
+    let submitted = submit(&client, &submit_url, &idempotency_key).await?;
     let task_id = submitted["taskId"]
         .as_str()
-        .expect("submit response must contain taskId");
+        .expect("submit response must contain taskId")
+        .to_owned();
     let upload_url = submitted["uploadUrl"]
         .as_str()
         .expect("submit response must contain uploadUrl");

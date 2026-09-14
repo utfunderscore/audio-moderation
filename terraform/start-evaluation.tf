@@ -1,6 +1,6 @@
 resource "aws_ecr_repository" "start_evaluation" {
   name                 = "${local.name_prefix}-start-evaluation"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true

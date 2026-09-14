@@ -1,6 +1,6 @@
 resource "aws_ecr_repository" "transcription_caller" {
   name                 = "${local.name_prefix}-transcription-caller"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true

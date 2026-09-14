@@ -31,33 +31,15 @@ The Lambda does not verify SigV4 itself. Its execution role is limited to
 `states:SendTaskSuccess` and `states:SendTaskFailure` (these task-token APIs
 require `Resource: "*"`), in addition to basic Lambda logging.
 
-## Workflow integration prerequisite
+## Workflow integration
 
-The current audio-processing state machine ends after `ConvertAudio`; it has no
-external dispatcher or callback task. Before this endpoint can resume an
-execution, a dispatcher must receive the token and the state machine must use a
-callback task, for example:
-
-```json
-"DispatchExternalTask": {
-  "Type": "Task",
-  "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
-  "TimeoutSeconds": 3600,
-  "Parameters": {
-    "FunctionName": "<external-dispatcher-lambda-arn>",
-    "Payload": {
-      "input.$": "$",
-      "taskToken.$": "$$.Task.Token"
-    }
-  },
-  "End": true
-}
-```
-
-`ConvertAudio` should transition to that state only once the dispatcher exists
-and can securely hand the token to the external system. The callback success
-`transcriptionResult` becomes the state output; the token must not be included
-in it. A successful callback body looks like:
+The audio-processing state machine calls `transcription-caller` after
+`ConvertAudio` with a Step Functions task token. The external transcription
+service must return that token to this callback endpoint after it has finished.
+The callback success `transcriptionResult` resumes the callback task, but the
+production state machine uses `ResultPath = null` and discards that result; the
+terminal execution does not retain it. The token must not be included in the
+callback result. A successful callback body looks like:
 
 ```json
 {
@@ -72,3 +54,10 @@ in it. A successful callback body looks like:
   }
 }
 ```
+
+`AWS_PROFILE=admin ./deployment-integration.sh test task-callback` starts an
+isolated test-only Step Functions state machine. It directly invokes the
+deployed callback Lambda with a synthetic API Gateway v2 event envelope and a
+real task token, then waits for that test execution to succeed. It does not
+traverse API Gateway or modify the production state machine or Lambda
+configuration.

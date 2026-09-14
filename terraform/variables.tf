@@ -16,37 +16,31 @@ variable "environment" {
 variable "submit_audio_image_tag" {
   description = "Immutable ECR image tag pushed before applying the Lambda configuration"
   type        = string
-  default     = "latest"
 }
 
 variable "confirm_upload_image_tag" {
   description = "Immutable ECR image tag pushed before applying the Lambda configuration"
   type        = string
-  default     = "latest"
 }
 
 variable "audio_processing_image_tag" {
   description = "Immutable ECR image tag pushed before applying the audio-processing Lambda configuration"
   type        = string
-  default     = "latest"
 }
 
 variable "start_evaluation_image_tag" {
   description = "Immutable ECR image tag pushed before applying the start-evaluation Lambda configuration"
   type        = string
-  default     = "latest"
 }
 
 variable "task_callback_image_tag" {
   description = "Immutable ECR image tag pushed before applying the task-callback Lambda configuration"
   type        = string
-  default     = "latest"
 }
 
 variable "transcription_caller_image_tag" {
   description = "Immutable ECR image tag pushed before applying the transcription-caller Lambda configuration"
   type        = string
-  default     = "latest"
 }
 
 variable "database_parameter_name" {
@@ -67,7 +61,7 @@ variable "modal_proxy_token_secret_parameter_name" {
 }
 
 variable "transcription_endpoint_url" {
-  description = "Modal transcription API endpoint URL"
+  description = "Compatible external transcription API endpoint URL"
   type        = string
   default     = "https://utfunderscore-development--socialguard-transcription-serve-api.modal.run"
 }
@@ -104,4 +98,10 @@ variable "modal_workspace_id" {
     condition     = can(regex("^ac-[A-Za-z0-9]+$", var.modal_workspace_id))
     error_message = "modal_workspace_id must be a Modal workspace ID such as ac-12345abcd."
   }
+}
+
+variable "enable_test_resources" {
+  description = "Create deployed integration-test-only infrastructure"
+  type        = bool
+  default     = false
 }

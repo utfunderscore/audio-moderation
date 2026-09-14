@@ -13,6 +13,10 @@ use uuid::Uuid;
 
 const START_EVALUATION_PATH: &str = "/audio.moderation.v1.AudioModerationService/StartEvaluation";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const SYNTHETIC_AUDIO_S3_URIS: [&str; 2] = [
+    "s3://integration-test-inputs/first.wav",
+    "s3://integration-test-inputs/second.wav",
+];
 
 struct Environment {
     endpoint: String,
@@ -36,9 +40,10 @@ struct HttpResponse {
 }
 
 #[tokio::test]
-#[ignore = "requires a deployed start-evaluation Lambda, PostgreSQL, and pre-uploaded S3 audio"]
-async fn rejects_invalid_requests_without_writing_tasks() -> Result<(), Box<dyn Error>> {
-    let environment = Environment::load().await?;
+#[ignore = "requires a deployed start-evaluation Lambda and PostgreSQL"]
+async fn evaluation_ingress_rejects_invalid_requests_without_writing_tasks()
+-> Result<(), Box<dyn Error>> {
+    let environment = Environment::load_with_synthetic_audio().await?;
     let client = http_client()?;
     let prefix = format!("deployed-validation-{}", Uuid::new_v4());
     let url = environment.start_url();
@@ -107,7 +112,7 @@ async fn rejects_invalid_requests_without_writing_tasks() -> Result<(), Box<dyn 
 #[ignore = "requires a deployed start-evaluation Lambda, PostgreSQL, and pre-uploaded S3 audio"]
 async fn completes_a_fresh_evaluation_and_replays_without_another_attempt()
 -> Result<(), Box<dyn Error>> {
-    let environment = Environment::load().await?;
+    let environment = Environment::load_with_required_audio().await?;
     let client = http_client()?;
     let key = unique_key("fresh");
     let caller_reference = unique_key("caller");
@@ -176,8 +181,8 @@ async fn completes_a_fresh_evaluation_and_replays_without_another_attempt()
 
 #[tokio::test]
 #[ignore = "requires a deployed start-evaluation Lambda, PostgreSQL, and pre-uploaded S3 audio"]
-async fn dispatches_a_seeded_undispatched_task() -> Result<(), Box<dyn Error>> {
-    let environment = Environment::load().await?;
+async fn evaluation_dispatch_dispatches_a_seeded_undispatched_task() -> Result<(), Box<dyn Error>> {
+    let environment = Environment::load_with_required_audio().await?;
     let client = http_client()?;
     let key = unique_key("seeded-undispatched");
     let caller_reference = unique_key("caller");
@@ -204,8 +209,8 @@ async fn dispatches_a_seeded_undispatched_task() -> Result<(), Box<dyn Error>> {
 
 #[tokio::test]
 #[ignore = "requires a deployed start-evaluation Lambda, PostgreSQL, and pre-uploaded S3 audio"]
-async fn retries_a_seeded_failed_dispatch() -> Result<(), Box<dyn Error>> {
-    let environment = Environment::load().await?;
+async fn evaluation_dispatch_retries_a_seeded_failed_dispatch() -> Result<(), Box<dyn Error>> {
+    let environment = Environment::load_with_required_audio().await?;
     let client = http_client()?;
     let key = unique_key("retry");
     let caller_reference = unique_key("caller");
@@ -234,9 +239,10 @@ async fn retries_a_seeded_failed_dispatch() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test]
-#[ignore = "requires a deployed start-evaluation Lambda, PostgreSQL, and pre-uploaded S3 audio"]
-async fn skips_active_leases_and_terminal_failed_tasks() -> Result<(), Box<dyn Error>> {
-    let environment = Environment::load().await?;
+#[ignore = "requires a deployed start-evaluation Lambda and PostgreSQL"]
+async fn evaluation_ingress_skips_active_leases_and_terminal_failed_tasks()
+-> Result<(), Box<dyn Error>> {
+    let environment = Environment::load_with_synthetic_audio().await?;
     let client = http_client()?;
     let store = PipelineTaskStore::new(environment.pool.clone());
 
@@ -289,9 +295,10 @@ async fn skips_active_leases_and_terminal_failed_tasks() -> Result<(), Box<dyn E
 }
 
 #[tokio::test]
-#[ignore = "requires a deployed start-evaluation Lambda, PostgreSQL, and pre-uploaded S3 audio"]
-async fn rejects_conflicting_payloads_for_a_seeded_leased_task() -> Result<(), Box<dyn Error>> {
-    let environment = Environment::load().await?;
+#[ignore = "requires a deployed start-evaluation Lambda and PostgreSQL"]
+async fn evaluation_ingress_rejects_conflicting_payloads_for_a_seeded_leased_task()
+-> Result<(), Box<dyn Error>> {
+    let environment = Environment::load_with_synthetic_audio().await?;
     let client = http_client()?;
     let key = unique_key("payload-conflict");
     let caller_reference = unique_key("caller");
@@ -335,27 +342,49 @@ async fn rejects_conflicting_payloads_for_a_seeded_leased_task() -> Result<(), B
 }
 
 impl Environment {
-    async fn load() -> Result<Self, Box<dyn Error>> {
+    async fn load_with_synthetic_audio() -> Result<Self, Box<dyn Error>> {
+        Self::load(false).await
+    }
+
+    async fn load_with_required_audio() -> Result<Self, Box<dyn Error>> {
+        Self::load(true).await
+    }
+
+    async fn load(require_audio_fixture: bool) -> Result<Self, Box<dyn Error>> {
         let endpoint = required_env("AUDIO_MODERATION_API_ENDPOINT")?;
         let tenant_id = required_env("AUDIO_MODERATION_TENANT_ID")?;
         let database_url = required_env("DATABASE_URL")?;
-        let audio_s3_uris: Vec<String> =
-            serde_json::from_str(&required_env("AUDIO_MODERATION_TEST_AUDIO_S3_URIS")?)?;
-        if audio_s3_uris.len() < 2 {
-            return Err(invalid_input(
-                "AUDIO_MODERATION_TEST_AUDIO_S3_URIS must contain at least two audio object URIs",
-            ));
-        }
-        if audio_s3_uris[0] == audio_s3_uris[1] {
-            return Err(invalid_input(
-                "the first two audio object URIs must differ to test ordering conflicts",
-            ));
-        }
-        if audio_s3_uris.iter().any(|uri| !is_s3_object_uri(uri)) {
-            return Err(invalid_input(
-                "AUDIO_MODERATION_TEST_AUDIO_S3_URIS must contain s3://bucket/key URIs",
-            ));
-        }
+        let audio_s3_uris = match env::var("AUDIO_MODERATION_TEST_AUDIO_S3_URIS") {
+            Ok(value) => {
+                let audio_s3_uris: Vec<String> = serde_json::from_str(&value)?;
+                if audio_s3_uris.len() < 2 {
+                    return Err(invalid_input(
+                        "AUDIO_MODERATION_TEST_AUDIO_S3_URIS must contain at least two audio object URIs",
+                    ));
+                }
+                if audio_s3_uris[0] == audio_s3_uris[1] {
+                    return Err(invalid_input(
+                        "the first two audio object URIs must differ to test ordering conflicts",
+                    ));
+                }
+                if audio_s3_uris.iter().any(|uri| !is_s3_object_uri(uri)) {
+                    return Err(invalid_input(
+                        "AUDIO_MODERATION_TEST_AUDIO_S3_URIS must contain s3://bucket/key URIs",
+                    ));
+                }
+                audio_s3_uris
+            }
+            Err(env::VarError::NotPresent) if require_audio_fixture => {
+                return Err(invalid_input(
+                    "AUDIO_MODERATION_TEST_AUDIO_S3_URIS is required for tests that dispatch the deployed workflow",
+                ));
+            }
+            Err(env::VarError::NotPresent) => SYNTHETIC_AUDIO_S3_URIS
+                .iter()
+                .map(|uri| (*uri).to_owned())
+                .collect(),
+            Err(error) => return Err(error.into()),
+        };
 
         let pool = PgPoolOptions::new()
             .max_connections(2)
@@ -569,8 +598,9 @@ async fn wait_for_execution_success(execution_arn: &str) -> Result<(), Box<dyn E
         .load()
         .await;
     let client = SfnClient::new(&sdk_config);
+    let timeout = workflow_timeout();
 
-    for _ in 0..300 {
+    for _ in 0..(timeout.as_secs() / 2) {
         let execution = client
             .describe_execution()
             .execution_arn(execution_arn)
@@ -591,5 +621,17 @@ async fn wait_for_execution_success(execution_arn: &str) -> Result<(), Box<dyn E
         }
     }
 
-    Err(format!("workflow {execution_arn} did not complete within 10 minutes").into())
+    Err(format!(
+        "workflow {execution_arn} did not complete within {} seconds",
+        timeout.as_secs()
+    )
+    .into())
+}
+
+fn workflow_timeout() -> Duration {
+    env::var("AUDIO_MODERATION_WORKFLOW_TIMEOUT_SECS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(600))
 }

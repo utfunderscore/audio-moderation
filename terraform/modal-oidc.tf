@@ -62,6 +62,12 @@ resource "aws_iam_role_policy" "modal_stitched_audio_reader" {
         Action   = "lambda:InvokeFunction"
         Resource = aws_lambda_function.task_callback.arn
       },
+      {
+        Sid      = "CallTaskCallbackRoute"
+        Effect   = "Allow"
+        Action   = "execute-api:Invoke"
+        Resource = "${aws_apigatewayv2_api.public.execution_arn}/${aws_apigatewayv2_stage.default.name}/POST/callbacks/external-task"
+      },
     ]
   })
 }

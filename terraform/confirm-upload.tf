@@ -1,6 +1,6 @@
 resource "aws_ecr_repository" "confirm_upload" {
   name                 = "${local.name_prefix}-confirm-upload"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   # Permit retirement of the old upload-complete repository during this rename.
   force_delete = true
 

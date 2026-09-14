@@ -2,43 +2,53 @@
 
 ## Deployed integration tests
 
-`tests/deployed.rs` is ignored by default. It calls the deployed Connect endpoint, reads the same PostgreSQL database used by the Lambda, and describes the resulting Step Functions executions. It requires:
+`tests/deployed.rs` is ignored by default. It calls the deployed Connect endpoint, reads the same PostgreSQL database used by the Lambda, and describes the resulting Step Functions executions. Run it through the repository-root `deployment-integration.sh` command rather than directly. It requires:
 
-- a separately deployed `start-evaluation` Lambda and route; `deploy-upload-flow.sh` does **not** deploy this Lambda;
+- a full deployment, including the `start-evaluation`, audio-processing, transcription-caller, and task-callback Lambdas;
 - applied Terraform for that deployment;
-- AWS credentials for the local `admin` profile. When configuration is resolved automatically, they must allow Terraform state access, `lambda:GetFunctionConfiguration`, and `ssm:GetParameter`/KMS decryption. Step Functions assertions also require `states:DescribeExecution`; `--audio-file` additionally requires `s3:PutObject` on the uploads bucket; and
-- either `AUDIO_MODERATION_TEST_AUDIO_S3_URIS` set to a JSON array containing at least two pre-uploaded, valid audio object URIs readable by the deployed workflow, with the first two distinct, for example `["s3://bucket/one.wav","s3://bucket/two.wav"]`; or a regular, readable, nonempty local audio file passed with `--audio-file`.
+- AWS credentials for the local `admin` profile. When configuration is resolved automatically, they must allow Terraform state access and `ssm:GetParameter`/KMS decryption. Step Functions assertions also require `states:DescribeExecution`; `--audio-file` additionally requires `s3:PutObject` on the uploads bucket; and
+- for dispatch and end-to-end evaluation, a regular, readable, nonempty local audio file passed with `--audio-file`.
 
-The runner automatically resolves omitted `AUDIO_MODERATION_API_ENDPOINT` from
-the Terraform `api_endpoint` output; `AWS_REGION` from the region component of
-the `audio_processing_state_machine_arn` output; and
-`AUDIO_MODERATION_TENANT_ID` and `DATABASE_URL` from the deployed Lambda. For
-the database URL, it reads the Lambda's `DATABASE_URL_PARAMETER` and decrypts
-that SSM parameter. `terraform`, `aws`, and `jq` are required when this
-discovery is needed and whenever `--audio-file` provisions fixtures. Set any
-of `AUDIO_MODERATION_API_ENDPOINT`, `AWS_REGION`,
-`AUDIO_MODERATION_TENANT_ID`, or `DATABASE_URL` explicitly to override its
+The runner resolves omitted `AUDIO_MODERATION_API_ENDPOINT` and
+`AUDIO_MODERATION_TENANT_ID` from Terraform outputs. It decrypts the configured
+database SSM parameter without printing it. `terraform`, `aws`, and `jq` are
+required when this discovery is needed and whenever `--audio-file` provisions
+fixtures. Set `AUDIO_MODERATION_API_ENDPOINT`,
+`AUDIO_MODERATION_TENANT_ID`, or `DATABASE_URL` explicitly to override this
 automatic resolution.
 
-Run all six tests with the repository-root runner:
+Run the fixture-free ingress tests, dispatch tests, or full terminal-workflow test with the repository-root runner:
 
 ```sh
-./run-start-evaluation-tests.sh
-# Or upload one local file to two distinct fixture keys for this run.
-./run-start-evaluation-tests.sh --audio-file ./sample_071.mp3
+AWS_PROFILE=admin ./deployment-integration.sh test evaluation-ingress
+AWS_PROFILE=admin ./deployment-integration.sh test evaluation-dispatch \
+  --audio-file ./sample_071.mp3
+AWS_PROFILE=admin ./deployment-integration.sh test evaluation-e2e \
+  --audio-file ./sample_071.mp3 \
+  --transcription-endpoint-url https://compatible.example/transcriptions \
+  --confirm-compatible-transcription-endpoint
 ```
 
-The runner works from any caller directory, validates configuration without
-printing secret values, sets `AWS_PROFILE=admin`, compiles the deployed test
-target before running it, and does not deploy infrastructure. With
-`--audio-file`, it resolves the path before changing to the repository root,
-uses `/proc/sys/kernel/random/uuid` to create a unique run ID, gets
-`uploads_bucket_name` from Terraform, uploads the file twice to
-`reviews/<run-id>/first/source` and `reviews/<run-id>/second/source`, and sets
-`AUDIO_MODERATION_TEST_AUDIO_S3_URIS` to those two URIs. Do not set both the
-flag and the environment variable. Use `./run-start-evaluation-tests.sh --help`
-for details.
+The runner validates configuration without printing secret values and does not
+deploy infrastructure for `test`. `evaluation-ingress` deliberately does not
+need `AUDIO_MODERATION_TEST_AUDIO_S3_URIS`: it uses two syntactically valid,
+distinct synthetic URIs while checking request validation, active leases,
+terminal retry behavior, and idempotency conflicts without dispatching or
+reading S3. `evaluation-e2e` and tests that dispatch the deployed workflow still
+require real `AUDIO_MODERATION_TEST_AUDIO_S3_URIS`; it uploads the specified
+local file twice below
+`reviews/integration-tests/<run-id>/first.wav` and `second.wav`; neither key
+ends in `/source`, so they cannot trigger the review confirmation notification.
+It removes those fixtures only after the terminal workflow has succeeded. On a
+failure it retains them and reports the prefix because asynchronous execution
+may still need them.
 
-The tests intentionally do not clean up their database rows or Step Functions executions so failures remain diagnosable. `--audio-file` also does not clean up its uploaded objects: workflows are asynchronous and the bucket lifecycle retains and eventually removes them. Running dispatch cases, including fixture uploads, uses real AWS resources and has AWS cost; provide only real audio objects, never placeholder object URIs.
+`evaluation-dispatch` uploads fixtures in the same non-notifying location and
+runs the seeded undispatched-task and failed-dispatch retry cases. Those tests
+assert dispatch metadata but do not wait for the production workflows to
+finish, so their fixtures are always retained and reported for asynchronous
+processing and diagnosis.
 
-Fixtures are seeded through `PipelineTaskStore`; read-only SQL verifies persisted state without accidentally creating missing records. Unique idempotency keys isolate each run. The suite checks ingress and dispatch, not downstream audio processing completion. Use a dedicated development environment with the current schema already applied; the tests do not run migrations.
+The tests intentionally do not clean up their database rows or Step Functions executions so failures remain diagnosable. Running dispatch or end-to-end evaluation uses real AWS resources and has AWS cost; provide only real audio objects, never placeholder object URIs.
+
+Fixtures are seeded through `PipelineTaskStore`; read-only SQL verifies persisted state without accidentally creating missing records. Unique idempotency keys isolate each run. The end-to-end suite waits for downstream audio processing, compatible external transcription, callback delivery, and terminal Step Functions success. Use a dedicated development environment with the current schema already applied; the tests do not run migrations. The checked-in socialguard-models application contract is not modified to resolve an endpoint mismatch; a compatible endpoint is an external prerequisite.

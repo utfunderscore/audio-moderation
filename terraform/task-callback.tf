@@ -1,6 +1,6 @@
 resource "aws_ecr_repository" "task_callback" {
   name                 = "${local.name_prefix}-task-callback"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
