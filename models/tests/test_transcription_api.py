@@ -7,8 +7,10 @@ from pydantic import ValidationError
 
 import socialguard_models.idempotency as idempotency
 import socialguard_models.api.transcription_api as transcription_api
+import socialguard_models.api.submission as submission
 from socialguard_models.api.transcription_api import TranscriptionRequest
-from socialguard_models.transcription_contracts import ModelType, TranscriptionTask
+from socialguard_models.transcription.contracts import ModelType, TranscriptionTask
+from socialguard_models.transcription.job import TranscriptionJob
 
 
 class TaskIds:
@@ -56,10 +58,10 @@ class Scheduler:
         self.failure = failure
         self.calls: list[tuple[TranscriptionTask, str]] = []
 
-    def spawn(self, task: TranscriptionTask, task_id: str) -> None:
+    def spawn(self, job: TranscriptionJob, task_id: str) -> None:
         if self.failure is not None:
             raise self.failure
-        self.calls.append((task, task_id))
+        self.calls.append((job.task, task_id))
 
 
 class FirstAttemptFailsScheduler(Scheduler):
@@ -68,8 +70,8 @@ class FirstAttemptFailsScheduler(Scheduler):
         self.first_started = Event()
         self.release_first = Event()
 
-    def spawn(self, task: TranscriptionTask, task_id: str) -> None:
-        self.calls.append((task, task_id))
+    def spawn(self, job: TranscriptionJob, task_id: str) -> None:
+        self.calls.append((job.task, task_id))
         if len(self.calls) == 1:
             self.first_started.set()
             assert self.release_first.wait(timeout=5)
@@ -83,10 +85,10 @@ class LateDispatcherScheduler(Scheduler):
         self.first_started = Event()
         self.release_first = Event()
 
-    def spawn(self, task: TranscriptionTask, task_id: str) -> None:
+    def spawn(self, job: TranscriptionJob, task_id: str) -> None:
         with self.lock:
             call_index = len(self.calls)
-            self.calls.append((task, task_id))
+            self.calls.append((job.task, task_id))
         if call_index == 0:
             self.first_started.set()
             assert self.release_first.wait(timeout=5)
@@ -111,7 +113,7 @@ def test_transcribe_schedules_once_and_replays_task_id(
     task_ids = TaskIds()
     scheduler = Scheduler()
     monkeypatch.setattr(idempotency, "task_ids", task_ids)
-    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+    monkeypatch.setattr(submission, "process_model", scheduler)
 
     first = transcription_api.transcribe(transcription_request)
     second = transcription_api.transcribe(transcription_request)
@@ -139,7 +141,7 @@ def test_concurrent_retries_schedule_only_the_atomic_claimant(
     task_ids = TaskIds()
     scheduler = Scheduler()
     monkeypatch.setattr(idempotency, "task_ids", task_ids)
-    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+    monkeypatch.setattr(submission, "process_model", scheduler)
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         responses = list(
@@ -160,7 +162,7 @@ def test_concurrent_retry_does_not_steal_live_claim(
     task_ids = TaskIds(pending_observed)
     scheduler = FirstAttemptFailsScheduler()
     monkeypatch.setattr(idempotency, "task_ids", task_ids)
-    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+    monkeypatch.setattr(submission, "process_model", scheduler)
 
     def submit() -> transcription_api.QueuedTranscriptionResponse | HTTPException:
         try:
@@ -192,7 +194,7 @@ def test_transcribe_retains_claim_when_scheduling_fails(
     monkeypatch.setattr(idempotency, "time", lambda: now[0])
     monkeypatch.setattr(idempotency, "SCHEDULING_LEASE_SECONDS", 10)
     monkeypatch.setattr(idempotency, "SCHEDULING_RESOLUTION_ATTEMPTS", 1)
-    monkeypatch.setattr(transcription_api, "process_transcription", failing_scheduler)
+    monkeypatch.setattr(submission, "process_model", failing_scheduler)
 
     with pytest.raises(HTTPException) as error:
         transcription_api.transcribe(transcription_request)
@@ -203,7 +205,7 @@ def test_transcribe_retains_claim_when_scheduling_fails(
 
     now[0] = 111.0
     scheduler = Scheduler()
-    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+    monkeypatch.setattr(submission, "process_model", scheduler)
     response = transcription_api.transcribe(transcription_request)
 
     assert response.task_id == original_task_id
@@ -220,7 +222,7 @@ def test_retry_recovers_claim_after_final_write_fails(
     monkeypatch.setattr(idempotency, "time", lambda: now[0], raising=False)
     monkeypatch.setattr(idempotency, "SCHEDULING_LEASE_SECONDS", 10, raising=False)
     monkeypatch.setattr(idempotency, "SCHEDULING_RESOLUTION_ATTEMPTS", 1)
-    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+    monkeypatch.setattr(submission, "process_model", scheduler)
 
     with pytest.raises(HTTPException) as error:
         transcription_api.transcribe(transcription_request)
@@ -251,7 +253,7 @@ def test_retry_recovers_expired_claim_left_before_dispatch(
     monkeypatch.setattr(idempotency, "task_ids", task_ids)
     monkeypatch.setattr(idempotency, "time", lambda: 101.0)
     monkeypatch.setattr(idempotency, "SCHEDULING_RESOLUTION_ATTEMPTS", 1)
-    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+    monkeypatch.setattr(submission, "process_model", scheduler)
 
     response = transcription_api.transcribe(transcription_request)
 
@@ -274,7 +276,7 @@ def test_retry_normalizes_legacy_schedule_records(
     )
     scheduler = Scheduler()
     monkeypatch.setattr(idempotency, "task_ids", task_ids)
-    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+    monkeypatch.setattr(submission, "process_model", scheduler)
 
     response = transcription_api.transcribe(transcription_request)
 
@@ -291,7 +293,7 @@ def test_late_dispatcher_does_not_overwrite_newer_scheduled_claim(
     monkeypatch.setattr(idempotency, "task_ids", task_ids)
     monkeypatch.setattr(idempotency, "time", lambda: now[0])
     monkeypatch.setattr(idempotency, "SCHEDULING_LEASE_SECONDS", 10)
-    monkeypatch.setattr(transcription_api, "process_transcription", scheduler)
+    monkeypatch.setattr(submission, "process_model", scheduler)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         late_response = executor.submit(

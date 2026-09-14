@@ -5,7 +5,7 @@ from typing import Self
 
 import pytest
 
-import socialguard_models.granite as granite
+import socialguard_models.transcription.models.granite as granite
 
 
 @pytest.mark.parametrize(
@@ -19,6 +19,40 @@ import socialguard_models.granite as granite
 def test_download_audio_requires_https(audio_url: str, tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="HTTPS"):
         granite._download_audio(audio_url, tmp_path / "audio")
+
+
+def test_transcribe_bytes_normalizes_in_memory_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = granite.GraniteSpeech._get_user_cls()()
+    captured: dict[str, bytes] = {}
+
+    def fake_normalize_audio(source: Path, destination: Path) -> None:
+        captured["source"] = source.read_bytes()
+        destination.write_bytes(b"normalized")
+
+    def fake_read_audio(audio_path: Path) -> object:
+        captured["read"] = audio_path.read_bytes()
+        return "waveform"
+
+    monkeypatch.setattr(granite, "_normalize_audio", fake_normalize_audio)
+    monkeypatch.setattr(granite, "_read_audio", fake_read_audio)
+    monkeypatch.setattr(worker, "_generate_transcript", lambda waveform: "transcript")
+
+    assert worker.transcribe_bytes(b"raw-audio") == "transcript"  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+    assert captured == {"source": b"raw-audio", "read": b"normalized"}
+
+
+def test_transcribe_bytes_rejects_audio_over_size_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = granite.GraniteSpeech._get_user_cls()()
+    monkeypatch.setattr(granite, "MAX_AUDIO_BYTES", 4)
+    monkeypatch.setattr(worker, "_transcribe_file", lambda source: "transcript")
+
+    assert worker.transcribe_bytes(b"1234") == "transcript"  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+    with pytest.raises(ValueError, match="audio file exceeds the 512 MiB limit"):
+        worker.transcribe_bytes(b"12345")  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
 
 
 def test_read_audio_rejects_audio_over_duration_limit(

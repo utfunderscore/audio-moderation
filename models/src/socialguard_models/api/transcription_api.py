@@ -1,42 +1,19 @@
 """Transcription submission HTTP route and request/response contracts."""
 
-from typing import Literal
-
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, ConfigDict
-
-
-from socialguard_models.idempotency import SchedulingUnavailableError, schedule_idempotently
-from socialguard_models.transcription import process_transcription
-from socialguard_models.transcription_contracts import ModelType, TranscriptionTask
+from fastapi import APIRouter, status
+from socialguard_models.api.contracts import AudioRequest, QueuedResponse
+from socialguard_models.api.submission import submit_model
+from socialguard_models.transcription.job import TranscriptionJob
+from socialguard_models.transcription.contracts import ModelType, TranscriptionTask
 
 router = APIRouter()
 
 
-class TranscriptionRequest(BaseModel):
-    model_config = ConfigDict(
-        extra="forbid",
-        json_schema_extra={
-            "$schema": "https://json-schema.org/draft/2020-12/schema"
-        },
-    )
-
+class TranscriptionRequest(AudioRequest):
     model: ModelType
-    audio_uri: str
-    idempotency_key: str
-    pipeline_task_id: str
-    task_token: str
 
 
-class QueuedTranscriptionResponse(BaseModel):
-    """An accepted transcription task that will complete asynchronously."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    status: Literal["queued"] = "queued"
-    task_id: str
-
-
+QueuedTranscriptionResponse = QueuedResponse
 @router.post("/", status_code=status.HTTP_202_ACCEPTED)
 def transcribe(request: TranscriptionRequest) -> QueuedTranscriptionResponse:
     """Atomically accept one task per idempotency key without awaiting execution."""
@@ -48,14 +25,4 @@ def transcribe(request: TranscriptionRequest) -> QueuedTranscriptionResponse:
         task_token=request.task_token,
     )
 
-    def dispatch(task_id: str) -> None:
-        process_transcription.spawn(task, task_id)  # pyright: ignore[reportFunctionMemberAccess]
-
-    try:
-        task_id = schedule_idempotently(task.idempotency_key, dispatch)
-    except SchedulingUnavailableError as error:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="unable to schedule transcription",
-        ) from error
-    return QueuedTranscriptionResponse(task_id=task_id)
+    return submit_model(TranscriptionJob(task))

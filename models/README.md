@@ -22,9 +22,56 @@ uv run pytest
 uv run basedpyright
 ```
 
+## Project layout
+
+```text
+src/socialguard_models/
+├── api/
+│   ├── contracts.py           # Shared request metadata and queued response
+│   ├── submission.py          # Shared acceptance, scheduling, and CPU dispatch
+│   ├── transcription_api.py   # POST /transcription/
+│   └── moderation_api.py      # POST /moderation/
+├── transcription/
+│   ├── contracts.py           # Transcription model IDs, tasks, and outcomes
+│   ├── job.py                 # Transcription inputs, GPU dispatch, output mapping
+│   ├── callbacks.py           # Transcription callback payloads
+│   └── models/granite.py      # Granite GPU runtime and image
+├── moderation/
+│   ├── contracts.py           # Audio + transcription task inputs
+│   └── models/                # Future moderation GPU runtimes
+├── contracts.py              # Shared audio task metadata and failure outcome
+├── model_job.py              # Typed adapter boundary for any model family
+├── orchestration.py          # Shared CPU worker, GPU waiting/cancellation, callbacks
+├── aws.py                    # OIDC credentials and S3 presigning
+├── callbacks.py              # Shared callback signing, delivery, and retries
+├── idempotency.py            # Family-scoped asynchronous scheduling
+├── modal_app.py              # Shared Modal app and CPU image
+└── cpu_worker.py             # HTTP deployment and route registration
+```
+
+Model families own their model identifiers, input/output contracts, GPU dispatch,
+and callback payload mapping. Both use the same submission and execution pipeline:
+
+```text
+family API route -> submit_model(job) -> idempotency claim
+  -> process_model(job, task_id) [CPU]
+     -> resolve S3 audio
+     -> job.submit(audio_url) [spawn family-specific GPU model]
+     -> await result with shared deadline and cancellation handling
+     -> job.callback_outcome(result, task_id)
+     -> signed callback with shared retries
+```
+
+`ModelJob[Result]` is a typed adapter for a serializable task, GPU submission, and
+mapping the model's result (or shared failure) to its callback payload. An adapter
+carries task data rather than a loaded model or AWS client. The CPU worker handles
+credentials, audio access, deadlines, failure logging, and callback delivery for
+every adapter. GPU dependencies stay in each model's image.
+
 ## Transcription API
 
-`src/socialguard_models/api/transcription_api.py` defines the `POST /` route.
+`src/socialguard_models/api/transcription_api.py` defines `POST /transcription/`.
+The existing `POST /` endpoint remains an alias, hidden from the API schema.
 `src/socialguard_models/cpu_worker.py` serves it as a FastAPI application and
 defines the shared CPU deployment. The route atomically claims each idempotency
 key in a shared Modal Dict, starts CPU orchestration in a separate Modal function,
@@ -33,7 +80,7 @@ and returns immediately:
 ```text
 HTTP endpoint
   -> shared idempotency claim (Modal Dict)
-  -> spawned transcription control plane (CPU)
+  -> shared model orchestration (CPU)
   -> selected transcription worker (GPU)
   -> completion callback API
 ```
@@ -48,11 +95,12 @@ Each spawned orchestration worker also handles up to 32 tasks concurrently. It u
 Modal's asynchronous remote-call APIs while waiting for GPU work, so those waits do
 not occupy one thread per transcription.
 
-The spawned task calls `run_transcription()` in
-`src/socialguard_models/transcription.py`. That function creates a short-lived S3
-URL using Modal OIDC credentials, selects the GPU worker with an explicit `match`
-on the model, submits it with `spawn()`, and waits for its result within a deadline
-that includes preparation and submission time. Failures produce a failed outcome and
+The spawned task calls `run_model()` in
+`src/socialguard_models/orchestration.py`. That function creates a short-lived S3
+URL using Modal OIDC credentials and asks the job adapter to submit GPU work.
+`TranscriptionJob.submit()` selects the GPU worker with an explicit `match` on the
+model. The shared pipeline waits for the result within a deadline that includes
+preparation and submission time. Failures produce a shared failed outcome and
 trigger best-effort cancellation if a worker was submitted.
 
 The function logs success or failure without transcript text, task tokens, or
@@ -70,28 +118,42 @@ The duration limit keeps audio embeddings and generated text within the model's
 context window while bounding temporary disk, memory, and inference time.
 
 The AWS role named by `AWS_ROLE_ARN` must trust Modal's OIDC provider and permit
-`s3:GetObject` for input objects. The endpoint also requires Modal proxy
-authentication.
+`s3:GetObject` for input objects and `execute-api:Invoke` for the callback API.
+The endpoint also requires Modal proxy authentication.
 
 Create the named Modal Secret that injects the required runtime configuration
-into the remote orchestration worker. Setting these variables only in the shell
+into the remote orchestration worker. For audio objects in the London region,
+set `AWS_REGION` to `eu-west-2`. Setting these variables only in the shell
 that runs `modal deploy` does not automatically expose them to Modal containers:
 
 ```sh
 uv run modal secret create socialguard-transcription-runtime \
-  TRANSCRIPTION_CALLBACK_URI="${TRANSCRIPTION_CALLBACK_URI:?required}" \
-  AWS_ROLE_ARN="${AWS_ROLE_ARN:?required}"
+  --from-dotenv .env \
+  --force
 ```
 
 Use `--force` when intentionally replacing an existing secret. The secret must
 exist in the same Modal environment used by `modal serve` or `modal deploy`.
-Deployment validates that both keys exist before starting the application.
+Deployment validates the shared AWS keys. The shared CPU worker validates each
+job family's callback URI before starting its model. Configure
+`TRANSCRIPTION_CALLBACK_URI` for transcription and, when moderation is implemented,
+the callback environment variable specified by its job adapter in the same secret.
+
+Verify the Granite image imports without downloading the model or running GPU
+inference:
+
+```sh
+uv run modal run src/socialguard_models/transcription/models/granite.py::verify_granite_image_imports
+```
+
+This runs a non-GPU ephemeral Modal App from the current definitions and imports
+Torch, TorchAudio, and the same Transformers classes used by Granite Speech.
 
 Preload the pinned Granite model revision into the automatically created
 `socialguard-transcription-models` Modal volume:
 
 ```sh
-uv run modal run src/socialguard_models/granite.py::download_granite_model
+uv run modal run src/socialguard_models/transcription/models/granite.py::download_granite_model
 ```
 
 This step avoids downloading approximately 9.5 GB of model files during the
@@ -113,7 +175,7 @@ uv run modal deploy src/socialguard_models/cpu_worker.py
 Send a transcription request to the URL printed by Modal:
 
 ```sh
-curl -X POST "$MODAL_ENDPOINT_URL" \
+curl -X POST "${MODAL_ENDPOINT_URL%/}/transcription/" \
   -H "Content-Type: application/json" \
   -H "Modal-Key: $MODAL_PROXY_KEY" \
   -H "Modal-Secret: $MODAL_PROXY_SECRET" \
@@ -146,16 +208,74 @@ separate remote operations, recovery may resubmit a call whose acceptance could 
 recorded; both calls retain the same logical task ID. Claims are never deleted, so an
 idempotency key cannot be reassigned to a different task after partial failure.
 
+## Moderation API scaffold
+
+`POST /moderation/` has a separate request contract containing the same audio URI
+and workflow metadata as transcription, plus a required `transcription` string:
+
+```json
+{
+  "model": "future-moderation-model",
+  "audio_uri": "s3://example/audio.wav",
+  "transcription": "The words spoken in the audio.",
+  "idempotency_key": "request-123",
+  "pipeline_task_id": "task-123",
+  "task_token": "token-123"
+}
+```
+
+Audio files are referenced by S3 URI, following the existing transcription input
+convention. The route currently returns `501 Not Implemented` for valid inputs
+and does not enqueue work. Moderation model identifiers and output schemas will
+be defined when the first moderation model is implemented.
+
+To implement moderation:
+
+1. Define supported model IDs and result contracts in `moderation/contracts.py`.
+2. Add GPU runtimes under `moderation/models/` accepting both audio and transcription.
+3. Add `moderation/job.py` implementing `ModelJob[ModerationResult]`, following
+   `transcription/job.py`. Its `submit(audio_url)` passes both the resolved audio
+   URL and `self.task.transcription` to the selected GPU model. Set
+   `family = "moderation"` and the callback environment variable on the adapter.
+4. Define the pure moderation callback payload mapping in `moderation/callbacks.py`
+   and call it from the adapter's `callback_outcome()` method.
+5. Have the moderation route build its task/adapter and return
+   `submit_model(ModerationJob(task))`.
+
+This reuses the same CPU Modal function, concurrency limits, S3 access, worker
+timeout/cancellation, failure handling, scheduling, and callback delivery. Only
+the GPU model and its input/output mapping differ.
+
+Scheduling isolates identical keys across model families. Existing transcription
+claims, task ID prefixes, and Modal resource names are retained.
+
+## Testing A Model Directly
+
+`scripts/transcribe.py` invokes the GPU worker directly, bypassing the HTTP
+endpoint, idempotency, S3 presigning, and callbacks. Pass either a local file or
+an absolute HTTPS URL:
+
+```sh
+uv run modal run scripts/transcribe.py --audio-file ./sample.wav
+uv run modal run scripts/transcribe.py --audio-url https://example.com/sample.wav
+```
+
+The transcript is printed to stdout and the elapsed time to stderr. `modal run`
+creates an ephemeral App from the current local definitions, using the current
+GPU image definition and shared model cache volume. This can confirm a model
+change before redeploying the endpoint.
+
 ## Adding A Model
 
-Model selection is explicit in `run_transcription()`. To add another model:
+Transcription model selection is explicit in `TranscriptionJob.submit()`. To add another model:
 
-1. Add its public identifier to `ModelType`.
+1. Add its public identifier to `ModelType` in `transcription/contracts.py`.
 2. Add a warm Modal model class with a `transcribe(audio_url: str) -> str`
-   method, following `src/socialguard_models/granite.py`.
-3. Add a `case` for its identifier in `run_transcription()` that starts the worker
-   with `NewModel().transcribe.spawn(audio_url)`. Waiting, cancellation, and
-   response handling are shared across models.
+   method, following `src/socialguard_models/transcription/models/granite.py`.
+3. Add a `case` for its identifier in `TranscriptionJob.submit()` that starts the
+   worker with `await NewModel().transcribe.spawn.aio(audio_url)` and returns the
+   submitted call. Waiting, cancellation, scheduling, and callback delivery are
+   shared across all model families in `orchestration.py` and `api/submission.py`.
 
 Keep backend-specific dependencies in its Modal image rather than the local
 project environment. The shared API contract should continue returning only

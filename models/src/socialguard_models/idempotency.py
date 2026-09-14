@@ -18,6 +18,9 @@ SCHEDULING_RESOLUTION_INTERVAL_SECONDS = 0.05
 SCHEDULING_LEASE_SECONDS = 30
 _claim_locks = tuple(Lock() for _ in range(64))
 
+type ModelFamily = Literal["transcription", "moderation"]
+type SchedulingKey = str | tuple[ModelFamily, str]
+
 
 class SchedulingUnavailableError(RuntimeError):
     """A task could not be scheduled or its scheduling state could not be resolved."""
@@ -46,7 +49,7 @@ class _Claim:
     acquired: bool
 
 
-def _claim_lock_for(idempotency_key: str) -> Lock:
+def _claim_lock_for(idempotency_key: SchedulingKey) -> Lock:
     return _claim_locks[hash(idempotency_key) % len(_claim_locks)]
 
 
@@ -58,7 +61,9 @@ def _normalize_schedule(value: object) -> TaskSchedule | None:
     return None
 
 
-def _claim_or_read(idempotency_key: str, claim_lock: Lock) -> _Claim | None:
+def _claim_or_read(
+    idempotency_key: SchedulingKey, claim_lock: Lock, family: ModelFamily
+) -> _Claim | None:
     with claim_lock:
         stored = task_ids.get(idempotency_key)
         schedule = _normalize_schedule(stored)
@@ -74,7 +79,7 @@ def _claim_or_read(idempotency_key: str, claim_lock: Lock) -> _Claim | None:
         if schedule is not None:
             task_id = schedule.task_id
         elif stored is None:
-            task_id = f"transcription_{uuid4().hex}"
+            task_id = f"{family}_{uuid4().hex}"
         else:
             return None
 
@@ -92,7 +97,7 @@ def _claim_or_read(idempotency_key: str, claim_lock: Lock) -> _Claim | None:
 
 
 def _finalize_if_owned(
-    idempotency_key: str,
+    idempotency_key: SchedulingKey,
     schedule: TaskSchedule,
     claim_lock: Lock,
 ) -> bool:
@@ -114,11 +119,16 @@ def _wait_before_retry(attempt: int) -> None:
 def schedule_idempotently(
     idempotency_key: str,
     dispatch: Callable[[str], None],
+    *,
+    family: ModelFamily = "transcription",
 ) -> str:
-    """Schedule logical work and return its stable ID after dispatch is accepted."""
-    claim_lock = _claim_lock_for(idempotency_key)
+    """Schedule work once per family/key, retaining existing transcription claims."""
+    key: SchedulingKey = (
+        idempotency_key if family == "transcription" else (family, idempotency_key)
+    )
+    claim_lock = _claim_lock_for(key)
     for attempt in range(SCHEDULING_RESOLUTION_ATTEMPTS):
-        claim = _claim_or_read(idempotency_key, claim_lock)
+        claim = _claim_or_read(key, claim_lock, family)
         if claim is not None and claim.schedule.status == "scheduled":
             return claim.schedule.task_id
 
@@ -126,7 +136,7 @@ def schedule_idempotently(
             try:
                 dispatch(claim.schedule.task_id)
                 finalized = _finalize_if_owned(
-                    idempotency_key,
+                    key,
                     claim.schedule,
                     claim_lock,
                 )

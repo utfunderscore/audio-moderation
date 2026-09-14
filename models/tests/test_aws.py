@@ -1,10 +1,10 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import boto3
 import pytest
 from botocore.stub import Stubber
 
-from socialguard_models.aws import assume_modal_oidc_role
+from socialguard_models.aws import assume_modal_oidc_role, create_presigned_download_url
 
 
 def test_modal_oidc_credentials_create_authenticated_session(
@@ -55,3 +55,32 @@ def test_modal_oidc_requires_environment_credentials(
 
     with pytest.raises(RuntimeError, match=missing_variable):
         assume_modal_oidc_role()
+
+
+def test_presigned_download_url_uses_configured_s3_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWS_REGION", "eu-west-2")
+    s3 = Mock()
+    s3.generate_presigned_url.return_value = "https://example.com/audio.wav"
+    session = Mock()
+    session.client.return_value = s3
+
+    result = create_presigned_download_url(session, "s3://audio-bucket/path/audio.wav")
+
+    assert result == "https://example.com/audio.wav"
+    session.client.assert_called_once_with("s3", region_name="eu-west-2")
+    s3.generate_presigned_url.assert_called_once_with(
+        "get_object",
+        Params={"Bucket": "audio-bucket", "Key": "path/audio.wav"},
+        ExpiresIn=3_600,
+    )
+
+
+def test_presigned_download_url_requires_s3_region(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AWS_REGION", raising=False)
+
+    with pytest.raises(RuntimeError, match="AWS_REGION"):
+        create_presigned_download_url(Mock(), "s3://audio-bucket/path/audio.wav")

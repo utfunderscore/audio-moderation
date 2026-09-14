@@ -1,4 +1,4 @@
-"""Transcription completion callback contracts and delivery."""
+"""Shared SigV4 callback transport and retry policy."""
 
 import json
 import os
@@ -6,10 +6,9 @@ from time import sleep
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from socialguard_models.transcription_contracts import (
-    CompletedOutcome,
-    TranscriptionOutcome,
-)
+import boto3
+from botocore.auth import SigV4Auth
+from botocore.awsrequest import AWSRequest
 
 CALLBACK_REQUEST_TIMEOUT_SECONDS = 10
 CALLBACK_MAX_ATTEMPTS = 3
@@ -20,45 +19,44 @@ CALLBACK_MAX_DURATION_SECONDS = (
 )
 
 
-def get_callback_uri() -> str:
+def get_callback_uri(environment_variable: str) -> str:
     """Return the configured callback URI or fail before work begins."""
-    callback_uri = os.environ.get("TRANSCRIPTION_CALLBACK_URI", "").strip()
+    callback_uri = os.environ.get(environment_variable, "").strip()
     if not callback_uri:
-        raise RuntimeError("TRANSCRIPTION_CALLBACK_URI is required")
+        raise RuntimeError(f"{environment_variable} is required")
     return callback_uri
 
 
-def post_completion_callback(
+def post_callback(
     *,
+    session: boto3.Session,
     callback_uri: str,
     task_token: str,
-    job_id: str,
-    asr_task_id: str,
-    outcome: TranscriptionOutcome,
+    outcome: dict[str, object],
 ) -> None:
-    """Post a terminal outcome, retrying transient delivery failures."""
-    if isinstance(outcome, CompletedOutcome):
-        callback_outcome: dict[str, object] = {
-            "type": "success",
-            "transcriptionResult": {
-                "jobId": job_id,
-                "asrTaskId": asr_task_id,
-                "transcription": outcome.text,
-            },
-        }
-    else:
-        callback_outcome = {
-            "type": "failure",
-            "error": "TranscriptionFailed",
-            "cause": outcome.cause,
-        }
-
+    """Post a SigV4-authenticated terminal outcome, retrying transient failures."""
+    region = os.environ.get("AWS_REGION", "").strip()
+    if not region:
+        raise RuntimeError("AWS_REGION is not configured")
+    payload = json.dumps({"taskToken": task_token, "outcome": outcome}).encode(
+        "utf-8"
+    )
+    credentials = session.get_credentials()
+    if credentials is None:
+        raise RuntimeError("AWS credentials are not available")
+    signed_request = AWSRequest(
+        method="POST",
+        url=callback_uri,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    SigV4Auth(credentials.get_frozen_credentials(), "execute-api", region).add_auth(
+        signed_request
+    )
     request = Request(
         callback_uri,
-        data=json.dumps(
-            {"taskToken": task_token, "outcome": callback_outcome}
-        ).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        data=payload,
+        headers=dict(signed_request.headers.items()),
         method="POST",
     )
     for attempt in range(CALLBACK_MAX_ATTEMPTS):

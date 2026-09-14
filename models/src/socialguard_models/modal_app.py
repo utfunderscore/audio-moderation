@@ -7,7 +7,7 @@ app = modal.App("socialguard-transcription")
 
 runtime_secret = modal.Secret.from_name(
     "socialguard-transcription-runtime",
-    required_keys=["TRANSCRIPTION_CALLBACK_URI", "AWS_ROLE_ARN"],
+    required_keys=["AWS_REGION", "AWS_ROLE_ARN"],
 )
 
 cpu_image = (

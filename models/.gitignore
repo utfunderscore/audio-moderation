@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.env
 .basedpyright/
 .pytest_cache/
 dist/

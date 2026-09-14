@@ -50,10 +50,13 @@ def create_presigned_download_url(
         raise ValueError("audio_uri must not contain a query string or fragment")
     if not 1 <= expires_in <= 604_800:
         raise ValueError("expires_in must be between 1 and 604800")
+    region = os.environ.get("AWS_REGION", "").strip()
+    if not region:
+        raise RuntimeError("AWS_REGION is not configured")
 
     s3 = cast(
         _S3Client,
-        session.client("s3"),  # pyright: ignore[reportUnknownMemberType]
+        session.client("s3", region_name=region),  # pyright: ignore[reportUnknownMemberType]
     )
     return s3.generate_presigned_url(
         "get_object",

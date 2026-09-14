@@ -1,4 +1,4 @@
-"""Modal runtime for IBM Granite Speech 4.1 2B."""
+"""Transcription-only Modal runtime for IBM Granite Speech 4.1 2B."""
 
 from __future__ import annotations
 
@@ -111,6 +111,7 @@ granite_image = (
         "safetensors>=0.4",
         "soundfile>=0.13",
         "torch==2.9.1",
+        "torchaudio==2.9.1",
         "transformers==4.57.6",
     )
     .env(
@@ -121,6 +122,20 @@ granite_image = (
     )
     .add_local_python_source("socialguard_models")
 )
+
+
+@app.function(image=granite_image)  # pyright: ignore[reportUnknownMemberType]
+def verify_granite_image_imports() -> str:
+    """Import Granite inference dependencies in the configured Modal image."""
+    # These dependencies are installed in the GPU image, not the local environment.
+    import torch  # pyright: ignore[reportMissingImports]
+    import torchaudio  # pyright: ignore[reportMissingImports]
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor  # pyright: ignore[reportMissingImports, reportUnknownVariableType]
+
+    return (
+        f"torch={torch.__version__}, torchaudio={torchaudio.__version__}; "  # pyright: ignore[reportUnknownMemberType]
+        f"{AutoModelForSpeechSeq2Seq.__name__} and {AutoProcessor.__name__} imported"  # pyright: ignore[reportUnknownMemberType]
+    )
 
 
 @app.function(  # pyright: ignore[reportUnknownMemberType]
@@ -185,11 +200,26 @@ class GraniteSpeech:
 
     @modal.method()  # pyright: ignore[reportUnknownMemberType]
     def transcribe(self, audio_url: str) -> str:
+        """Transcribe audio fetched from an absolute HTTPS URL."""
         with TemporaryDirectory() as temporary_directory:
             raw_audio = Path(temporary_directory, "source-audio")
-            normalized_audio = Path(temporary_directory, "audio.wav")
             _download_audio(audio_url, raw_audio)
-            _normalize_audio(raw_audio, normalized_audio)
+            return self._transcribe_file(raw_audio)
+
+    @modal.method()  # pyright: ignore[reportUnknownMemberType]
+    def transcribe_bytes(self, audio: bytes) -> str:
+        """Transcribe in-memory audio, used by local development tooling."""
+        if len(audio) > MAX_AUDIO_BYTES:
+            raise ValueError("audio file exceeds the 512 MiB limit")
+        with TemporaryDirectory() as temporary_directory:
+            raw_audio = Path(temporary_directory, "source-audio")
+            raw_audio.write_bytes(audio)
+            return self._transcribe_file(raw_audio)
+
+    def _transcribe_file(self, source_audio: Path) -> str:
+        with TemporaryDirectory() as temporary_directory:
+            normalized_audio = Path(temporary_directory, "audio.wav")
+            _normalize_audio(source_audio, normalized_audio)
             waveform = _read_audio(normalized_audio)
 
         return self._generate_transcript(waveform)

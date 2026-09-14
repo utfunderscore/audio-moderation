@@ -1,10 +1,10 @@
-from socialguard_models.transcription import process_transcription
+from socialguard_models.orchestration import process_model
 
 
 def test_orchestration_worker_receives_runtime_configuration() -> None:
     raw_function = next(
         value
-        for name, value in vars(process_transcription).items()
+        for name, value in vars(process_model).items()
         if name.startswith("_sync_original_")
     )
 
