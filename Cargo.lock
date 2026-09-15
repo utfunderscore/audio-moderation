@@ -4226,6 +4226,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "task-events-lambda"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-ssm",
+ "common",
+ "database",
+ "lambda_runtime",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
