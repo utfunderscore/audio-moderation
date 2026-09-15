@@ -149,7 +149,7 @@ impl AudioModerationService for StartEvaluationService {
                         "failed to start pipeline execution"
                     );
                     self.store
-                        .record_dispatch_failure(task.task_id, &dispatch_error)
+                        .record_dispatch_failure(task.task_id)
                         .await
                         .map_err(|database_error| {
                             error!(

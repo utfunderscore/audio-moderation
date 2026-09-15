@@ -4,7 +4,7 @@
 
 `tests/deployed.rs` is ignored by default. It calls the deployed Connect endpoint, reads the same PostgreSQL database used by the Lambda, and describes the resulting Step Functions executions. Run it through the repository-root `deployment-integration.sh` command rather than directly. It requires:
 
-- a full deployment, including the `start-evaluation`, audio-processing, transcription-caller, and task-callback Lambdas;
+- a full deployment, including the `start-evaluation`, audio-processing, transcription-caller, moderation-caller, and task-callback Lambdas;
 - applied Terraform for that deployment;
 - AWS credentials for the local `admin` profile. When configuration is resolved automatically, they must allow Terraform state access and `ssm:GetParameter`/KMS decryption. Step Functions assertions also require `states:DescribeExecution`; `--audio-file` additionally requires `s3:PutObject` on the uploads bucket; and
 - for dispatch and end-to-end evaluation, a regular, readable, nonempty local audio file passed with `--audio-file`.
@@ -26,6 +26,7 @@ AWS_PROFILE=admin ./deployment-integration.sh test evaluation-dispatch \
 AWS_PROFILE=admin ./deployment-integration.sh test evaluation-e2e \
   --audio-file ./sample_071.mp3 \
   --transcription-endpoint-url https://compatible.example/transcriptions \
+  --modal-endpoint-url https://compatible.example \
   --confirm-compatible-transcription-endpoint
 ```
 
@@ -51,4 +52,11 @@ processing and diagnosis.
 
 The tests intentionally do not clean up their database rows or Step Functions executions so failures remain diagnosable. Running dispatch or end-to-end evaluation uses real AWS resources and has AWS cost; provide only real audio objects, never placeholder object URIs.
 
-Fixtures are seeded through `PipelineTaskStore`; read-only SQL verifies persisted state without accidentally creating missing records. Unique idempotency keys isolate each run. The end-to-end suite waits for downstream audio processing, compatible external transcription, callback delivery, and terminal Step Functions success. Use a dedicated development environment with the current schema already applied; the tests do not run migrations. The checked-in socialguard-models application contract is not modified to resolve an endpoint mismatch; a compatible endpoint is an external prerequisite.
+Fixtures are seeded through `PipelineTaskStore`; read-only SQL verifies persisted state without accidentally creating missing records. Unique idempotency keys isolate each run. The end-to-end suite waits for downstream audio processing, compatible external transcription and moderation, callback delivery, and terminal Step Functions success. Use a dedicated development environment with the current schema already applied; the tests do not run migrations. The checked-in socialguard-models application contract is not modified to resolve an endpoint mismatch; compatible endpoints are external prerequisites.
+
+When the end-to-end workflow reaches a terminal state, the test prints a
+structured `Processing result` JSON report. It includes the Step Functions
+status, output, error and cause; the pipeline outcome; ordered input files;
+produced artifact URIs; transcription text; moderation scores; external task
+IDs; and each persisted step's status and collected error details. The report is
+printed before either a successful return or a terminal-workflow test failure.

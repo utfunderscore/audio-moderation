@@ -36,10 +36,17 @@ require `Resource: "*"`), in addition to basic Lambda logging.
 The audio-processing state machine calls `transcription-caller` after
 `ConvertAudio` with a Step Functions task token. The external transcription
 service must return that token to this callback endpoint after it has finished.
-The callback success `transcriptionResult` resumes the callback task, but the
-production state machine uses `ResultPath = null` and discards that result; the
-terminal execution does not retain it. The token must not be included in the
-callback result. A successful callback body looks like:
+The state machine then passes the returned transcription and stitched audio URI
+to `moderation-caller` with a new task token. The moderation service returns that
+second token after it has finished.
+Before making an external request, its caller stores a SHA-256 digest of the
+token against the exact pipeline step. The callback resolves that digest
+transactionally and rejects unknown tokens, a job ID belonging to another task,
+and use of a transcription token for moderation (or the reverse). Tokens are
+bearer credentials and are neither stored nor logged in raw form.
+The callback success `transcriptionResult` resumes the callback task and is
+retained only long enough to construct the moderation request. The token must
+not be included in the callback result. A successful callback body looks like:
 
 ```json
 {
@@ -55,9 +62,56 @@ callback result. A successful callback body looks like:
 }
 ```
 
-`AWS_PROFILE=admin ./deployment-integration.sh test task-callback` starts an
-isolated test-only Step Functions state machine. It directly invokes the
-deployed callback Lambda with a synthetic API Gateway v2 event envelope and a
-real task token, then waits for that test execution to succeed. It does not
-traverse API Gateway or modify the production state machine or Lambda
-configuration.
+The workflow's successful business outcome requires both **ASR and moderation
+to complete and persist their results**. Callback results are persisted before
+Step Functions delivery, so an unavailable service can be retried with the
+identical callback. Failed callbacks resolve their step from the token, persist
+that step's diagnostics first, and finalize only after Step Functions accepts
+the failure.
+
+## Moderation callback contract
+
+The callback endpoint also accepts a moderation success with the same
+`type: "success"` outcome tag as ASR. `moderationResult.jobId` must be a
+numeric task ID and match the task resolved from `taskToken`. A mismatch marks
+the moderation step failed and fails the workflow. `moderationTaskId` is
+persisted; an identical retry is accepted, while a different ID conflicts.
+`scores` is an object with exactly these five numeric categories; each score
+must be finite and in the inclusive range `0.0..=1.0`. Missing or additional
+categories are rejected.
+
+```json
+{
+  "taskToken": "<task-token>",
+  "outcome": {
+    "type": "success",
+    "moderationResult": {
+      "jobId": "42",
+      "moderationTaskId": "moderation_0123456789abcdef0123456789abcdef",
+      "scores": {
+        "sexual": 0.02,
+        "hate_or_discrimination": 0.15,
+        "harassment_or_abuse": 0.08,
+        "violence_or_threats": 0.01,
+        "asking_for_pii": 0.42
+      }
+    }
+  }
+}
+```
+
+Moderation results are persisted idempotently before `SendTaskSuccess`, which
+receives only the nested `scores` object. A retry with different scores returns
+a conflict without sending the task callback. `moderation-caller` records the
+callback token before posting to `${MODAL_ENDPOINT_URL%/}/moderation/`, records
+the returned external task ID, and makes request failures terminal. While
+moderation is processing, successful finalization is rejected; once it
+completes, successful finalization is accepted.
+Waiter timeouts, aborted executions, and other terminal workflow statuses are
+reconciled from Step Functions execution events.
+
+`AWS_PROFILE=admin ./deployment-integration.sh test task-callback` is currently
+unsupported. Its legacy isolated state machine has a real token but cannot
+create the corresponding persisted callback attempt before that token is
+generated. Do not seed a placeholder token or weaken callback correlation to
+make that harness pass; use the production end-to-end workflow instead.

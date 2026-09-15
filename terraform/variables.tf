@@ -43,6 +43,11 @@ variable "transcription_caller_image_tag" {
   type        = string
 }
 
+variable "moderation_caller_image_tag" {
+  description = "Immutable ECR image tag pushed before applying the moderation-caller Lambda configuration"
+  type        = string
+}
+
 variable "database_parameter_name" {
   type    = string
   default = "/audio-moderation/dev/database-url"
@@ -64,6 +69,11 @@ variable "transcription_endpoint_url" {
   description = "Compatible external transcription API endpoint URL"
   type        = string
   default     = "https://utfunderscore-development--socialguard-transcription-serve-api.modal.run"
+}
+
+variable "modal_endpoint_url" {
+  description = "Base URL for the Modal moderation API"
+  type        = string
 }
 
 variable "tenant_id" {

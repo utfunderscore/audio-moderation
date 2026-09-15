@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use tracing::{error, info};
 
+use database::{PipelineTaskError, PipelineTaskOutcome, PipelineTaskStore};
+
 use crate::stitcher::AudioStitcher;
 
 pub mod stitcher;
@@ -43,6 +45,84 @@ pub struct AudioProcessingOutput {
     pub stitched_s3_uri: String,
 }
 
+/// The worker also accepts lifecycle events from the state machine and its
+/// terminal-execution EventBridge reconciler. This keeps workflow state in the
+/// same database transaction boundary as the audio worker.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum AudioWorkerInput {
+    Audio(AudioProcessingInput),
+    Lifecycle(WorkflowLifecycleInput),
+    ExecutionStatus(ExecutionStatusEvent),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowLifecycleInput {
+    pub job_id: String,
+    pub outcome: WorkflowOutcome,
+    pub error: Option<String>,
+    pub cause: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum WorkflowOutcome {
+    Succeeded,
+    Failed,
+    TimedOut,
+    Cancelled,
+}
+
+impl From<WorkflowOutcome> for PipelineTaskOutcome {
+    fn from(outcome: WorkflowOutcome) -> Self {
+        match outcome {
+            WorkflowOutcome::Succeeded => Self::Succeeded,
+            WorkflowOutcome::Failed => Self::Failed,
+            WorkflowOutcome::TimedOut => Self::TimedOut,
+            WorkflowOutcome::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ExecutionStatusEvent {
+    pub detail: ExecutionStatusDetail,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecutionStatusDetail {
+    pub status: String,
+    pub input: String,
+    pub error: Option<String>,
+    pub cause: Option<String>,
+}
+
+impl ExecutionStatusEvent {
+    pub fn lifecycle(self) -> Result<WorkflowLifecycleInput, serde_json::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Input {
+            job_id: String,
+        }
+        let input: Input = serde_json::from_str(&self.detail.input)?;
+        let outcome = match self.detail.status.as_str() {
+            "SUCCEEDED" => WorkflowOutcome::Succeeded,
+            "FAILED" => WorkflowOutcome::Failed,
+            "TIMED_OUT" => WorkflowOutcome::TimedOut,
+            "ABORTED" => WorkflowOutcome::Cancelled,
+            _ => WorkflowOutcome::Failed,
+        };
+        Ok(WorkflowLifecycleInput {
+            job_id: input.job_id,
+            outcome,
+            error: self.detail.error,
+            cause: self.detail.cause,
+        })
+    }
+}
+
 pub type S3StorageError = Box<dyn StdError + Send + Sync>;
 
 pub trait S3Storage: Send + Sync {
@@ -58,6 +138,50 @@ pub trait S3Storage: Send + Sync {
         source: &Path,
         content_type: &str,
     ) -> impl Future<Output = Result<(), S3StorageError>> + Send;
+}
+
+/// Persistence needed by the audio-processing worker.
+pub trait AudioTaskStore: Send + Sync {
+    fn start_audio_processing(
+        &self,
+        task_id: i32,
+    ) -> impl Future<Output = Result<(), PipelineTaskError>> + Send;
+
+    fn complete_audio_processing(
+        &self,
+        task_id: i32,
+        stitched_audio_s3_uri: String,
+    ) -> impl Future<Output = Result<(), PipelineTaskError>> + Send;
+
+    fn fail_audio_processing(
+        &self,
+        task_id: i32,
+        error_code: String,
+        error_message: String,
+    ) -> impl Future<Output = Result<(), PipelineTaskError>> + Send;
+}
+
+impl AudioTaskStore for PipelineTaskStore {
+    async fn start_audio_processing(&self, task_id: i32) -> Result<(), PipelineTaskError> {
+        PipelineTaskStore::start_audio_processing(self, task_id).await
+    }
+
+    async fn complete_audio_processing(
+        &self,
+        task_id: i32,
+        stitched_audio_s3_uri: String,
+    ) -> Result<(), PipelineTaskError> {
+        PipelineTaskStore::complete_audio_processing(self, task_id, &stitched_audio_s3_uri).await
+    }
+
+    async fn fail_audio_processing(
+        &self,
+        task_id: i32,
+        error_code: String,
+        error_message: String,
+    ) -> Result<(), PipelineTaskError> {
+        PipelineTaskStore::fail_audio_processing(self, task_id, &error_code, &error_message).await
+    }
 }
 
 #[derive(Clone)]
@@ -109,26 +233,36 @@ impl S3Storage for AwsS3Storage {
 }
 
 #[derive(Clone)]
-pub struct AudioProcessingHandler<S> {
+pub struct AudioProcessingHandler<S, D> {
     s3: S,
+    database: D,
     stitcher: AudioStitcher,
 }
 
-impl<S> AudioProcessingHandler<S> {
-    pub fn new(s3: S) -> Self {
+impl<S, D> AudioProcessingHandler<S, D> {
+    pub fn new(s3: S, database: D) -> Self {
         Self {
             s3,
+            database,
             stitcher: AudioStitcher::default(),
         }
     }
 }
 
-impl<S: S3Storage> AudioProcessingHandler<S> {
+impl<S: S3Storage, D: AudioTaskStore> AudioProcessingHandler<S, D> {
     pub async fn handle(
         &self,
         input: AudioProcessingInput,
     ) -> Result<AudioProcessingOutput, Error> {
         let input = validate_input(input)?;
+        let task_id = input
+            .job_id
+            .parse()
+            .map_err(|_| AudioProcessingError::InvalidJobId(input.job_id.clone()))?;
+        self.database
+            .start_audio_processing(task_id)
+            .await
+            .map_err(AudioProcessingError::StartAudioProcessing)?;
         info!(
             jobId = input.job_id,
             fileCount = input.files.len(),
@@ -157,6 +291,8 @@ impl<S: S3Storage> AudioProcessingHandler<S> {
                     error = ?source_error,
                     "failed to download source audio"
                 );
+                self.record_failure(task_id, "AUDIO_DOWNLOAD_FAILED", &source_error.to_string())
+                    .await;
                 return Err(AudioProcessingError::Download {
                     location: source.location.clone(),
                     source: source_error,
@@ -170,10 +306,15 @@ impl<S: S3Storage> AudioProcessingHandler<S> {
             });
         }
 
-        let stitched = self.stitcher.stitch(segments).await.map_err(|stitch_error| {
-            error!(jobId = input.job_id, error = ?stitch_error, "failed to stitch source audio");
-            AudioProcessingError::Stitch(stitch_error)
-        })?;
+        let stitched = match self.stitcher.stitch(segments).await {
+            Ok(stitched) => stitched,
+            Err(stitch_error) => {
+                error!(jobId = input.job_id, error = ?stitch_error, "failed to stitch source audio");
+                self.record_failure(task_id, "AUDIO_STITCH_FAILED", &stitch_error.to_string())
+                    .await;
+                return Err(AudioProcessingError::Stitch(stitch_error).into());
+            }
+        };
 
         info!(
             jobId = input.job_id,
@@ -194,12 +335,19 @@ impl<S: S3Storage> AudioProcessingHandler<S> {
                 error = ?source_error,
                 "failed to upload stitched audio"
             );
+            self.record_failure(task_id, "AUDIO_UPLOAD_FAILED", &source_error.to_string())
+                .await;
             return Err(AudioProcessingError::Upload {
                 location: input.output,
                 source: source_error,
             }
             .into());
         }
+
+        self.database
+            .complete_audio_processing(task_id, input.output_s3_uri.clone())
+            .await
+            .map_err(AudioProcessingError::CompleteAudioProcessing)?;
 
         info!(
             jobId = input.job_id,
@@ -210,6 +358,16 @@ impl<S: S3Storage> AudioProcessingHandler<S> {
             job_id: input.job_id,
             stitched_s3_uri: input.output_s3_uri,
         })
+    }
+
+    async fn record_failure(&self, task_id: i32, error_code: &str, error_message: &str) {
+        if let Err(error) = self
+            .database
+            .fail_audio_processing(task_id, error_code.to_owned(), error_message.to_owned())
+            .await
+        {
+            error!(taskId = task_id, error = ?error, "failed to persist audio worker failure");
+        }
     }
 }
 
@@ -291,7 +449,7 @@ impl S3Location {
 
 fn is_valid_bucket(bucket: &str) -> bool {
     (3..=63).contains(&bucket.len())
-        && !bucket.parse::<std::net::Ipv4Addr>().is_ok()
+        && bucket.parse::<std::net::Ipv4Addr>().is_err()
         && bucket.bytes().all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'.' || byte == b'-'
         })
@@ -308,6 +466,8 @@ fn is_valid_bucket(bucket: &str) -> bool {
 
 #[derive(Debug, thiserror::Error)]
 enum AudioProcessingError {
+    #[error("invalid pipeline job ID {0}")]
+    InvalidJobId(String),
     #[error("audio processing requires at least one file")]
     NoFiles,
     #[error("audio processing requires unique sequence values; {0} was repeated")]
@@ -328,6 +488,10 @@ enum AudioProcessingError {
         #[source]
         source: S3StorageError,
     },
+    #[error("failed to start audio processing: {0}")]
+    StartAudioProcessing(#[source] PipelineTaskError),
+    #[error("failed to complete audio processing: {0}")]
+    CompleteAudioProcessing(#[source] PipelineTaskError),
 }
 
 impl std::fmt::Display for S3Location {
@@ -341,7 +505,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::path::Path;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
 
@@ -416,7 +580,7 @@ mod tests {
                 test_wav(-1_000, 80, 8_000, 1),
             ),
         ]));
-        let handler = AudioProcessingHandler::new(s3);
+        let handler = AudioProcessingHandler::new(s3, MockDatabase::default());
 
         let output = handler
             .handle(input(vec![
@@ -426,7 +590,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(output.job_id, "job-123");
+        assert_eq!(output.job_id, "42");
         assert_eq!(output.stitched_s3_uri, "s3://uploads/reviews/stitched.wav");
         let uploads = handler.s3.uploads();
         assert_eq!(uploads.len(), 1);
@@ -442,7 +606,7 @@ mod tests {
     #[tokio::test]
     async fn returns_a_download_failure_without_uploading() {
         let s3 = MockS3::default();
-        let handler = AudioProcessingHandler::new(s3);
+        let handler = AudioProcessingHandler::new(s3, MockDatabase::default());
 
         let error = handler
             .handle(input(vec![("s3://uploads/reviews/missing.wav", 1)]))
@@ -463,7 +627,7 @@ mod tests {
             "s3://uploads/reviews/invalid.wav".to_owned(),
             b"not audio".to_vec(),
         )]));
-        let handler = AudioProcessingHandler::new(s3);
+        let handler = AudioProcessingHandler::new(s3, MockDatabase::default());
 
         let error = handler
             .handle(input(vec![("s3://uploads/reviews/invalid.wav", 1)]))
@@ -476,7 +640,7 @@ mod tests {
 
     fn input(files: Vec<(&str, u32)>) -> AudioProcessingInput {
         AudioProcessingInput {
-            job_id: "job-123".to_owned(),
+            job_id: "42".to_owned(),
             files: files
                 .into_iter()
                 .map(|(s3_uri, sequence)| AudioSource {
@@ -536,6 +700,133 @@ mod tests {
             });
             Ok(())
         }
+    }
+
+    #[derive(Default)]
+    struct MockDatabase {
+        calls: Mutex<Vec<&'static str>>,
+        fail_completion: bool,
+        events: Option<Arc<Mutex<Vec<&'static str>>>>,
+    }
+
+    impl AudioTaskStore for MockDatabase {
+        async fn start_audio_processing(&self, _task_id: i32) -> Result<(), PipelineTaskError> {
+            self.calls.lock().unwrap().push("start");
+            if let Some(events) = &self.events {
+                events.lock().unwrap().push("start");
+            }
+            Ok(())
+        }
+
+        async fn complete_audio_processing(
+            &self,
+            _task_id: i32,
+            _stitched_audio_s3_uri: String,
+        ) -> Result<(), PipelineTaskError> {
+            self.calls.lock().unwrap().push("complete");
+            if let Some(events) = &self.events {
+                events.lock().unwrap().push("complete");
+            }
+            if self.fail_completion {
+                Err(PipelineTaskError::AudioOutputConflict)
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn fail_audio_processing(
+            &self,
+            _task_id: i32,
+            _error_code: String,
+            _error_message: String,
+        ) -> Result<(), PipelineTaskError> {
+            self.calls.lock().unwrap().push("fail");
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn starts_before_work_and_completes_after_upload() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let s3 = RecordingS3 {
+            inner: MockS3::with_objects(HashMap::from([(
+                "s3://uploads/reviews/source.wav".to_owned(),
+                test_wav(1_000, 80, 16_000, 1),
+            )])),
+            events: Arc::clone(&events),
+        };
+        let database = MockDatabase {
+            events: Some(Arc::clone(&events)),
+            ..Default::default()
+        };
+        let handler = AudioProcessingHandler::new(s3, database);
+
+        handler
+            .handle(input(vec![("s3://uploads/reviews/source.wav", 1)]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *handler.database.calls.lock().unwrap(),
+            ["start", "complete"]
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["start", "download", "upload", "complete"]
+        );
+    }
+
+    struct RecordingS3 {
+        inner: MockS3,
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl S3Storage for RecordingS3 {
+        async fn download(
+            &self,
+            location: &S3Location,
+            destination: &Path,
+        ) -> Result<(), S3StorageError> {
+            self.events.lock().unwrap().push("download");
+            self.inner.download(location, destination).await
+        }
+
+        async fn upload(
+            &self,
+            location: &S3Location,
+            source: &Path,
+            content_type: &str,
+        ) -> Result<(), S3StorageError> {
+            self.events.lock().unwrap().push("upload");
+            self.inner.upload(location, source, content_type).await
+        }
+    }
+
+    #[tokio::test]
+    async fn reports_completion_failure_after_upload() {
+        let s3 = MockS3::with_objects(HashMap::from([(
+            "s3://uploads/reviews/source.wav".to_owned(),
+            test_wav(1_000, 80, 16_000, 1),
+        )]));
+        let handler = AudioProcessingHandler::new(
+            s3,
+            MockDatabase {
+                fail_completion: true,
+                ..Default::default()
+            },
+        );
+
+        assert!(
+            handler
+                .handle(input(vec![("s3://uploads/reviews/source.wav", 1)]))
+                .await
+                .is_err()
+        );
+        assert_eq!(handler.s3.uploads().len(), 1);
+        assert_eq!(
+            *handler.database.calls.lock().unwrap(),
+            ["start", "complete"]
+        );
     }
 
     #[derive(Clone, Debug, PartialEq, Eq)]

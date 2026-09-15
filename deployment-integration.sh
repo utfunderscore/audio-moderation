@@ -17,6 +17,7 @@ DATABASE_URL_PARAMETER="${DATABASE_URL_PARAMETER:-}"
 MODAL_PROXY_TOKEN_ID_PARAMETER="${MODAL_PROXY_TOKEN_ID_PARAMETER:-}"
 MODAL_PROXY_TOKEN_SECRET_PARAMETER="${MODAL_PROXY_TOKEN_SECRET_PARAMETER:-}"
 TRANSCRIPTION_ENDPOINT_URL="${TRANSCRIPTION_ENDPOINT_URL:-}"
+MODAL_ENDPOINT_URL="${MODAL_ENDPOINT_URL:-}"
 MODAL_WORKSPACE_ID="${MODAL_WORKSPACE_ID:-ac-k4lbrkEynY351mickkxfRh}"
 IMAGE_TAG="${IMAGE_TAG:-}"
 AUDIO_FILE="${AUDIO_FILE:-}"
@@ -33,7 +34,7 @@ Usage:
 
 Commands:
   preflight [suite]  Validate prerequisites. Without a suite, validate a full deployment.
-  deploy             Bootstrap six ECR repositories, build and push six images with one
+  deploy             Bootstrap seven ECR repositories, build and push seven images with one
                      immutable tag, then perform one full Terraform apply.
   test <suite>       Run one deployed suite without changing deployed infrastructure.
   all [suite]        Deploy, then run a suite (default: evaluation-e2e).
@@ -46,11 +47,12 @@ Suites, ordered from isolated/cheap to full:
   evaluation-dispatch    Seeded dispatch and retry through the production workflow. Requires
                          an audio fixture; executions continue asynchronously.
   audio-conversion       Direct synchronous audio-processing Lambda invocation.
-  task-callback          Test-only Step Functions execution with a real task token.
+  task-callback          Unsupported: requires an ASR-created persisted callback attempt.
   transcription-caller   Unsupported: requires a compatible external transcription API and
-                         a safe task-token/task fixture harness that does not yet exist.
-  evaluation-e2e         StartEvaluation through conversion, transcription, callback, and
-                         terminal workflow completion. Requires a compatible endpoint.
+                          a safe task-token/task fixture harness that does not yet exist.
+  moderation-caller      Unsupported: requires completed transcription and task-token fixtures.
+  evaluation-e2e         StartEvaluation through conversion, transcription, moderation,
+                          callbacks, and terminal workflow completion.
 
 Options:
   --region REGION                         AWS region (default: eu-west-2)
@@ -68,6 +70,7 @@ Options:
   --confirm-compatible-transcription-endpoint
                                             Acknowledge that the configured endpoint accepts
                                             this repository's TranscriptionRequest contract.
+  --modal-endpoint-url URL                Base URL for the Modal moderation API
   --audio-file FILE                       Readable audio fixture for audio-conversion or e2e
   --image-tag TAG                         Immutable image tag (deploy only; default is git SHA
                                             plus UTC timestamp)
@@ -97,7 +100,7 @@ require_command() {
 
 is_suite() {
     case "$1" in
-        review-submit|review-confirmation|evaluation-ingress|evaluation-dispatch|audio-conversion|task-callback|transcription-caller|evaluation-e2e) return 0 ;;
+        review-submit|review-confirmation|evaluation-ingress|evaluation-dispatch|audio-conversion|task-callback|transcription-caller|moderation-caller|evaluation-e2e) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -155,6 +158,7 @@ while [[ $# -gt 0 ]]; do
         --modal-token-id-parameter-name) require_value "$@"; MODAL_PROXY_TOKEN_ID_PARAMETER="$2"; shift 2 ;;
         --modal-token-secret-parameter-name) require_value "$@"; MODAL_PROXY_TOKEN_SECRET_PARAMETER="$2"; shift 2 ;;
         --transcription-endpoint-url) require_value "$@"; TRANSCRIPTION_ENDPOINT_URL="$2"; shift 2 ;;
+        --modal-endpoint-url) require_value "$@"; MODAL_ENDPOINT_URL="$2"; shift 2 ;;
         --modal-workspace-id) require_value "$@"; MODAL_WORKSPACE_ID="$2"; shift 2 ;;
         --audio-file) require_value "$@"; AUDIO_FILE="$2"; shift 2 ;;
         --image-tag) require_value "$@"; IMAGE_TAG="$2"; shift 2 ;;
@@ -227,6 +231,23 @@ validate_transcription_endpoint() {
     printf 'Validated configured compatible transcription endpoint without contacting it.\n'
 }
 
+validate_modal_endpoint() {
+    if [[ -z "${MODAL_ENDPOINT_URL}" ]]; then
+        MODAL_ENDPOINT_URL="$(terraform -chdir="${TERRAFORM_DIR}" output -raw modal_endpoint_url 2>/dev/null || true)"
+    fi
+    if [[ -z "${MODAL_ENDPOINT_URL}" ]]; then
+        MODAL_ENDPOINT_URL="$(aws lambda get-function-configuration --region "${AWS_REGION}" --function-name "${PROJECT_NAME}-${ENVIRONMENT}-moderation-caller" --query 'Environment.Variables.MODAL_ENDPOINT_URL' --output text 2>/dev/null || true)"
+        if [[ "${MODAL_ENDPOINT_URL}" == "None" ]]; then
+            MODAL_ENDPOINT_URL=""
+        fi
+    fi
+    if [[ -z "${MODAL_ENDPOINT_URL}" || ! "${MODAL_ENDPOINT_URL}" =~ ^https:// ]]; then
+        printf 'An HTTPS Modal endpoint is required; pass --modal-endpoint-url.\n' >&2
+        exit 1
+    fi
+    printf 'Validated configured Modal endpoint without contacting it.\n'
+}
+
 preflight() {
     local target_suite="${1:-full}"
     require_command aws
@@ -248,6 +269,7 @@ preflight() {
             validate_secure_parameter "${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
             validate_modal_oidc_provider
             validate_transcription_endpoint
+            validate_modal_endpoint
             printf 'Database schema prerequisite: apply the current schema before deployment or deployed tests. This runner deliberately does not run migrations.\n'
             if [[ -n "${AUDIO_FILE}" ]]; then validate_audio_file; fi
             ;;
@@ -271,6 +293,10 @@ preflight() {
             printf 'transcription-caller is unsupported: it needs a compatible external transcription endpoint plus a database task and a real Step Functions task-token fixture. The checked-in socialguard-models application contract must not be changed to provide that harness.\n' >&2
             exit 1
             ;;
+        moderation-caller)
+            printf 'moderation-caller is unsupported: it needs a completed transcription plus a real Step Functions task-token fixture.\n' >&2
+            exit 1
+            ;;
         evaluation-e2e)
             for command in cargo jq; do require_command "${command}"; done
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
@@ -278,6 +304,7 @@ preflight() {
             validate_secure_parameter "${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
             validate_modal_oidc_provider
             validate_transcription_endpoint
+            validate_modal_endpoint
             printf 'Database schema prerequisite: the pipeline-task schema must already be current.\n'
             if [[ "${target_suite}" == "evaluation-e2e" ]]; then validate_audio_file; fi
             ;;
@@ -301,6 +328,7 @@ set_terraform_vars() {
         -var="modal_proxy_token_id_parameter_name=${MODAL_PROXY_TOKEN_ID_PARAMETER}"
         -var="modal_proxy_token_secret_parameter_name=${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
         -var="transcription_endpoint_url=${TRANSCRIPTION_ENDPOINT_URL}"
+        -var="modal_endpoint_url=${MODAL_ENDPOINT_URL}"
         -var="modal_workspace_id=${MODAL_WORKSPACE_ID}"
         -var="enable_test_resources=true"
         -var="submit_audio_image_tag=${IMAGE_TAG}"
@@ -309,6 +337,7 @@ set_terraform_vars() {
         -var="start_evaluation_image_tag=${IMAGE_TAG}"
         -var="task_callback_image_tag=${IMAGE_TAG}"
         -var="transcription_caller_image_tag=${IMAGE_TAG}"
+        -var="moderation_caller_image_tag=${IMAGE_TAG}"
     )
     if [[ -n "${TRANSCRIPTION_ENDPOINT_URL}" ]]; then
         terraform_vars+=(-var="transcription_endpoint_url=${TRANSCRIPTION_ENDPOINT_URL}")
@@ -330,6 +359,7 @@ deploy() {
         "${PROJECT_NAME}-${ENVIRONMENT}-start-evaluation"
         "${PROJECT_NAME}-${ENVIRONMENT}-task-callback"
         "${PROJECT_NAME}-${ENVIRONMENT}-transcription-caller"
+        "${PROJECT_NAME}-${ENVIRONMENT}-moderation-caller"
     )
     local dockerfiles=(
         "crates/submit-audio-lambda/Dockerfile"
@@ -338,6 +368,7 @@ deploy() {
         "crates/start-evaluation-lambda/Dockerfile"
         "crates/task-callback-lambda/Dockerfile"
         "crates/transcription-caller-lambda/Dockerfile"
+        "crates/moderation-caller-lambda/Dockerfile"
     )
     local bootstrap_targets=(
         -target=aws_ecr_repository.submit_audio -target=aws_ecr_repository_policy.submit_audio_lambda_pull -target=aws_ecr_lifecycle_policy.submit_audio
@@ -346,16 +377,17 @@ deploy() {
         -target=aws_ecr_repository.start_evaluation -target=aws_ecr_repository_policy.start_evaluation_lambda_pull -target=aws_ecr_lifecycle_policy.start_evaluation
         -target=aws_ecr_repository.task_callback -target=aws_ecr_repository_policy.task_callback_lambda_pull -target=aws_ecr_lifecycle_policy.task_callback
         -target=aws_ecr_repository.transcription_caller -target=aws_ecr_repository_policy.transcription_caller_lambda_pull -target=aws_ecr_lifecycle_policy.transcription_caller
+        -target=aws_ecr_repository.moderation_caller -target=aws_ecr_repository_policy.moderation_caller_lambda_pull -target=aws_ecr_lifecycle_policy.moderation_caller
     )
     local approve_args=()
     if [[ "${AUTO_APPROVE}" == true ]]; then approve_args=(-auto-approve); fi
 
-    printf 'Bootstrapping six ECR repositories with immutable deployment tag: %s\n' "${IMAGE_TAG}"
+    printf 'Bootstrapping seven ECR repositories with immutable deployment tag: %s\n' "${IMAGE_TAG}"
     terraform -chdir="${TERRAFORM_DIR}" init -input=false
 
     # Apply moved.tf state addresses before targetting repositories. This is
     # refresh-only, so it cannot create or update infrastructure before all
-    # six images exist; on a first deployment it is a no-op state migration.
+    # seven images exist; on a first deployment it is a no-op state migration.
     terraform -chdir="${TERRAFORM_DIR}" apply "${terraform_vars[@]}" "${approve_args[@]}" -refresh-only
     terraform -chdir="${TERRAFORM_DIR}" apply "${terraform_vars[@]}" "${approve_args[@]}" "${bootstrap_targets[@]}"
 
@@ -383,7 +415,7 @@ deploy() {
     terraform -chdir="${TERRAFORM_DIR}" apply "${terraform_vars[@]}" "${approve_args[@]}"
 
     local output_name function_name
-    for output_name in submit_audio_function_name confirm_upload_function_name audio_processing_function_name start_evaluation_function_name task_callback_function_name transcription_caller_function_name; do
+    for output_name in submit_audio_function_name confirm_upload_function_name audio_processing_function_name start_evaluation_function_name task_callback_function_name transcription_caller_function_name moderation_caller_function_name; do
         function_name="$(terraform -chdir="${TERRAFORM_DIR}" output -raw "${output_name}")"
         aws lambda wait function-updated-v2 --region "${AWS_REGION}" --function-name "${function_name}"
         printf 'Lambda updated: %s\n' "${function_name}"
@@ -416,9 +448,10 @@ FIXTURE_BUCKET=""
 FIXTURE_KEYS=()
 FIXTURE_OBJECT_URIS=()
 FIXTURE_TEMP_FILES=()
+FIXTURE_TASK_IDS=()
 FIXTURES_SAFE_TO_DELETE=false
 cleanup_fixtures() {
-    local object_uri temp_file
+    local object_uri temp_file task_id
     for temp_file in "${FIXTURE_TEMP_FILES[@]}"; do
         rm -f "${temp_file}"
     done
@@ -430,6 +463,11 @@ cleanup_fixtures() {
         printf 'Retaining fixtures because asynchronous work may still use them:\n' >&2
         printf '  %s\n' "${FIXTURE_OBJECT_URIS[@]}" >&2
     fi
+    # Pipeline tasks are database fixtures as well as S3 fixtures. The URL is
+    # passed only to psql and is never printed.
+    for task_id in "${FIXTURE_TASK_IDS[@]}"; do
+        psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -q -c "DELETE FROM pipeline_tasks WHERE task_id = ${task_id}" >/dev/null 2>&1 || printf 'Could not remove completed-test pipeline task: %s\n' "${task_id}" >&2
+    done
 }
 
 provision_input_fixtures() {
@@ -501,6 +539,8 @@ run_suite() {
         audio-conversion)
             preflight audio-conversion
             local artifacts_bucket run_id input_key output_key payload_file response_file function_name
+            load_evaluation_environment
+            require_command psql
             FIXTURE_BUCKET="$(terraform -chdir="${TERRAFORM_DIR}" output -raw uploads_bucket_name)"
             artifacts_bucket="$(terraform -chdir="${TERRAFORM_DIR}" output -raw artifacts_bucket_name)"
             run_id="$(fixture_run_id)"
@@ -516,29 +556,31 @@ run_suite() {
             FIXTURES_SAFE_TO_DELETE=true
             trap cleanup_fixtures EXIT
             aws s3 cp "${AUDIO_FILE}" "s3://${FIXTURE_BUCKET}/${input_key}" --region "${AWS_REGION}"
+            # The worker now requires a persisted numeric pipeline task. Create
+            # its complete step fixture transactionally and delete it in the
+            # suite cleanup path.
+            task_id="$(psql "${DATABASE_URL}" -v ON_ERROR_STOP=1 -Atqc "WITH task AS (INSERT INTO pipeline_tasks (tenant_id, idempotency_key) VALUES ('${TENANT_ID}', 'audio-conversion-${run_id}') RETURNING task_id), audio AS (INSERT INTO audio_processing_tasks (task_id) SELECT task_id FROM task), transcription AS (INSERT INTO transcription_tasks (task_id) SELECT task_id FROM task), moderation AS (INSERT INTO moderation_tasks (task_id) SELECT task_id FROM task), input AS (INSERT INTO pipeline_task_inputs (task_id, sequence, audio_s3_uri) SELECT task_id, 0, 's3://${FIXTURE_BUCKET}/${input_key}' FROM task) SELECT task_id FROM task")"
+            FIXTURE_TASK_IDS=("${task_id}")
             payload_file="$(mktemp)"
             FIXTURE_TEMP_FILES=("${payload_file}")
             response_file="$(mktemp)"
             FIXTURE_TEMP_FILES+=("${response_file}")
-            jq -n --arg job_id "integration-${run_id}" --arg input "s3://${FIXTURE_BUCKET}/${input_key}" --arg output "s3://${artifacts_bucket}/${output_key}" '{jobId: $job_id, files: [{s3Uri: $input, sequence: 0}], outputS3Uri: $output}' >"${payload_file}"
+            jq -n --arg job_id "${task_id}" --arg input "s3://${FIXTURE_BUCKET}/${input_key}" --arg output "s3://${artifacts_bucket}/${output_key}" '{jobId: $job_id, files: [{s3Uri: $input, sequence: 0}], outputS3Uri: $output}' >"${payload_file}"
             function_name="$(terraform -chdir="${TERRAFORM_DIR}" output -raw audio_processing_function_name)"
             aws lambda invoke --region "${AWS_REGION}" --function-name "${function_name}" --cli-binary-format raw-in-base64-out --payload "file://${payload_file}" "${response_file}" >/dev/null
             jq -e --arg output "s3://${artifacts_bucket}/${output_key}" '.stitchedS3Uri == $output' "${response_file}" >/dev/null
             aws s3api head-object --region "${AWS_REGION}" --bucket "${artifacts_bucket}" --key "${output_key}" >/dev/null
             ;;
         task-callback)
-            preflight task-callback
-            local state_machine_arn execution_arn
-            state_machine_arn="$(terraform -chdir="${TERRAFORM_DIR}" output -raw task_callback_test_state_machine_arn)"
-            if [[ -z "${state_machine_arn}" ]]; then
-                printf 'task-callback requires Terraform test resources. Deploy this environment with deployment-integration.sh before running the suite.\n' >&2
-                return 1
-            fi
-            execution_arn="$(aws stepfunctions start-execution --region "${AWS_REGION}" --state-machine-arn "${state_machine_arn}" --name "callback-$(fixture_run_id)" --input '{}' --query executionArn --output text)"
-            wait_for_execution_success "${execution_arn}"
+            printf 'task-callback is unsupported: a valid callback now requires an ASR-created persisted task-token digest. The legacy test state machine cannot seed that digest before it receives its generated token.\n' >&2
+            return 1
             ;;
         transcription-caller)
             printf 'transcription-caller is unsupported: the deployed caller needs a compatible external transcription endpoint plus a database task and a real Step Functions task token. The checked-in socialguard-models application contract must not be changed to supply that harness.\n' >&2
+            return 1
+            ;;
+        moderation-caller)
+            printf 'moderation-caller is unsupported: the deployed caller needs a completed transcription plus a database task and a real Step Functions task token.\n' >&2
             return 1
             ;;
         evaluation-e2e)

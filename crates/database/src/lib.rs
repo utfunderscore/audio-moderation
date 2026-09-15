@@ -4,7 +4,8 @@ pub mod pipeline_task_store;
 pub mod review_job_store;
 
 pub use pipeline_task_store::{
-    NewPipelineTask, PipelineTask, PipelineTaskError, PipelineTaskStatus, PipelineTaskStore,
+    CallbackAttempt, ModerationResult, NewPipelineTask, PipelineCallbackStep, PipelineTask,
+    PipelineTaskError, PipelineTaskOutcome, PipelineTaskStatus, PipelineTaskStore,
 };
 
 pub use review_job_store::{

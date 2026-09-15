@@ -68,6 +68,14 @@ output "transcription_caller_function_name" {
   value = aws_lambda_function.transcription_caller.function_name
 }
 
+output "moderation_caller_ecr_repository_url" {
+  value = aws_ecr_repository.moderation_caller.repository_url
+}
+
+output "moderation_caller_function_name" {
+  value = aws_lambda_function.moderation_caller.function_name
+}
+
 output "aws_region" {
   value = var.aws_region
 }
@@ -82,6 +90,10 @@ output "tenant_id" {
 
 output "transcription_endpoint_url" {
   value = var.transcription_endpoint_url
+}
+
+output "modal_endpoint_url" {
+  value = var.modal_endpoint_url
 }
 
 output "audio_processing_state_machine_arn" {

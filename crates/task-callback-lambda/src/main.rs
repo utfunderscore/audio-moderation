@@ -1,6 +1,10 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_sfn::Client as SfnClient;
+use aws_sdk_ssm::Client as SsmClient;
+use common::load_database_url;
+use database::PipelineTaskStore;
 use lambda_http::{Error, Request, run, service_fn};
+use sqlx::postgres::PgPoolOptions;
 use task_callback_lambda::{AwsStepFunctions, TaskCallbackHandler, response};
 
 #[tokio::main]
@@ -14,7 +18,14 @@ async fn main() -> Result<(), Error> {
         .init();
 
     let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-    let handler = TaskCallbackHandler::new(AwsStepFunctions::new(SfnClient::new(&sdk_config)));
+    let database_url = load_database_url(&SsmClient::new(&sdk_config)).await?;
+    let database = PipelineTaskStore::new(
+        PgPoolOptions::new()
+            .max_connections(3)
+            .connect_lazy(&database_url)?,
+    );
+    let handler =
+        TaskCallbackHandler::new(AwsStepFunctions::new(SfnClient::new(&sdk_config)), database);
 
     run(service_fn(move |request: Request| {
         let handler = handler.clone();

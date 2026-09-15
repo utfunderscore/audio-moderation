@@ -28,7 +28,7 @@ struct Environment {
 struct StoredTask {
     task_id: i32,
     caller_reference: Option<String>,
-    status: String,
+    outcome: Option<String>,
     execution_arn: Option<String>,
     attempt_count: i32,
     active_lease: bool,
@@ -37,6 +37,29 @@ struct StoredTask {
 struct HttpResponse {
     status: StatusCode,
     body: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct ProcessingReportRow {
+    outcome: Option<String>,
+    audio_status: String,
+    stitched_audio_s3_uri: Option<String>,
+    audio_error_code: Option<String>,
+    audio_error_message: Option<String>,
+    transcription_status: String,
+    transcription_task_id: Option<String>,
+    transcription: Option<String>,
+    transcription_error_code: Option<String>,
+    transcription_error_message: Option<String>,
+    moderation_status: String,
+    moderation_task_id: Option<String>,
+    sexual: Option<f64>,
+    hate_or_discrimination: Option<f64>,
+    harassment_or_abuse: Option<f64>,
+    violence_or_threats: Option<f64>,
+    asking_for_pii: Option<f64>,
+    moderation_error_code: Option<String>,
+    moderation_error_message: Option<String>,
 }
 
 #[tokio::test]
@@ -145,7 +168,7 @@ async fn completes_a_fresh_evaluation_and_replays_without_another_attempt()
         .execution_arn
         .as_deref()
         .expect("dispatched task must have an execution ARN");
-    wait_for_execution_success(execution_arn).await?;
+    wait_for_execution_success(&environment.pool, task.task_id, execution_arn).await?;
 
     let store = PipelineTaskStore::new(environment.pool.clone());
     let completed = seed_task(&store, &environment, &key, &caller_reference).await?;
@@ -217,9 +240,7 @@ async fn evaluation_dispatch_retries_a_seeded_failed_dispatch() -> Result<(), Bo
     let store = PipelineTaskStore::new(environment.pool.clone());
     let seeded = seed_task(&store, &environment, &key, &caller_reference).await?;
     assert_eq!(store.claim_dispatch(seeded.task_id).await?, Some(1));
-    store
-        .record_dispatch_failure(seeded.task_id, "seeded transient dispatch failure")
-        .await?;
+    store.record_dispatch_failure(seeded.task_id).await?;
 
     successful_json(
         post_start(
@@ -270,9 +291,7 @@ async fn evaluation_ingress_skips_active_leases_and_terminal_failed_tasks()
     let failed = seed_task(&store, &environment, &failed_key, &failed_caller).await?;
     for attempt in 1..=3 {
         assert_eq!(store.claim_dispatch(failed.task_id).await?, Some(attempt));
-        store
-            .record_dispatch_failure(failed.task_id, "seeded dispatch failure")
-            .await?;
+        store.record_dispatch_failure(failed.task_id).await?;
     }
     let response = successful_json(
         post_start(
@@ -286,7 +305,7 @@ async fn evaluation_ingress_skips_active_leases_and_terminal_failed_tasks()
     )?;
     let failed_after = stored_task(&environment.pool, &environment.tenant_id, &failed_key).await?;
     assert_eq!(response["status"], "PIPELINE_TASK_STATUS_FAILED");
-    assert_eq!(failed_after.status, "FAILED");
+    assert_eq!(failed_after.outcome.as_deref(), Some("FAILED"));
     assert_eq!(failed_after.attempt_count, 3);
     assert!(!failed_after.active_lease);
     assert!(failed_after.execution_arn.is_none());
@@ -505,9 +524,16 @@ async fn stored_task(
     tenant_id: &str,
     idempotency_key: &str,
 ) -> Result<StoredTask, sqlx::Error> {
-    let row: (i32, Option<String>, String, Option<String>, i32, bool) = sqlx::query_as(
+    let row: (
+        i32,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        i32,
+        bool,
+    ) = sqlx::query_as(
         r#"
-            SELECT task_id, caller_reference, status::TEXT, execution_arn, attempt_count,
+            SELECT task_id, caller_reference, outcome::TEXT, execution_arn, attempt_count,
                 dispatch_started_at IS NOT NULL AS active_lease
             FROM pipeline_tasks
             WHERE tenant_id = $1 AND idempotency_key = $2
@@ -520,7 +546,7 @@ async fn stored_task(
     Ok(StoredTask {
         task_id: row.0,
         caller_reference: row.1,
-        status: row.2,
+        outcome: row.2,
         execution_arn: row.3,
         attempt_count: row.4,
         active_lease: row.5,
@@ -592,7 +618,11 @@ async fn assert_dispatched(
     Ok(())
 }
 
-async fn wait_for_execution_success(execution_arn: &str) -> Result<(), Box<dyn Error>> {
+async fn wait_for_execution_success(
+    pool: &PgPool,
+    task_id: i32,
+    execution_arn: &str,
+) -> Result<(), Box<dyn Error>> {
     let sdk_config = aws_config::defaults(BehaviorVersion::latest())
         .profile_name("admin")
         .load()
@@ -607,8 +637,37 @@ async fn wait_for_execution_success(execution_arn: &str) -> Result<(), Box<dyn E
             .send()
             .await?;
         match execution.status().as_str() {
-            "SUCCEEDED" => return Ok(()),
+            "SUCCEEDED" => {
+                let outcome = print_processing_report(
+                    pool,
+                    task_id,
+                    execution_arn,
+                    execution.status().as_str(),
+                    execution.error(),
+                    execution.cause(),
+                    execution.output(),
+                )
+                .await?;
+                if outcome.as_deref() == Some("SUCCEEDED") {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "workflow {execution_arn} completed but pipeline task {task_id} ended as {}",
+                    outcome.as_deref().unwrap_or("unknown")
+                )
+                .into());
+            }
             "FAILED" | "TIMED_OUT" | "ABORTED" => {
+                print_processing_report(
+                    pool,
+                    task_id,
+                    execution_arn,
+                    execution.status().as_str(),
+                    execution.error(),
+                    execution.cause(),
+                    execution.output(),
+                )
+                .await?;
                 return Err(format!(
                     "workflow {execution_arn} ended as {}: {}: {}",
                     execution.status().as_str(),
@@ -621,11 +680,141 @@ async fn wait_for_execution_success(execution_arn: &str) -> Result<(), Box<dyn E
         }
     }
 
+    print_processing_report(
+        pool,
+        task_id,
+        execution_arn,
+        "WAIT_TIMEOUT",
+        Some("IntegrationTestTimeout"),
+        Some("the workflow did not reach a terminal state before the test timeout"),
+        None,
+    )
+    .await?;
     Err(format!(
         "workflow {execution_arn} did not complete within {} seconds",
         timeout.as_secs()
     )
     .into())
+}
+
+async fn print_processing_report(
+    pool: &PgPool,
+    task_id: i32,
+    execution_arn: &str,
+    execution_status: &str,
+    execution_error: Option<&str>,
+    execution_cause: Option<&str>,
+    execution_output: Option<&str>,
+) -> Result<Option<String>, Box<dyn Error>> {
+    let row = sqlx::query_as::<_, ProcessingReportRow>(
+        r#"
+            SELECT task.outcome::TEXT AS outcome,
+                audio.status::TEXT AS audio_status,
+                audio.stitched_audio_s3_uri,
+                audio.error_code AS audio_error_code,
+                audio.error_message AS audio_error_message,
+                transcription.status::TEXT AS transcription_status,
+                transcription.external_task_id AS transcription_task_id,
+                transcription.transcript AS transcription,
+                transcription.error_code AS transcription_error_code,
+                transcription.error_message AS transcription_error_message,
+                moderation.status::TEXT AS moderation_status,
+                moderation.external_task_id AS moderation_task_id,
+                moderation.sexual,
+                moderation.hate_or_discrimination,
+                moderation.harassment_or_abuse,
+                moderation.violence_or_threats,
+                moderation.asking_for_pii,
+                moderation.error_code AS moderation_error_code,
+                moderation.error_message AS moderation_error_message
+            FROM pipeline_tasks task
+            JOIN audio_processing_tasks audio USING (task_id)
+            JOIN transcription_tasks transcription USING (task_id)
+            JOIN moderation_tasks moderation USING (task_id)
+            WHERE task.task_id = $1
+        "#,
+    )
+    .bind(task_id)
+    .fetch_one(pool)
+    .await?;
+    let outcome = row.outcome.clone();
+    let input_files: Vec<String> = sqlx::query_scalar(
+        "SELECT audio_s3_uri FROM pipeline_task_inputs WHERE task_id = $1 ORDER BY sequence",
+    )
+    .bind(task_id)
+    .fetch_all(pool)
+    .await?;
+    let produced_files = row
+        .stitched_audio_s3_uri
+        .as_ref()
+        .map(|uri| vec![json!({ "type": "stitchedAudio", "s3Uri": uri })])
+        .unwrap_or_default();
+    let moderation_scores = match (
+        row.sexual,
+        row.hate_or_discrimination,
+        row.harassment_or_abuse,
+        row.violence_or_threats,
+        row.asking_for_pii,
+    ) {
+        (Some(sexual), Some(hate), Some(harassment), Some(violence), Some(pii)) => json!({
+            "sexual": sexual,
+            "hate_or_discrimination": hate,
+            "harassment_or_abuse": harassment,
+            "violence_or_threats": violence,
+            "asking_for_pii": pii,
+        }),
+        _ => Value::Null,
+    };
+    let execution_output = execution_output
+        .map(|output| serde_json::from_str(output).unwrap_or_else(|_| json!(output)))
+        .unwrap_or(Value::Null);
+    let report = json!({
+        "pipelineTaskId": task_id,
+        "pipelineOutcome": row.outcome,
+        "execution": {
+            "arn": execution_arn,
+            "status": execution_status,
+            "error": execution_error,
+            "cause": execution_cause,
+            "output": execution_output,
+        },
+        "inputFiles": input_files,
+        "producedFiles": produced_files,
+        "audioProcessing": {
+            "status": row.audio_status,
+            "stitchedAudioS3Uri": row.stitched_audio_s3_uri,
+            "error": collected_error(row.audio_error_code, row.audio_error_message),
+        },
+        "transcription": {
+            "status": row.transcription_status,
+            "taskId": row.transcription_task_id,
+            "result": row.transcription,
+            "error": collected_error(
+                row.transcription_error_code,
+                row.transcription_error_message,
+            ),
+        },
+        "moderation": {
+            "status": row.moderation_status,
+            "taskId": row.moderation_task_id,
+            "scores": moderation_scores,
+            "error": collected_error(row.moderation_error_code, row.moderation_error_message),
+        },
+    });
+
+    println!(
+        "Processing result:\n{}",
+        serde_json::to_string_pretty(&report)?
+    );
+    Ok(outcome)
+}
+
+fn collected_error(code: Option<String>, message: Option<String>) -> Value {
+    if code.is_none() && message.is_none() {
+        Value::Null
+    } else {
+        json!({ "code": code, "message": message })
+    }
 }
 
 fn workflow_timeout() -> Duration {

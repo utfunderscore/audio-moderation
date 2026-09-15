@@ -9,7 +9,7 @@ Use `deployment-integration.sh` for every deployed AWS Lambda integration workfl
 - Do not deploy unless the user explicitly requested or approved a deployment. Deployment builds images, pushes to ECR, changes AWS resources, and can incur cost.
 - Do not run deployments concurrently from separate worktrees. Terraform state is local and has no shared lock.
 - Do not run direct `terraform apply` commands. Lambda image tags are required and the script coordinates ECR bootstrap, image publication, Terraform, and Lambda waiters.
-- Do not use or introduce a `latest` Lambda image tag. A deployment must use one collision-checked immutable tag for all six images.
+- Do not use or introduce a `latest` Lambda image tag. A deployment must use one collision-checked immutable tag for all seven images.
 - Test-only Terraform resources must remain gated by `enable_test_resources`, which defaults to `false`. The integration deployment script explicitly enables them.
 - Never print decrypted SSM parameter values or database credentials.
 - Do not deploy or modify Modal resources without explicit approval immediately before the Modal command.
@@ -30,7 +30,7 @@ SubmitReview -> presigned S3 upload -> confirm-upload -> PENDING_PROCESSING
 ```
 
 ```text
-StartEvaluation -> Step Functions -> audio conversion -> transcription -> callback
+StartEvaluation -> Step Functions -> audio conversion -> transcription -> moderation -> callbacks
 ```
 
 There is no review-to-evaluation integration. Do not describe `review-confirmation` as starting an evaluation, and do not construct a test that assumes it does.
@@ -40,7 +40,7 @@ There is no review-to-evaluation integration. Do not describe `review-confirmati
 | Command | Purpose | Changes AWS? |
 |---|---|---:|
 | `preflight [suite]` | Validate tools, identity, configuration, and external prerequisites | Read-only AWS calls |
-| `deploy` | Build and deploy all six Lambda images and the complete Terraform environment | Yes |
+| `deploy` | Build and deploy all seven Lambda images and the complete Terraform environment | Yes |
 | `test <suite>` | Run one suite against an existing deployment | Usually; tests create real data and some invoke AWS services |
 | `all [suite]` | Deploy the complete environment, then run one suite | Yes |
 
@@ -55,11 +55,12 @@ Without a suite, `preflight` validates the complete deployment. Without a suite,
 | `evaluation-ingress` | Validation, active leases, terminal retry behavior, and idempotency conflicts | Synthetic non-dispatched S3 URIs | Supported |
 | `evaluation-dispatch` | Seeded dispatch and retry through the production workflow | `--audio-file` | Supported; does not wait for completion |
 | `audio-conversion` | Direct synchronous audio-processing Lambda invocation and artifact creation | `--audio-file` | Supported |
-| `task-callback` | Real Step Functions token delivered to task-callback | Test state machine | Supported |
+| `task-callback` | Requires an ASR-created persisted callback attempt | Test state machine | Unsupported |
 | `transcription-caller` | Isolated transcription request and persistence | External endpoint and task fixture | Unsupported |
-| `evaluation-e2e` | Ingress, conversion, transcription, callback, and terminal workflow success | `--audio-file` | Supported with a compatible endpoint |
+| `moderation-caller` | Isolated moderation request and persistence | Completed transcription and task fixture | Unsupported |
+| `evaluation-e2e` | Ingress, conversion, transcription, moderation, callbacks, and terminal workflow success | `--audio-file` | Supported with compatible endpoints |
 
-The unsupported `transcription-caller` suite fails with an explanation. Do not bypass that failure by using placeholder task tokens or an unverified endpoint.
+The unsupported `transcription-caller`, `moderation-caller`, and `task-callback` suites fail with an explanation. Do not bypass them with placeholder task tokens or an unverified endpoint. The legacy callback test state machine cannot seed the token digest before Step Functions generates its callback token.
 
 ## Prerequisites
 
@@ -71,9 +72,10 @@ The complete deployment and `evaluation-e2e` require:
 - SecureString parameters for the database URL, Modal token ID, and Modal token secret.
 - The Modal OIDC provider in the target AWS account.
 - An HTTPS endpoint verified to accept this repository's Rust `TranscriptionRequest` contract. It defaults to the `transcription_endpoint_url` Terraform variable, so the runner can resolve it from Terraform output or the deployed transcription-caller instead of requiring `--transcription-endpoint-url`.
+- An HTTPS Modal base URL whose `/moderation/` route accepts this repository's `ModerationRequest` contract. Pass it with `--modal-endpoint-url`, or let the runner resolve `modal_endpoint_url` from Terraform or the deployed moderation-caller.
 - A readable, nonempty audio file for conversion or end-to-end testing.
 
-The runner validates prerequisites but deliberately does not run database migrations or contact the transcription endpoint.
+The runner validates prerequisites but deliberately does not run database migrations or contact either external endpoint.
 
 The callback test state machine and its IAM role are conditional Terraform resources. A normal Terraform apply leaves `enable_test_resources` at `false`; `deployment-integration.sh deploy` explicitly sets it to `true` for an integration environment.
 
@@ -86,6 +88,7 @@ Use this before requesting deployment approval or changing AWS resources:
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh preflight \
   --transcription-endpoint-url https://compatible.example/transcriptions \
+  --modal-endpoint-url https://compatible.example \
   --confirm-compatible-transcription-endpoint
 ```
 
@@ -98,6 +101,7 @@ After explicit deployment approval:
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh deploy \
   --transcription-endpoint-url https://compatible.example/transcriptions \
+  --modal-endpoint-url https://compatible.example \
   --confirm-compatible-transcription-endpoint
 ```
 
@@ -107,10 +111,10 @@ The deployment:
 
 1. Validates the full environment.
 2. Reconciles Terraform moved-resource state without deploying application resources.
-3. Bootstraps all six immutable ECR repositories.
-4. Builds and pushes all six images under one tag.
+3. Bootstraps all seven immutable ECR repositories.
+4. Builds and pushes all seven images under one tag.
 5. Performs one full Terraform apply with every image tag supplied explicitly.
-6. Waits for all six Lambda updates.
+6. Waits for all seven Lambda updates.
 
 ### Run An Isolated Suite
 
@@ -126,7 +130,6 @@ Other low-dependency examples:
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh test review-submit
 AWS_PROFILE=admin ./deployment-integration.sh test review-confirmation
-AWS_PROFILE=admin ./deployment-integration.sh test task-callback
 ```
 
 ### Test Audio Conversion
@@ -156,11 +159,12 @@ the asynchronous executions may still be using them.
 
 ### Deploy And Run One Suite
 
-`all` always performs a complete six-Lambda deployment, even when the selected suite covers only one slice:
+`all` always performs a complete seven-Lambda deployment, even when the selected suite covers only one slice:
 
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh all review-confirmation \
   --transcription-endpoint-url https://compatible.example/transcriptions \
+  --modal-endpoint-url https://compatible.example \
   --confirm-compatible-transcription-endpoint
 ```
 
@@ -172,15 +176,23 @@ Do not use `all` when the user only requested testing against the existing envir
 AWS_PROFILE=admin ./deployment-integration.sh preflight evaluation-e2e \
   --audio-file ./sample_071.mp3 \
   --transcription-endpoint-url https://compatible.example/transcriptions \
+  --modal-endpoint-url https://compatible.example \
   --confirm-compatible-transcription-endpoint
 
 AWS_PROFILE=admin ./deployment-integration.sh test evaluation-e2e \
   --audio-file ./sample_071.mp3 \
   --transcription-endpoint-url https://compatible.example/transcriptions \
+  --modal-endpoint-url https://compatible.example \
   --confirm-compatible-transcription-endpoint
 ```
 
-The suite waits up to ten minutes for terminal Step Functions success. Input fixtures are removed after success and retained on failure because asynchronous work may still need them.
+The suite waits up to ten minutes for the Step Functions execution to become
+terminal. It then prints a structured processing report containing execution
+diagnostics, persisted transcription and moderation results, produced artifact
+URIs, and per-step errors. A handled pipeline failure still fails the test even
+if its finalization state makes the Step Functions execution itself succeed.
+Input fixtures are removed after success and retained on failure because
+asynchronous work may still need them.
 
 ### Target Another Environment
 
@@ -204,6 +216,7 @@ Normally the script creates a tag from the Git SHA and UTC timestamp. For a coor
 AWS_PROFILE=admin ./deployment-integration.sh deploy \
   --image-tag release-2026-09-13-1 \
   --transcription-endpoint-url https://compatible.example/transcriptions \
+  --modal-endpoint-url https://compatible.example \
   --confirm-compatible-transcription-endpoint
 ```
 
@@ -224,11 +237,12 @@ ECR tags are immutable. If any repository already contains the tag, choose a new
 
 - If preflight fails, fix the reported prerequisite before deploying.
 - If an image tag collision is reported, generate a new tag. Never mutate or remove an existing release tag to make a retry pass.
-- If only some images were pushed, rerun with a new tag so all six images form one release.
+- If only some images were pushed, rerun with a new tag so all seven images form one release.
 - If Terraform fails, inspect the plan/error and local state before retrying. Do not use `git reset`, delete Terraform state, or run a targeted application-resource apply as a shortcut.
 - If a Lambda waiter fails, inspect the Lambda update status and CloudWatch logs before rerunning deployment.
 - If an end-to-end test fails, preserve the reported S3 fixtures and Step Functions execution ARN for diagnosis.
 - If the transcription endpoint rejects the Rust request contract, stop. Resolving that mismatch is a separate application-contract decision, not a deployment-script workaround.
+- If the Modal moderation endpoint rejects the request contract, stop and verify its configured base URL and `/moderation/` API contract.
 
 ## Reporting Results
 

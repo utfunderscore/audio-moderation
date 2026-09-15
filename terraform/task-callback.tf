@@ -78,6 +78,26 @@ resource "aws_iam_role_policy" "task_callback_state_machine" {
   })
 }
 
+resource "aws_iam_role_policy" "task_callback_database_parameter" {
+  name = "${local.name_prefix}-task-callback-database-parameter"
+  role = aws_iam_role.task_callback.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "ssm:GetParameter"
+        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.database_parameter_name}"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "kms:Decrypt"
+        Resource = "arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:alias/aws/ssm"
+      },
+    ]
+  })
+}
+
 resource "aws_cloudwatch_log_group" "task_callback" {
   name              = "/aws/lambda/${local.name_prefix}-task-callback"
   retention_in_days = 7
@@ -94,7 +114,8 @@ resource "aws_lambda_function" "task_callback" {
 
   environment {
     variables = {
-      RUST_LOG = "info"
+      DATABASE_URL_PARAMETER = var.database_parameter_name
+      RUST_LOG               = "info"
     }
   }
 
@@ -102,6 +123,7 @@ resource "aws_lambda_function" "task_callback" {
     aws_ecr_repository_policy.task_callback_lambda_pull,
     aws_iam_role_policy_attachment.task_callback_logs,
     aws_iam_role_policy.task_callback_state_machine,
+    aws_iam_role_policy.task_callback_database_parameter,
     aws_cloudwatch_log_group.task_callback,
   ]
 }
