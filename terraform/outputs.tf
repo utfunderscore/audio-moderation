@@ -2,6 +2,10 @@ output "api_endpoint" {
   value = aws_apigatewayv2_stage.default.invoke_url
 }
 
+output "pipeline_task_events_websocket_endpoint" {
+  value = aws_apigatewayv2_stage.pipeline_task_events.invoke_url
+}
+
 output "submit_audio_ecr_repository_url" {
   value = aws_ecr_repository.submit_audio.repository_url
 }
