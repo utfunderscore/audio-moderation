@@ -125,6 +125,7 @@ resource "aws_lambda_function" "audio_processing" {
   environment {
     variables = {
       DATABASE_URL_PARAMETER = var.database_parameter_name
+      TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
       RUST_LOG               = "info"
     }
   }
@@ -134,6 +135,7 @@ resource "aws_lambda_function" "audio_processing" {
     aws_iam_role_policy_attachment.audio_processing_logs,
     aws_iam_role_policy.audio_processing_objects,
     aws_iam_role_policy.audio_processing_database_parameter,
+    aws_iam_role_policy.task_event_emission,
     aws_cloudwatch_log_group.audio_processing,
   ]
 }

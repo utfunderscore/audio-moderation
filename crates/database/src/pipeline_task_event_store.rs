@@ -18,6 +18,8 @@ pub struct PipelineTaskEvent {
     pub task_id: i32,
     pub event_name: String,
     pub created_at: DateTime<Utc>,
+    /// Whether this call created the event rather than returning its prior record.
+    pub created: bool,
 }
 
 /// Values required to record a pipeline task event.
@@ -39,8 +41,8 @@ impl PipelineTaskEventStore {
         Self { pool }
     }
 
-    /// Records an event for a pipeline task and returns its durable replay position.
-    pub async fn create(
+    /// Records an event once for a pipeline task, or returns its prior record.
+    pub async fn create_or_get(
         &self,
         event: NewPipelineTaskEvent<'_>,
     ) -> Result<PipelineTaskEvent, PipelineTaskEventError> {
@@ -48,7 +50,9 @@ impl PipelineTaskEventStore {
             r#"
                 INSERT INTO pipeline_task_events (task_id, event_name)
                 VALUES ($1, $2)
-                RETURNING event_id, task_id, event_name, created_at
+                ON CONFLICT (task_id, event_name) DO UPDATE
+                SET event_name = EXCLUDED.event_name
+                RETURNING event_id, task_id, event_name, created_at, (xmax = 0) AS created
             "#,
         )
         .bind(event.task_id)
@@ -58,6 +62,14 @@ impl PipelineTaskEventStore {
         .map_err(PipelineTaskEventError::Create)
     }
 
+    /// Records an event once for a pipeline task.
+    pub async fn create(
+        &self,
+        event: NewPipelineTaskEvent<'_>,
+    ) -> Result<PipelineTaskEvent, PipelineTaskEventError> {
+        self.create_or_get(event).await
+    }
+
     /// Returns a task's events in the order they must be replayed to subscribers.
     pub async fn list(
         &self,
@@ -65,7 +77,7 @@ impl PipelineTaskEventStore {
     ) -> Result<Vec<PipelineTaskEvent>, PipelineTaskEventError> {
         sqlx::query_as::<_, PipelineTaskEvent>(
             r#"
-                SELECT event_id, task_id, event_name, created_at
+                SELECT event_id, task_id, event_name, created_at, FALSE AS created
                 FROM pipeline_task_events
                 WHERE task_id = $1
                 ORDER BY event_id

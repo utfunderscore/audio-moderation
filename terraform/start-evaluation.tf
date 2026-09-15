@@ -121,6 +121,7 @@ resource "aws_lambda_function" "start_evaluation" {
       DATABASE_URL_PARAMETER = var.database_parameter_name
       STATE_MACHINE_ARN      = aws_sfn_state_machine.audio_processing.arn
       TENANT_ID              = var.tenant_id
+      TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
       RUST_LOG               = "info"
     }
   }
@@ -130,6 +131,7 @@ resource "aws_lambda_function" "start_evaluation" {
     aws_iam_role_policy_attachment.start_evaluation_logs,
     aws_iam_role_policy.start_evaluation_database_parameter,
     aws_iam_role_policy.start_evaluation_state_machine,
+    aws_iam_role_policy.task_event_emission,
     aws_cloudwatch_log_group.start_evaluation,
   ]
 }

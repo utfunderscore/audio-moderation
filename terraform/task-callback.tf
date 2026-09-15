@@ -115,6 +115,7 @@ resource "aws_lambda_function" "task_callback" {
   environment {
     variables = {
       DATABASE_URL_PARAMETER = var.database_parameter_name
+      TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
       RUST_LOG               = "info"
     }
   }
@@ -124,6 +125,7 @@ resource "aws_lambda_function" "task_callback" {
     aws_iam_role_policy_attachment.task_callback_logs,
     aws_iam_role_policy.task_callback_state_machine,
     aws_iam_role_policy.task_callback_database_parameter,
+    aws_iam_role_policy.task_event_emission,
     aws_cloudwatch_log_group.task_callback,
   ]
 }

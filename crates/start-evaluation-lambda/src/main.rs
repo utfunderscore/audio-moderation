@@ -5,10 +5,11 @@ use aws_sdk_sfn::Client as SfnClient;
 use aws_sdk_ssm::Client as SsmClient;
 use common::load_database_url;
 use connectrpc::ConnectRpcService;
-use database::PipelineTaskStore;
+use database::{PipelineTaskEventStore, PipelineTaskStore, PipelineTaskWebSocketConnectionStore};
 use http_body_util::Full;
 use lambda_http::{Error, Request as LambdaRequest, run, service_fn};
 use sqlx::postgres::PgPoolOptions;
+use task_event_emitter::TaskEventEmitter;
 use tower::Service;
 
 mod proto;
@@ -38,13 +39,21 @@ async fn main() -> Result<(), Error> {
         env::var("ARTIFACTS_BUCKET_NAME").expect("ARTIFACTS_BUCKET_NAME must be set");
     let tenant_id = env::var("TENANT_ID").expect("TENANT_ID must be set");
 
+    let events = TaskEventEmitter::new(
+        PipelineTaskEventStore::new(pool.clone()),
+        PipelineTaskWebSocketConnectionStore::new(pool.clone()),
+        &sdk_config,
+        env::var("TASK_EVENTS_MANAGEMENT_ENDPOINT")
+            .expect("TASK_EVENTS_MANAGEMENT_ENDPOINT must be set"),
+    );
     let service = StartEvaluationService::new(
         PipelineTaskStore::new(pool),
         SfnClient::new(&sdk_config),
         state_machine_arn,
         artifacts_bucket,
         tenant_id,
-    );
+    )
+    .with_event_emitter(events);
     let connect_service = ConnectRpcService::new(AudioModerationServiceServer::new(service));
 
     run(service_fn(move |request: LambdaRequest| {

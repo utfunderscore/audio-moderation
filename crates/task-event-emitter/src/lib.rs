@@ -7,7 +7,9 @@ use aws_sdk_apigatewaymanagement::{
     error::ProvideErrorMetadata, primitives::Blob,
 };
 use aws_types::SdkConfig;
-use database::PipelineTaskWebSocketConnectionStore;
+use database::{
+    NewPipelineTaskEvent, PipelineTaskEventStore, PipelineTaskWebSocketConnectionStore,
+};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -21,6 +23,7 @@ pub struct TaskEventEmission {
 /// Emits task event names to WebSocket connections subscribed in PostgreSQL.
 #[derive(Clone)]
 pub struct TaskEventEmitter {
+    events: PipelineTaskEventStore,
     connections: PipelineTaskWebSocketConnectionStore,
     client: ApiGatewayManagementClient,
 }
@@ -31,6 +34,7 @@ impl TaskEventEmitter {
     /// `management_endpoint` must be an HTTPS endpoint for the deployed API
     /// and stage, not its client-facing WSS URL.
     pub fn new(
+        events: PipelineTaskEventStore,
         connections: PipelineTaskWebSocketConnectionStore,
         sdk_config: &SdkConfig,
         management_endpoint: impl Into<String>,
@@ -39,6 +43,7 @@ impl TaskEventEmitter {
             .endpoint_url(management_endpoint)
             .build();
         Self {
+            events,
             connections,
             client: ApiGatewayManagementClient::from_conf(config),
         }
@@ -49,6 +54,12 @@ impl TaskEventEmitter {
     /// A closed connection is removed before fanout continues. Other delivery
     /// failures are returned to the caller so it can choose whether to retry.
     pub async fn emit(&self, task_id: i32, event_name: &str) -> Result<TaskEventEmission, Error> {
+        self.events
+            .create_or_get(NewPipelineTaskEvent {
+                task_id,
+                event_name,
+            })
+            .await?;
         let connections = self.connections.list(task_id).await?;
         let mut emission = TaskEventEmission::default();
 

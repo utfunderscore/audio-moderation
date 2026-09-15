@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use database::{CallbackAttempt, ModerationResult, PipelineTaskError, PipelineTaskStore};
+use task_event_emitter::TaskEventEmitter;
 
 const MAX_TASK_TOKEN_BYTES: usize = 2_048;
 const MAX_SUCCESS_OUTPUT_BYTES: usize = 262_144;
@@ -190,6 +191,7 @@ where
 pub struct TaskCallbackHandler<S, D> {
     step_functions: S,
     database: D,
+    events: Option<TaskEventEmitter>,
 }
 
 impl<S, D> TaskCallbackHandler<S, D> {
@@ -197,7 +199,13 @@ impl<S, D> TaskCallbackHandler<S, D> {
         Self {
             step_functions,
             database,
+            events: None,
         }
+    }
+
+    pub fn with_event_emitter(mut self, events: TaskEventEmitter) -> Self {
+        self.events = Some(events);
+        self
     }
 }
 
@@ -248,6 +256,9 @@ impl<S: StepFunctions, D: TaskCallbackStore> TaskCallbackHandler<S, D> {
                         | PipelineTaskError::TransitionConflict { .. },
                     ) => return 409,
                     Err(_) => return 500,
+                }
+                if self.emit(task_id, "ASR_FINISHED").await.is_err() {
+                    return 500;
                 }
                 match self
                     .step_functions
@@ -307,6 +318,13 @@ impl<S: StepFunctions, D: TaskCallbackStore> TaskCallbackHandler<S, D> {
                     ) => return 409,
                     Err(_) => return 500,
                 }
+                if self
+                    .emit(job_id, "MODERATION_PROCESSING_FINISHED")
+                    .await
+                    .is_err()
+                {
+                    return 500;
+                }
                 self.step_functions
                     .send_task_success(callback.task_token.clone(), output)
                     .await
@@ -344,12 +362,12 @@ impl<S: StepFunctions, D: TaskCallbackStore> TaskCallbackHandler<S, D> {
         cause: Option<String>,
     ) -> u16 {
         info!(outcome = "failure", "received external task callback");
-        match self
+        let attempt = match self
             .database
             .record_callback_failure(task_token.clone(), error.clone(), cause.clone())
             .await
         {
-            Ok(_) => {}
+            Ok(attempt) => attempt,
             Err(
                 PipelineTaskError::CallbackTokenNotFound
                 | PipelineTaskError::CallbackTaskConflict
@@ -359,14 +377,17 @@ impl<S: StepFunctions, D: TaskCallbackStore> TaskCallbackHandler<S, D> {
                 | PipelineTaskError::TransitionConflict { .. },
             ) => return 409,
             Err(_) => return 500,
-        }
+        };
         match self
             .step_functions
             .send_task_failure(task_token.clone(), error, cause)
             .await
         {
             Ok(()) => match self.database.finalize_callback_failure(task_token).await {
-                Ok(()) => 204,
+                Ok(()) => match self.emit(attempt.task_id, "FAILED").await {
+                    Ok(()) => 204,
+                    Err(_) => 500,
+                },
                 Err(
                     PipelineTaskError::CallbackTokenNotFound
                     | PipelineTaskError::CallbackTaskConflict
@@ -383,6 +404,13 @@ impl<S: StepFunctions, D: TaskCallbackStore> TaskCallbackHandler<S, D> {
             Err(StepFunctionsError::Unavailable) => 503,
             Err(StepFunctionsError::Other) => 502,
         }
+    }
+
+    async fn emit(&self, task_id: i32, event_name: &str) -> Result<(), task_event_emitter::Error> {
+        if let Some(events) = &self.events {
+            events.emit(task_id, event_name).await?;
+        }
+        Ok(())
     }
 }
 

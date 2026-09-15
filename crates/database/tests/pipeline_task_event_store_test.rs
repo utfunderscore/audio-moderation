@@ -91,3 +91,38 @@ async fn lists_only_the_requested_tasks_events() {
     assert_eq!(events[0].task_id, first.task_id);
     assert_eq!(events[0].event_name, "EVALUATION_ACCEPTED");
 }
+
+#[tokio::test]
+async fn records_a_lifecycle_event_only_once() {
+    let database = TestDatabase::start().await;
+    let task_store = PipelineTaskStore::new(database.pool.clone());
+    let event_store = PipelineTaskEventStore::new(database.pool);
+    let task = task_store
+        .create_or_get(NewPipelineTask {
+            tenant_id: "tenant-a",
+            idempotency_key: "request-1",
+            caller_reference: None,
+            audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
+        })
+        .await
+        .unwrap();
+
+    let first = event_store
+        .create_or_get(NewPipelineTaskEvent {
+            task_id: task.task_id,
+            event_name: "ASR_STARTED",
+        })
+        .await
+        .unwrap();
+    let replay = event_store
+        .create_or_get(NewPipelineTaskEvent {
+            task_id: task.task_id,
+            event_name: "ASR_STARTED",
+        })
+        .await
+        .unwrap();
+
+    assert!(first.created);
+    assert!(!replay.created);
+    assert_eq!(first.event_id, replay.event_id);
+}

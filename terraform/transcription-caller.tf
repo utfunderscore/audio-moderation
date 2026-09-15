@@ -124,6 +124,7 @@ resource "aws_lambda_function" "transcription_caller" {
       MODAL_PROXY_TOKEN_SECRET_PARAMETER = var.modal_proxy_token_secret_parameter_name
       TRANSCRIPTION_ENDPOINT_URL         = var.transcription_endpoint_url
       DATABASE_URL_PARAMETER             = var.database_parameter_name
+      TASK_EVENTS_MANAGEMENT_ENDPOINT    = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
       RUST_LOG                           = "info"
     }
   }
@@ -133,6 +134,7 @@ resource "aws_lambda_function" "transcription_caller" {
     aws_iam_role_policy_attachment.transcription_caller_logs,
     aws_iam_role_policy.transcription_caller_modal_proxy_tokens,
     aws_iam_role_policy.transcription_caller_database_parameter,
+    aws_iam_role_policy.task_event_emission,
     aws_cloudwatch_log_group.transcription_caller,
   ]
 }
