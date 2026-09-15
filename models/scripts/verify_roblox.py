@@ -58,17 +58,25 @@ def verify() -> dict[str, object]:
         scores = worker.moderate_bytes(wav_bytes(bytes(samples * 2)))
         assert all(0 <= value <= 1 for value in scores.values()), samples
 
-    # Independent WAV loader versus the adapter's PCM-to-float conversion.
-    pcm = np.random.default_rng(0).integers(-8_000, 8_000, 240_000, dtype=np.int16).tobytes()
+    # Independent WAV loader versus the adapter's conversion and padding path.
+    # Construct expected padding independently of the production helper.
+    random = np.random.default_rng(0)
+    maximum_error = 0.0
+    parity_lengths = [1, 200, 1_279, 1_280, 1_281, 16_001, 239_999, 240_000]
     with TemporaryDirectory() as directory:
         path = Path(directory, "reference.wav")
-        path.write_bytes(wav_bytes(pcm))
-        waveform = worker._reference.load_audio(path)
-        raw = worker._reference.run_inference(worker._model, waveform)
-        reference = map_scores(worker._labels, raw["probs"][0].tolist())
-    actual = worker.moderate_bytes(wav_bytes(pcm))
-    maximum_error = max(abs(actual[key] - reference[key]) for key in actual)
-    assert maximum_error <= 1e-6, maximum_error
+        for samples in parity_lengths:
+            pcm = random.integers(-8_000, 8_000, samples, dtype=np.int16).tobytes()
+            padded_count = max(1_280, ((samples + 319) // 320) * 320)
+            expected_pcm = pcm + bytes(2 * (padded_count - samples))
+            path.write_bytes(wav_bytes(expected_pcm))
+            waveform = worker._reference.load_audio(path)
+            raw = worker._reference.run_inference(worker._model, waveform)
+            reference = map_scores(worker._labels, raw["probs"][0].tolist())
+            actual = worker.moderate_bytes(wav_bytes(pcm))
+            error = max(abs(actual[key] - reference[key]) for key in actual)
+            assert error <= 1e-6, (samples, error)
+            maximum_error = max(maximum_error, error)
 
     timings = {}
     for seconds in (15, 300):
@@ -81,6 +89,7 @@ def verify() -> dict[str, object]:
         "device": torch.cuda.get_device_name(),
         "load_seconds": load_seconds,
         "tested_sample_lengths": lengths,
+        "upstream_parity_sample_lengths": parity_lengths,
         "upstream_maximum_absolute_error": maximum_error,
         "warm_recording_seconds": timings,
         "peak_cuda_allocated_bytes": torch.cuda.max_memory_allocated(),
