@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import subprocess
-import wave
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Protocol, cast
-from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
 
 import modal
 
+from socialguard_models.audio import download_audio, normalize_audio, validate_wav
 from socialguard_models.modal_app import app
 
 MODEL_ID = "ibm-granite/granite-speech-4.1-2b"
@@ -262,55 +259,15 @@ class GraniteSpeech:
 
 
 def _download_audio(audio_url: str, destination: Path) -> None:
-    parsed = urlsplit(audio_url)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("audio URL must be an absolute HTTPS URL")
-
-    request = Request(audio_url, headers={"User-Agent": "socialguard-models/0.1"})
-    downloaded_bytes = 0
-    with urlopen(request, timeout=120) as response, destination.open("wb") as output:
-        while chunk := response.read(1024 * 1024):
-            downloaded_bytes += len(chunk)
-            if downloaded_bytes > MAX_AUDIO_BYTES:
-                raise ValueError("audio file exceeds the 512 MiB limit")
-            output.write(chunk)
+    download_audio(audio_url, destination, max_bytes=MAX_AUDIO_BYTES)
 
 
 def _normalize_audio(source: Path, destination: Path) -> None:
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-loglevel",
-            "error",
-            "-i",
-            str(source),
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-t",
-            str(MAX_AUDIO_SECONDS + 1),
-            "-f",
-            "wav",
-            str(destination),
-        ],
-        check=True,
-        timeout=300,
-    )
+    normalize_audio(source, destination, max_seconds=MAX_AUDIO_SECONDS)
 
 
 def _read_audio(audio_path: Path) -> object:
-    with wave.open(str(audio_path), "rb") as wav_file:
-        sample_rate = wav_file.getframerate()
-        channel_count = wav_file.getnchannels()
-        frame_count = wav_file.getnframes()
-    if sample_rate != 16_000 or channel_count != 1:
-        raise RuntimeError("failed to normalize audio to mono 16 kHz")
-    if frame_count == 0:
-        raise ValueError("audio must contain at least one sample")
-    if frame_count > MAX_AUDIO_SECONDS * sample_rate:
-        raise ValueError(f"audio must not exceed {MAX_AUDIO_SECONDS} seconds")
+    validate_wav(audio_path, max_seconds=MAX_AUDIO_SECONDS)
 
     from soundfile import read  # pyright: ignore[reportMissingImports, reportUnknownVariableType]
 
