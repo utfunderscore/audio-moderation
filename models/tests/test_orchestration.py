@@ -1,8 +1,6 @@
 import asyncio
 import logging
 import pickle
-from dataclasses import dataclass
-from typing import ClassVar
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -17,9 +15,12 @@ from socialguard_models.transcription.contracts import (
     TranscriptionTask,
 )
 from socialguard_models.api import submission
-from socialguard_models.idempotency import ModelFamily
-from socialguard_models.model_job import SubmittedModel
-from socialguard_models.moderation.contracts import ModerationTask
+from socialguard_models.moderation.contracts import (
+    ModerationScores,
+    ModerationTask,
+)
+from socialguard_models.moderation.job import ModerationJob
+from socialguard_models.moderation.models.registry import MODEL_SUBMITTERS
 
 
 @pytest.fixture
@@ -186,11 +187,11 @@ def test_process_transcription_validates_callback_before_worker(
     monkeypatch.setattr(
         pipeline,
         "get_callback_uri",
-        Mock(side_effect=RuntimeError("TRANSCRIPTION_CALLBACK_URI is required")),
+        Mock(side_effect=RuntimeError("CALLBACK_URI is required")),
     )
     monkeypatch.setattr(pipeline, "run_model", run)
 
-    with pytest.raises(RuntimeError, match="TRANSCRIPTION_CALLBACK_URI"):
+    with pytest.raises(RuntimeError, match="CALLBACK_URI"):
         asyncio.run(
             pipeline.process_model.local(  # pyright: ignore[reportFunctionMemberAccess]
                 TranscriptionJob(task), "transcription-456"
@@ -198,30 +199,6 @@ def test_process_transcription_validates_callback_before_worker(
         )
 
     run.assert_not_awaited()
-
-
-@dataclass(frozen=True)
-class ExampleModerationJob:
-    """Test-only adapter with extra input and structured output; no new CPU service."""
-
-    task: ModerationTask
-    gpu: Mock
-    family: ClassVar[ModelFamily] = "moderation"
-    callback_environment_variable: ClassVar[str] = "MODERATION_CALLBACK_URI"
-
-    @property
-    def model(self) -> str:
-        return self.task.model
-
-    async def submit(self, audio_url: str) -> SubmittedModel[dict[str, object]]:
-        return await self.gpu.moderate.spawn.aio(audio_url, self.task.transcription)
-
-    def callback_outcome(
-        self, result: dict[str, object] | FailedOutcome, task_id: str
-    ) -> dict[str, object]:
-        if isinstance(result, FailedOutcome):
-            return {"type": "failure", "cause": result.cause}
-        return {"type": "success", "taskId": task_id, "moderationResult": result}
 
 
 @pytest.mark.parametrize("fails", [False, True])
@@ -236,15 +213,20 @@ def test_moderation_uses_same_cpu_gpu_and_callback_lifecycle(
         pipeline_task_id="task-123",
         task_token="token-123",
     )
-    result = {"flagged": True, "scores": {"example": 0.9}}
+    result: ModerationScores = {
+        "sexual": 0.01,
+        "hate_or_discrimination": 0.02,
+        "harassment_or_abuse": 0.9,
+        "violence_or_threats": 0.03,
+        "asking_for_pii": 0.04,
+    }
     services.worker.get.aio.return_value = result
     if fails:
         services.worker.get.aio.side_effect = TimeoutError("private details")
-    gpu = Mock()
-    gpu.moderate.spawn.aio = AsyncMock(return_value=services.worker)
-    job = ExampleModerationJob(task, gpu)
-    monkeypatch.setenv("MODERATION_CALLBACK_URI", "https://example.com/moderation-callback")
-    monkeypatch.delenv("TRANSCRIPTION_CALLBACK_URI", raising=False)
+    submitter = AsyncMock(return_value=services.worker)
+    monkeypatch.setitem(MODEL_SUBMITTERS, task.model, submitter)
+    job = ModerationJob(task)
+    monkeypatch.setenv("CALLBACK_URI", "https://example.com/moderation-callback")
     callback = Mock()
     monkeypatch.setattr(pipeline, "post_callback", callback)
 
@@ -252,14 +234,21 @@ def test_moderation_uses_same_cpu_gpu_and_callback_lifecycle(
 
     services.authenticate.assert_called_once_with()
     services.presign.assert_called_once_with(services.authenticate.return_value, task.audio_uri)
-    gpu.moderate.spawn.aio.assert_awaited_once_with(
+    submitter.assert_awaited_once_with(
         "https://example.com/audio.wav", task.transcription
     )
     services.worker.get.aio.assert_awaited_once_with(timeout=40)
     expected = (
-        {"type": "failure", "cause": "TimeoutError"}
+        {"type": "failure", "error": "ModerationFailed", "cause": "TimeoutError"}
         if fails else
-        {"type": "success", "taskId": "moderation-456", "moderationResult": result}
+        {
+            "type": "success",
+            "moderationResult": {
+                "jobId": "task-123",
+                "moderationTaskId": "moderation-456",
+                "scores": result,
+            },
+        }
     )
     callback.assert_called_once_with(
         session=services.authenticate.return_value,
@@ -284,7 +273,7 @@ def test_shared_submission_dispatches_moderation_to_same_cpu_function(
         pipeline_task_id="task-123",
         task_token="token-123",
     )
-    job = ExampleModerationJob(task, Mock())
+    job = ModerationJob(task)
     scheduler = Mock()
     monkeypatch.setattr(submission, "process_model", scheduler)
 
@@ -304,3 +293,19 @@ def test_shared_submission_dispatches_moderation_to_same_cpu_function(
 def test_transcription_job_round_trips_for_cpu_dispatch(task: TranscriptionTask) -> None:
     job = TranscriptionJob(task)
     assert pickle.loads(pickle.dumps(job)) == job
+
+
+def test_moderation_job_round_trips_and_rejects_unknown_model(services: Mock) -> None:
+    task = ModerationTask(
+        model="unconfigured-model",
+        transcription="Words spoken in the audio.",
+        audio_uri="s3://example/audio.wav",
+        idempotency_key="request-123",
+        pipeline_task_id="task-123",
+        task_token="token-123",
+    )
+    job = ModerationJob(task)
+    restored = pickle.loads(pickle.dumps(job))
+    assert restored == job
+    assert asyncio.run(run_model(restored)) == FailedOutcome(cause="ValueError")
+    services.worker.get.aio.assert_not_awaited()

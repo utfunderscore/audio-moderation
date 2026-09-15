@@ -15,7 +15,6 @@ from socialguard_models.transcription.models.granite import GraniteSpeech
 class TranscriptionJob:
     task: TranscriptionTask
     family: ClassVar[ModelFamily] = "transcription"
-    callback_environment_variable: ClassVar[str] = "TRANSCRIPTION_CALLBACK_URI"
 
     @property
     def model(self) -> str:

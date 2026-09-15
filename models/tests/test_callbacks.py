@@ -55,12 +55,12 @@ def test_completion_callback_posts_terminal_outcome(
     response.__enter__ = Mock(return_value=response)
     response.__exit__ = Mock(return_value=None)
     callback = Mock(return_value=response)
-    monkeypatch.setenv("TRANSCRIPTION_CALLBACK_URI", " https://example.com/callback ")
+    monkeypatch.setenv("CALLBACK_URI", " https://example.com/callback ")
     monkeypatch.setattr(callbacks, "urlopen", callback)
 
     post_callback(
         session=session,
-        callback_uri=get_callback_uri("TRANSCRIPTION_CALLBACK_URI"),
+        callback_uri=get_callback_uri(),
         task_token="token-123",
         outcome=completion_outcome(
             job_id="task-123", asr_task_id="transcription-456", outcome=outcome
@@ -101,13 +101,13 @@ def test_completion_callback_retries_transient_failures_with_backoff(
         ]
     )
     wait = Mock()
-    monkeypatch.setenv("TRANSCRIPTION_CALLBACK_URI", "https://example.com/callback")
+    monkeypatch.setenv("CALLBACK_URI", "https://example.com/callback")
     monkeypatch.setattr(callbacks, "urlopen", callback)
     monkeypatch.setattr(callbacks, "sleep", wait)
 
     post_callback(
         session=session,
-        callback_uri=get_callback_uri("TRANSCRIPTION_CALLBACK_URI"),
+        callback_uri=get_callback_uri(),
         task_token="token-123",
         outcome={"type": "success", "result": "text"},
     )
@@ -123,14 +123,14 @@ def test_completion_callback_does_not_retry_permanent_http_failure(
     error = HTTPError("", 400, "", Message(), None)
     callback = Mock(side_effect=error)
     wait = Mock()
-    monkeypatch.setenv("TRANSCRIPTION_CALLBACK_URI", "https://example.com/callback")
+    monkeypatch.setenv("CALLBACK_URI", "https://example.com/callback")
     monkeypatch.setattr(callbacks, "urlopen", callback)
     monkeypatch.setattr(callbacks, "sleep", wait)
 
     with pytest.raises(HTTPError) as raised:
         post_callback(
             session=session,
-            callback_uri=get_callback_uri("TRANSCRIPTION_CALLBACK_URI"),
+            callback_uri=get_callback_uri(),
             task_token="token-123",
             outcome={"type": "success", "result": "text"},
         )
@@ -146,14 +146,14 @@ def test_completion_callback_raises_after_retries_are_exhausted(
 ) -> None:
     callback = Mock(side_effect=URLError("unavailable"))
     wait = Mock()
-    monkeypatch.setenv("TRANSCRIPTION_CALLBACK_URI", "https://example.com/callback")
+    monkeypatch.setenv("CALLBACK_URI", "https://example.com/callback")
     monkeypatch.setattr(callbacks, "urlopen", callback)
     monkeypatch.setattr(callbacks, "sleep", wait)
 
     with pytest.raises(URLError):
         post_callback(
             session=session,
-            callback_uri=get_callback_uri("TRANSCRIPTION_CALLBACK_URI"),
+            callback_uri=get_callback_uri(),
             task_token="token-123",
             outcome={"type": "failure", "cause": "RuntimeError"},
         )
@@ -162,9 +162,8 @@ def test_completion_callback_raises_after_retries_are_exhausted(
     assert [call.args[0] for call in wait.call_args_list] == [1, 2]
 
 
-@pytest.mark.parametrize("variable", ["TRANSCRIPTION_CALLBACK_URI", "MODERATION_CALLBACK_URI"])
-def test_completion_callback_requires_uri(monkeypatch: pytest.MonkeyPatch, variable: str) -> None:
-    monkeypatch.delenv(variable, raising=False)
+def test_completion_callback_requires_uri(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CALLBACK_URI", raising=False)
 
-    with pytest.raises(RuntimeError, match=variable):
-        get_callback_uri(variable)
+    with pytest.raises(RuntimeError, match="CALLBACK_URI"):
+        get_callback_uri()

@@ -40,8 +40,6 @@ class ModelJob[Result](Protocol):
     @property
     def model(self) -> str: ...
 
-    callback_environment_variable: ClassVar[str]
-
     async def submit(self, audio_url: str) -> SubmittedModel[Result]: ...
 
     def callback_outcome(

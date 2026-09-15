@@ -1,1 +1,1 @@
-"""Audio-and-transcript moderation contracts and future shared-pipeline adapters."""
+"""Audio-and-transcript moderation contracts, job adapter, and callback mapping."""

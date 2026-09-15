@@ -17,13 +17,14 @@ CALLBACK_MAX_DURATION_SECONDS = (
     CALLBACK_REQUEST_TIMEOUT_SECONDS * CALLBACK_MAX_ATTEMPTS
     + CALLBACK_INITIAL_BACKOFF_SECONDS * (2 ** (CALLBACK_MAX_ATTEMPTS - 1) - 1)
 )
+CALLBACK_URI_ENVIRONMENT_VARIABLE = "CALLBACK_URI"
 
 
-def get_callback_uri(environment_variable: str) -> str:
+def get_callback_uri() -> str:
     """Return the configured callback URI or fail before work begins."""
-    callback_uri = os.environ.get(environment_variable, "").strip()
+    callback_uri = os.environ.get(CALLBACK_URI_ENVIRONMENT_VARIABLE, "").strip()
     if not callback_uri:
-        raise RuntimeError(f"{environment_variable} is required")
+        raise RuntimeError(f"{CALLBACK_URI_ENVIRONMENT_VARIABLE} is required")
     return callback_uri
 
 

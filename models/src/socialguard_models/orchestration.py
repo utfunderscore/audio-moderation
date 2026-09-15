@@ -72,7 +72,7 @@ async def run_model[Result](
 @modal.concurrent(max_inputs=MAX_CONCURRENT_TASKS)  # pyright: ignore[reportUnknownMemberType]
 async def process_model[Result](job: ModelJob[Result], task_id: str) -> None:
     """Run every accepted model job outside the HTTP lifecycle on shared CPU compute."""
-    callback_uri = get_callback_uri(job.callback_environment_variable)
+    callback_uri = get_callback_uri()
     session = await asyncio.to_thread(assume_modal_oidc_role)
     result = await run_model(job, session)
     await asyncio.to_thread(
