@@ -4,6 +4,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TERRAFORM_DIR="${ROOT_DIR}/terraform"
+BACKEND_DIR="${ROOT_DIR}/backend"
 
 # Deployment and deployed tests must never accidentally select a developer's
 # default AWS profile.
@@ -381,14 +382,14 @@ deploy() {
         "${PROJECT_NAME}-${ENVIRONMENT}-task-events"
     )
     local dockerfiles=(
-        "crates/submit-audio-lambda/Dockerfile"
-        "crates/confirm-upload-lambda/Dockerfile"
-        "crates/audio-processing-lambda/Dockerfile"
-        "crates/start-evaluation-lambda/Dockerfile"
-        "crates/task-callback-lambda/Dockerfile"
-        "crates/transcription-caller-lambda/Dockerfile"
-        "crates/moderation-caller-lambda/Dockerfile"
-        "crates/task-events-lambda/Dockerfile"
+        "backend/crates/submit-audio-lambda/Dockerfile"
+        "backend/crates/confirm-upload-lambda/Dockerfile"
+        "backend/crates/audio-processing-lambda/Dockerfile"
+        "backend/crates/start-evaluation-lambda/Dockerfile"
+        "backend/crates/task-callback-lambda/Dockerfile"
+        "backend/crates/transcription-caller-lambda/Dockerfile"
+        "backend/crates/moderation-caller-lambda/Dockerfile"
+        "backend/crates/task-events-lambda/Dockerfile"
     )
     local bootstrap_targets=(
         -target=aws_ecr_repository.submit_audio -target=aws_ecr_repository_policy.submit_audio_lambda_pull -target=aws_ecr_lifecycle_policy.submit_audio
@@ -545,18 +546,18 @@ run_suite() {
         review-submit)
             preflight review-submit
             load_api_endpoint
-            cargo test --manifest-path "${ROOT_DIR}/Cargo.toml" --package submit-audio-lambda --test deployed submits_review_against_aws -- --ignored --nocapture
+            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package submit-audio-lambda --test deployed submits_review_against_aws -- --ignored --nocapture
             ;;
         review-confirmation)
             preflight review-confirmation
             load_api_endpoint
-            cargo test --manifest-path "${ROOT_DIR}/Cargo.toml" --package submit-audio-lambda --test deployed confirms_uploaded_review_against_aws -- --ignored --nocapture
+            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package submit-audio-lambda --test deployed confirms_uploaded_review_against_aws -- --ignored --nocapture
             ;;
         evaluation-ingress)
             preflight evaluation-ingress
             unset AUDIO_MODERATION_TEST_AUDIO_S3_URIS
             load_evaluation_environment
-            cargo test --manifest-path "${ROOT_DIR}/Cargo.toml" --package start-evaluation-lambda --test deployed evaluation_ingress_ -- --ignored --nocapture
+            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package start-evaluation-lambda --test deployed evaluation_ingress_ -- --ignored --nocapture
             ;;
         evaluation-dispatch)
             preflight evaluation-dispatch
@@ -565,7 +566,7 @@ run_suite() {
             # Retain and report their fixtures for those asynchronous executions.
             trap cleanup_fixtures EXIT
             provision_input_fixtures
-            cargo test --manifest-path "${ROOT_DIR}/Cargo.toml" --package start-evaluation-lambda --test deployed evaluation_dispatch_ -- --ignored --nocapture
+            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package start-evaluation-lambda --test deployed evaluation_dispatch_ -- --ignored --nocapture
             ;;
         audio-conversion)
             preflight audio-conversion
@@ -606,7 +607,7 @@ run_suite() {
             preflight task-events
             load_pipeline_database_environment
             load_task_events_endpoint
-            cargo test --manifest-path "${ROOT_DIR}/Cargo.toml" --package task-events-lambda --test deployed replays_live_delivers_and_cleans_up_task_events -- --ignored --nocapture
+            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package task-events-lambda --test deployed replays_live_delivers_and_cleans_up_task_events -- --ignored --nocapture
             ;;
         task-callback)
             printf 'task-callback is unsupported: a valid callback now requires an ASR-created persisted task-token digest. The legacy test state machine cannot seed that digest before it receives its generated token.\n' >&2
@@ -628,7 +629,7 @@ run_suite() {
             # possible URI so they can be investigated or removed manually.
             trap cleanup_fixtures EXIT
             provision_input_fixtures
-            cargo test --manifest-path "${ROOT_DIR}/Cargo.toml" --package start-evaluation-lambda --test deployed completes_a_fresh_evaluation_and_replays_without_another_attempt -- --ignored --nocapture
+            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package start-evaluation-lambda --test deployed completes_a_fresh_evaluation_and_replays_without_another_attempt -- --ignored --nocapture
             FIXTURES_SAFE_TO_DELETE=true
             ;;
     esac
