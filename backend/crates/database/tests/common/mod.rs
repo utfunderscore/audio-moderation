@@ -5,7 +5,7 @@ use testcontainers::{
     runners::AsyncRunner,
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../migrations");
 
 pub struct TestDatabase {
     _container: ContainerAsync<GenericImage>,

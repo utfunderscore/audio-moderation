@@ -1,4 +1,5 @@
 /target/
+/backend/target/
 .env
 /.terraform/
 /terraform/.terraform/

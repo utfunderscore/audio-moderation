@@ -1,6 +1,13 @@
 .git
 .terraform
 target
+backend/target
+models/.venv
+models/dist
+models/.pytest_cache
+models/.basedpyright
+models/.env
+**/__pycache__
 terraform/.terraform
 terraform/*.tfstate
 terraform/*.tfstate.*
