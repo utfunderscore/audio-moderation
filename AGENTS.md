@@ -1,3 +1,12 @@
+## Repository layout
+
+- `backend/` — Rust Cargo workspace and all AWS Lambda crates. Run Cargo
+  commands from `backend/`.
+- `models/` — Python services deployed to Modal; see `models/README.md`.
+- `ui/` — front-end application (placeholder).
+- `proto/`, `migrations/`, `terraform/`, `docs/` — shared contracts, database
+  schema, infrastructure, and documentation at the repository root.
+
 ## Migration Policy
 
 This project has not reached production. Update existing migration files directly when changing the current schema; do not create incremental migrations solely to preserve a deployed migration history.
