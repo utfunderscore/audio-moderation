@@ -124,9 +124,9 @@ resource "aws_lambda_function" "audio_processing" {
 
   environment {
     variables = {
-      DATABASE_URL_PARAMETER = var.database_parameter_name
+      DATABASE_URL_PARAMETER          = var.database_parameter_name
       TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
-      RUST_LOG               = "info"
+      RUST_LOG                        = "info"
     }
   }
 

@@ -48,6 +48,11 @@ variable "moderation_caller_image_tag" {
   type        = string
 }
 
+variable "task_events_image_tag" {
+  description = "Immutable image tag for the task-events Lambda"
+  type        = string
+}
+
 variable "database_parameter_name" {
   type    = string
   default = "/audio-moderation/dev/database-url"

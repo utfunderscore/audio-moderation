@@ -6,6 +6,10 @@ output "pipeline_task_events_websocket_endpoint" {
   value = aws_apigatewayv2_stage.pipeline_task_events.invoke_url
 }
 
+output "task_events_function_name" {
+  value = aws_lambda_function.task_events.function_name
+}
+
 output "submit_audio_ecr_repository_url" {
   value = aws_ecr_repository.submit_audio.repository_url
 }

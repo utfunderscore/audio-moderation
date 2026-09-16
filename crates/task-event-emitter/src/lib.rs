@@ -94,4 +94,46 @@ impl TaskEventEmitter {
 
         Ok(emission)
     }
+
+    /// Replays a task's durable event history to one newly subscribed connection.
+    pub async fn replay(
+        &self,
+        task_id: i32,
+        connection_id: &str,
+    ) -> Result<TaskEventEmission, Error> {
+        let events = self.events.list(task_id).await?;
+        let mut emission = TaskEventEmission::default();
+
+        for event in events {
+            let send_result = self
+                .client
+                .post_to_connection()
+                .connection_id(connection_id)
+                .data(Blob::new(event.event_name.into_bytes()))
+                .send()
+                .await;
+
+            match send_result {
+                Ok(_) => emission.delivered += 1,
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .and_then(ProvideErrorMetadata::code)
+                        == Some("GoneException") =>
+                {
+                    self.connections.remove(connection_id).await?;
+                    emission.removed_stale_connections = 1;
+                    break;
+                }
+                Err(error) => {
+                    return Err(IoError::other(format!(
+                        "failed to replay task event to WebSocket connection: {error}"
+                    ))
+                    .into());
+                }
+            }
+        }
+
+        Ok(emission)
+    }
 }

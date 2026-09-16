@@ -17,6 +17,16 @@ fixtures. Set `AUDIO_MODERATION_API_ENDPOINT`,
 `AUDIO_MODERATION_TENANT_ID`, or `DATABASE_URL` explicitly to override this
 automatic resolution.
 
+For `evaluation-e2e`, the runner also resolves
+`pipeline_task_events_websocket_endpoint` as
+`AUDIO_MODERATION_TASK_EVENTS_ENDPOINT` and validates that it is a `wss://` URL.
+After StartEvaluation returns, the test subscribes one socket to its task and
+collects lifecycle events while it waits for the workflow. Event frames are plain
+UTF-8 names and delivery is at-least-once, so the assertion requires all eight
+successful lifecycle names while tolerating duplicate frames around the
+replay/live boundary. It prints expected, observed, and persisted event history
+alongside the existing workflow report.
+
 Run the fixture-free ingress tests, dispatch tests, or full terminal-workflow test with the repository-root runner:
 
 ```sh
@@ -27,7 +37,6 @@ AWS_PROFILE=admin ./deployment-integration.sh test evaluation-e2e \
   --audio-file ./sample_071.mp3 \
   --transcription-endpoint-url https://compatible.example/transcriptions \
   --modal-endpoint-url https://compatible.example \
-  --confirm-compatible-transcription-endpoint
 ```
 
 The runner validates configuration without printing secret values and does not

@@ -1,9 +1,10 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_ssm::Client as SsmClient;
 use common::load_database_url;
-use database::PipelineTaskWebSocketConnectionStore;
+use database::{PipelineTaskEventStore, PipelineTaskWebSocketConnectionStore};
 use lambda_runtime::{Error, run, service_fn};
 use sqlx::postgres::PgPoolOptions;
+use task_event_emitter::TaskEventEmitter;
 use task_events_lambda::TaskEventsHandler;
 
 #[tokio::main]
@@ -18,15 +19,22 @@ async fn main() -> Result<(), Error> {
 
     let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
     let database_url = load_database_url(&SsmClient::new(&sdk_config)).await?;
-    let connections = PipelineTaskWebSocketConnectionStore::new(
-        PgPoolOptions::new()
-            .max_connections(3)
-            .connect_lazy(&database_url)?,
+    let pool = PgPoolOptions::new()
+        .max_connections(3)
+        .connect_lazy(&database_url)?;
+    let connections = PipelineTaskWebSocketConnectionStore::new(pool.clone());
+    let events = TaskEventEmitter::new(
+        PipelineTaskEventStore::new(pool),
+        connections.clone(),
+        &sdk_config,
+        env::var("TASK_EVENTS_MANAGEMENT_ENDPOINT")
+            .expect("TASK_EVENTS_MANAGEMENT_ENDPOINT must be set"),
     );
-    let handler = TaskEventsHandler::new(connections);
+    let handler = TaskEventsHandler::new(connections).with_event_emitter(events);
     run(service_fn(move |event| {
         let handler = handler.clone();
         async move { handler.handle(event).await }
     }))
     .await
 }
+use std::env;

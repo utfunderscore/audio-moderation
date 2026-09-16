@@ -6,6 +6,7 @@ use database::{
 };
 use lambda_runtime::{Error, LambdaEvent};
 use serde::{Deserialize, Serialize};
+use task_event_emitter::TaskEventEmitter;
 use tracing::info;
 
 /// The API Gateway WebSocket event received by this Lambda.
@@ -82,6 +83,7 @@ pub struct WebSocketResponse {
 #[derive(Clone)]
 pub struct TaskEventsHandler<S> {
     connections: S,
+    events: Option<TaskEventEmitter>,
 }
 
 /// Persistence required by the task-events WebSocket handler.
@@ -122,7 +124,15 @@ impl TaskConnectionStore for PipelineTaskWebSocketConnectionStore {
 
 impl<S> TaskEventsHandler<S> {
     pub fn new(connections: S) -> Self {
-        Self { connections }
+        Self {
+            connections,
+            events: None,
+        }
+    }
+
+    pub fn with_event_emitter(mut self, events: TaskEventEmitter) -> Self {
+        self.events = Some(events);
+        self
     }
 }
 
@@ -156,8 +166,7 @@ impl<S: TaskConnectionStore> TaskEventsHandler<S> {
     }
 
     /// Logs a newly accepted WebSocket connection.
-    pub async fn connect(&self, event: ConnectEvent) -> Result<WebSocketResponse, Error> {
-        info!(connectionId = %event.connection_id.0, "received WebSocket connect event");
+    pub async fn connect(&self, _event: ConnectEvent) -> Result<WebSocketResponse, Error> {
         Ok(success_response())
     }
 
@@ -166,6 +175,18 @@ impl<S: TaskConnectionStore> TaskEventsHandler<S> {
         self.connections
             .subscribe(event.request.task_id, event.connection_id.0.clone())
             .await?;
+        if let Some(events) = &self.events {
+            let replay = events
+                .replay(event.request.task_id, &event.connection_id.0)
+                .await?;
+            info!(
+                connectionId = %event.connection_id.0,
+                taskId = event.request.task_id,
+                replayedEvents = replay.delivered,
+                removedStaleConnections = replay.removed_stale_connections,
+                "replayed WebSocket task events"
+            );
+        }
         info!(
             connectionId = %event.connection_id.0,
             taskId = event.request.task_id,
