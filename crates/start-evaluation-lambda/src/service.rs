@@ -4,6 +4,7 @@ use database::{
     NewPipelineTask, PipelineTaskStatus as DatabasePipelineTaskStatus, PipelineTaskStore,
 };
 use serde::Serialize;
+use task_event_emitter::TaskEventEmitter;
 use tracing::{error, info, warn};
 
 use crate::proto::audio::moderation::v1::{
@@ -20,6 +21,7 @@ pub(crate) struct StartEvaluationService {
     state_machine_arn: String,
     artifacts_bucket: String,
     tenant_id: String,
+    events: Option<TaskEventEmitter>,
 }
 
 impl StartEvaluationService {
@@ -36,7 +38,13 @@ impl StartEvaluationService {
             state_machine_arn,
             artifacts_bucket,
             tenant_id,
+            events: None,
         }
+    }
+
+    pub(crate) fn with_event_emitter(mut self, events: TaskEventEmitter) -> Self {
+        self.events = Some(events);
+        self
     }
 }
 
@@ -94,6 +102,13 @@ impl AudioModerationService for StartEvaluationService {
             ));
         }
 
+        if let Some(events) = &self.events {
+            events.emit(task.task_id, "EVALUATION_ACCEPTED").await.map_err(|error| {
+                error!(evaluationId = task.task_id, error = ?error, "failed to emit evaluation event");
+                ConnectError::internal("failed to record evaluation event")
+            })?;
+        }
+
         // Step 4: Try to claim responsibility for dispatching an undispatched
         // task. The database lease allows only one concurrent invocation to
         // receive an attempt number. A task with an execution ARN, an active
@@ -148,17 +163,26 @@ impl AudioModerationService for StartEvaluationService {
                         error = ?dispatch_error,
                         "failed to start pipeline execution"
                     );
-                    self.store
+                    let terminal_failure = self
+                        .store
                         .record_dispatch_failure(task.task_id)
                         .await
                         .map_err(|database_error| {
-                            error!(
-                                evaluationId = task.task_id,
-                                error = ?database_error,
-                                "failed to record pipeline dispatch failure"
-                            );
-                            ConnectError::internal("failed to record evaluation dispatch failure")
-                        })?;
+                        error!(
+                            evaluationId = task.task_id,
+                            error = ?database_error,
+                            "failed to record pipeline dispatch failure"
+                        );
+                        ConnectError::internal("failed to record evaluation dispatch failure")
+                    })?;
+                    if terminal_failure {
+                        if let Some(events) = &self.events {
+                            events.emit(task.task_id, "FAILED").await.map_err(|error| {
+                                error!(evaluationId = task.task_id, error = ?error, "failed to emit evaluation failure");
+                                ConnectError::internal("failed to record evaluation event")
+                            })?;
+                        }
+                    }
                     return Err(ConnectError::unavailable("failed to dispatch evaluation"));
                 }
             };

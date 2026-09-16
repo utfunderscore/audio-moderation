@@ -6,6 +6,7 @@ use thiserror::Error;
 use tracing::info;
 
 use database::{PipelineTaskError, PipelineTaskStore};
+use task_event_emitter::TaskEventEmitter;
 
 const MODERATION_MODEL: &str = "roblox-voice-safety-v3";
 
@@ -184,17 +185,29 @@ pub enum ModerationCallerError {
     RecordModerationTask(#[source] PipelineTaskError),
     #[error("failed to record moderation request failure: {0}")]
     FailModerationRequest(#[source] PipelineTaskError),
+    #[error("failed to emit task event: {0}")]
+    Emit(#[source] task_event_emitter::Error),
 }
 
 #[derive(Clone)]
 pub struct ModerationCallerHandler<S, D> {
     service: S,
     database: D,
+    events: Option<TaskEventEmitter>,
 }
 
 impl<S, D> ModerationCallerHandler<S, D> {
     pub fn new(service: S, database: D) -> Self {
-        Self { service, database }
+        Self {
+            service,
+            database,
+            events: None,
+        }
+    }
+
+    pub fn with_event_emitter(mut self, events: TaskEventEmitter) -> Self {
+        self.events = Some(events);
+        self
     }
 }
 
@@ -211,6 +224,7 @@ impl<S: ModerationService, D: ModerationTaskStore> ModerationCallerHandler<S, D>
             .start_moderation(task_id, input.task_token.clone())
             .await
             .map_err(ModerationCallerError::StartModeration)?;
+        self.emit(task_id, "MODERATION_PROCESSING_STARTED").await?;
         info!(jobId = job_id, "requesting moderation");
         let response = match self.service.create_moderation(input.into()).await {
             Ok(response) => response,
@@ -223,6 +237,7 @@ impl<S: ModerationService, D: ModerationTaskStore> ModerationCallerHandler<S, D>
                     )
                     .await
                     .map_err(ModerationCallerError::FailModerationRequest)?;
+                self.emit(task_id, "FAILED").await?;
                 return Err(error.into());
             }
         };
@@ -234,6 +249,16 @@ impl<S: ModerationService, D: ModerationTaskStore> ModerationCallerHandler<S, D>
             job_id,
             moderation_task_id: response.task_id,
         })
+    }
+
+    async fn emit(&self, task_id: i32, event_name: &str) -> Result<(), ModerationCallerError> {
+        if let Some(events) = &self.events {
+            events
+                .emit(task_id, event_name)
+                .await
+                .map_err(ModerationCallerError::Emit)?;
+        }
+        Ok(())
     }
 }
 

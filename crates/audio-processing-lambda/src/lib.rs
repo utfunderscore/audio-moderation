@@ -10,6 +10,7 @@ use tempfile::NamedTempFile;
 use tracing::{error, info};
 
 use database::{PipelineTaskError, PipelineTaskOutcome, PipelineTaskStore};
+use task_event_emitter::TaskEventEmitter;
 
 use crate::stitcher::AudioStitcher;
 
@@ -81,6 +82,17 @@ impl From<WorkflowOutcome> for PipelineTaskOutcome {
             WorkflowOutcome::Failed => Self::Failed,
             WorkflowOutcome::TimedOut => Self::TimedOut,
             WorkflowOutcome::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+impl WorkflowOutcome {
+    pub fn event_name(self) -> &'static str {
+        match self {
+            Self::Succeeded => "SUCCEEDED",
+            Self::Failed => "FAILED",
+            Self::TimedOut => "TIMED_OUT",
+            Self::Cancelled => "CANCELLED",
         }
     }
 }
@@ -237,6 +249,7 @@ pub struct AudioProcessingHandler<S, D> {
     s3: S,
     database: D,
     stitcher: AudioStitcher,
+    events: Option<TaskEventEmitter>,
 }
 
 impl<S, D> AudioProcessingHandler<S, D> {
@@ -245,7 +258,13 @@ impl<S, D> AudioProcessingHandler<S, D> {
             s3,
             database,
             stitcher: AudioStitcher::default(),
+            events: None,
         }
+    }
+
+    pub fn with_event_emitter(mut self, events: TaskEventEmitter) -> Self {
+        self.events = Some(events);
+        self
     }
 }
 
@@ -263,6 +282,7 @@ impl<S: S3Storage, D: AudioTaskStore> AudioProcessingHandler<S, D> {
             .start_audio_processing(task_id)
             .await
             .map_err(AudioProcessingError::StartAudioProcessing)?;
+        self.emit(task_id, "AUDIO_PROCESSING_STARTED").await?;
         info!(
             jobId = input.job_id,
             fileCount = input.files.len(),
@@ -348,6 +368,7 @@ impl<S: S3Storage, D: AudioTaskStore> AudioProcessingHandler<S, D> {
             .complete_audio_processing(task_id, input.output_s3_uri.clone())
             .await
             .map_err(AudioProcessingError::CompleteAudioProcessing)?;
+        self.emit(task_id, "AUDIO_PROCESSING_FINISHED").await?;
 
         info!(
             jobId = input.job_id,
@@ -367,7 +388,18 @@ impl<S: S3Storage, D: AudioTaskStore> AudioProcessingHandler<S, D> {
             .await
         {
             error!(taskId = task_id, error = ?error, "failed to persist audio worker failure");
+            return;
         }
+        if let Err(error) = self.emit(task_id, "FAILED").await {
+            error!(taskId = task_id, error = ?error, "failed to emit audio worker failure");
+        }
+    }
+
+    async fn emit(&self, task_id: i32, event_name: &str) -> Result<(), Error> {
+        if let Some(events) = &self.events {
+            events.emit(task_id, event_name).await?;
+        }
+        Ok(())
     }
 }
 

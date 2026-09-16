@@ -2,6 +2,7 @@
 members = [
     "crates/common",
     "crates/database",
+    "crates/task-event-emitter",
     "crates/audio-processing-lambda",
     "crates/confirm-upload-lambda",
     "crates/submit-audio-lambda",
@@ -9,6 +10,7 @@ members = [
     "crates/task-callback-lambda",
     "crates/moderation-caller-lambda",
     "crates/transcription-caller-lambda",
+    "crates/task-events-lambda",
 ]
 resolver = "3"
 

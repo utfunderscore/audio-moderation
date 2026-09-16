@@ -1,12 +1,11 @@
 use aws_config::BehaviorVersion;
-use aws_sdk_sfn::Client as SfnClient;
 use aws_sdk_ssm::Client as SsmClient;
 use common::load_database_url;
-use database::{PipelineTaskEventStore, PipelineTaskStore, PipelineTaskWebSocketConnectionStore};
-use lambda_http::{Error, Request, run, service_fn};
+use database::{PipelineTaskEventStore, PipelineTaskWebSocketConnectionStore};
+use lambda_runtime::{Error, run, service_fn};
 use sqlx::postgres::PgPoolOptions;
-use task_callback_lambda::{AwsStepFunctions, TaskCallbackHandler, response};
 use task_event_emitter::TaskEventEmitter;
+use task_events_lambda::TaskEventsHandler;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -23,21 +22,18 @@ async fn main() -> Result<(), Error> {
     let pool = PgPoolOptions::new()
         .max_connections(3)
         .connect_lazy(&database_url)?;
-    let database = PipelineTaskStore::new(pool.clone());
+    let connections = PipelineTaskWebSocketConnectionStore::new(pool.clone());
     let events = TaskEventEmitter::new(
-        PipelineTaskEventStore::new(pool.clone()),
-        PipelineTaskWebSocketConnectionStore::new(pool),
+        PipelineTaskEventStore::new(pool),
+        connections.clone(),
         &sdk_config,
         env::var("TASK_EVENTS_MANAGEMENT_ENDPOINT")
             .expect("TASK_EVENTS_MANAGEMENT_ENDPOINT must be set"),
     );
-    let handler =
-        TaskCallbackHandler::new(AwsStepFunctions::new(SfnClient::new(&sdk_config)), database)
-            .with_event_emitter(events);
-
-    run(service_fn(move |request: Request| {
+    let handler = TaskEventsHandler::new(connections).with_event_emitter(events);
+    run(service_fn(move |event| {
         let handler = handler.clone();
-        async move { Ok::<_, Error>(response(handler.handle(request.body().as_ref()).await)) }
+        async move { handler.handle(event).await }
     }))
     .await
 }

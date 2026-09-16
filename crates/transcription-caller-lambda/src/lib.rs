@@ -6,6 +6,7 @@ use thiserror::Error;
 use tracing::info;
 
 use database::{PipelineTaskError, PipelineTaskStore};
+use task_event_emitter::TaskEventEmitter;
 
 const TRANSCRIPTION_MODEL: &str = "granite";
 
@@ -165,17 +166,29 @@ pub enum TranscriptionCallerError {
     RecordAsrTask(#[source] PipelineTaskError),
     #[error("failed to record ASR request failure: {0}")]
     FailAsrRequest(#[source] PipelineTaskError),
+    #[error("failed to emit task event: {0}")]
+    Emit(#[source] task_event_emitter::Error),
 }
 
 #[derive(Clone)]
 pub struct TranscriptionCallerHandler<S, D> {
     service: S,
     database: D,
+    events: Option<TaskEventEmitter>,
 }
 
 impl<S, D> TranscriptionCallerHandler<S, D> {
     pub fn new(service: S, database: D) -> Self {
-        Self { service, database }
+        Self {
+            service,
+            database,
+            events: None,
+        }
+    }
+
+    pub fn with_event_emitter(mut self, events: TaskEventEmitter) -> Self {
+        self.events = Some(events);
+        self
     }
 }
 
@@ -192,6 +205,7 @@ impl<S: TranscriptionService, D: AsrTaskStore> TranscriptionCallerHandler<S, D> 
             .start_asr(task_id, input.task_token.clone())
             .await
             .map_err(TranscriptionCallerError::StartAsr)?;
+        self.emit(task_id, "ASR_STARTED").await?;
         info!(jobId = job_id, "requesting transcription");
         let response = match self.service.create_transcription(input.into()).await {
             Ok(response) => response,
@@ -200,6 +214,7 @@ impl<S: TranscriptionService, D: AsrTaskStore> TranscriptionCallerHandler<S, D> 
                     .fail_asr_request(task_id, "ASR_REQUEST_FAILED".to_owned(), error.to_string())
                     .await
                     .map_err(TranscriptionCallerError::FailAsrRequest)?;
+                self.emit(task_id, "FAILED").await?;
                 return Err(error.into());
             }
         };
@@ -211,6 +226,16 @@ impl<S: TranscriptionService, D: AsrTaskStore> TranscriptionCallerHandler<S, D> 
             job_id,
             asr_task_id: response.task_id,
         })
+    }
+
+    async fn emit(&self, task_id: i32, event_name: &str) -> Result<(), TranscriptionCallerError> {
+        if let Some(events) = &self.events {
+            events
+                .emit(task_id, event_name)
+                .await
+                .map_err(TranscriptionCallerError::Emit)?;
+        }
+        Ok(())
     }
 }
 

@@ -1327,8 +1327,8 @@ impl PipelineTaskStore {
 
     /// Releases the dispatch lease after a failure so a later request can retry.
     /// The third failure moves the task to its terminal `FAILED` state.
-    pub async fn record_dispatch_failure(&self, task_id: i32) -> Result<(), PipelineTaskError> {
-        sqlx::query(
+    pub async fn record_dispatch_failure(&self, task_id: i32) -> Result<bool, PipelineTaskError> {
+        let outcome = sqlx::query_scalar::<_, Option<PipelineTaskOutcome>>(
             r#"
                 UPDATE pipeline_tasks
                 SET dispatch_started_at = NULL,
@@ -1342,14 +1342,15 @@ impl PipelineTaskStore {
                     END,
                     updated_at = NOW()
                 WHERE task_id = $1 AND execution_arn IS NULL AND outcome IS NULL
+                RETURNING outcome
             "#,
         )
         .bind(task_id)
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await
         .map_err(PipelineTaskError::RecordDispatchFailure)?;
 
-        Ok(())
+        Ok(outcome.flatten() == Some(PipelineTaskOutcome::Failed))
     }
 }
 
