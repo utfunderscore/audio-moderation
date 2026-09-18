@@ -27,7 +27,8 @@ export function TranscriptionStage({
           <Skeleton className="h-4 w-3/4" />
         </div>
         <p className="text-xs text-muted-foreground">
-          Converting speech to text. The transcript will appear when it is ready.
+          Converting speech to text. The transcript will appear when it is
+          ready.
         </p>
       </div>
     )

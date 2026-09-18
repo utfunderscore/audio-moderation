@@ -31,9 +31,12 @@ describe("demo audio artifact cache", () => {
   it("shares the pending download across consumers", async () => {
     const blob = new Blob(["audio"])
     let finish!: (response: Response) => void
-    const fetchMock = vi.fn(() => new Promise<Response>((resolve) => {
-      finish = resolve
-    }))
+    const fetchMock = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve
+        })
+    )
     vi.stubGlobal("fetch", fetchMock)
     const { preloadDemoAudioArtifact } = await import("./audioArtifacts")
 

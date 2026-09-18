@@ -1,14 +1,14 @@
 /* eslint-disable react-hooks/refs -- the audio and run hooks return controller
    objects that hold a ref field; the compiler rule cannot distinguish reading
    their state fields from reading the ref during render. */
+
+import { Microphone01, MusicNote01, ShieldTick } from "@untitledui/icons"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
-import { Microphone01, MusicNote01, ShieldTick } from "@untitledui/icons"
-
-import { Header } from "@/components/demo/Header"
 import { ElapsedDuration } from "@/components/demo/ElapsedDuration"
-import { JobDetailsSidebar } from "@/components/demo/JobDetailsSidebar"
+import { Header } from "@/components/demo/Header"
 import { HistoricalJobDetails } from "@/components/demo/HistoricalJobDetails"
+import { JobDetailsSidebar } from "@/components/demo/JobDetailsSidebar"
 import { JobHistory } from "@/components/demo/JobHistory"
 import { PipelineTimeline } from "@/components/demo/PipelineTimeline"
 import { StagePage } from "@/components/demo/StagePage"
@@ -20,7 +20,7 @@ import { TranscriptionStage } from "@/components/demo/stages/TranscriptionStage"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import type { TerminalEvent } from "@/domain/events"
-import { DEMO_USER_ID, type AudioProcessingJob } from "@/domain/jobs"
+import { type AudioProcessingJob, DEMO_USER_ID } from "@/domain/jobs"
 import type { PipelineState } from "@/domain/reducer"
 import type { StageId, StageState } from "@/domain/stages"
 import { useAudioInput } from "@/hooks/useAudioInput"
@@ -96,7 +96,9 @@ export function App() {
     currentAudioRef.current?.pause()
     detailsPanelRef.current
       ?.querySelectorAll<HTMLAudioElement>("audio")
-      .forEach((element) => element.pause())
+      .forEach((element) => {
+        element.pause()
+      })
   }, [currentAudioRef])
 
   useEffect(() => {
@@ -277,6 +279,7 @@ export function App() {
     }
   }, [isMobileViewport, sidebarVisible])
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: The selection key intentionally triggers scrolling when a different job is selected.
   useEffect(() => {
     if (!sidebarVisible) return
     detailsContentRef.current?.scrollTo({ top: 0 })
@@ -334,6 +337,7 @@ export function App() {
 
   return (
     <TooltipProvider>
+      {/* biome-ignore lint/a11y/useMediaCaption: This hidden media element is controlled by the adjacent custom player; transcripts are rendered with each job. */}
       <audio
         ref={audio.audioRef}
         src={audio.url ?? undefined}

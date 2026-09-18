@@ -1,6 +1,6 @@
-import * as React from "react"
 import { cn } from "cn"
 import { Progress as ProgressPrimitive } from "radix-ui"
+import type * as React from "react"
 
 function Progress({
   className,

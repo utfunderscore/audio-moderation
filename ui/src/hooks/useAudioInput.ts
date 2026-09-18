@@ -40,7 +40,7 @@ export function useAudioInput(initialAudio?: InitialAudioInput) {
     setError(null)
   }, [])
 
-  const useSample = useCallback(async () => {
+  const loadSample = useCallback(async () => {
     setLoadingSample(true)
     setError(null)
     try {
@@ -76,7 +76,7 @@ export function useAudioInput(initialAudio?: InitialAudioInput) {
     loadingSample,
     error,
     selectFile,
-    useSample,
+    loadSample,
     clear,
     canRun: file !== null,
   }

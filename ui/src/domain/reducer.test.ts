@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest"
 
 import {
   createInitialState,
-  pipelineReducer,
   PIPELINE_STATUS,
   type PipelineState,
+  pipelineReducer,
 } from "./reducer"
 
 function feed(
@@ -92,7 +92,11 @@ describe("pipelineReducer", () => {
     })
     state = feed(
       state,
-      ["EVALUATION_ACCEPTED", "AUDIO_PROCESSING_STARTED", "AUDIO_PROCESSING_FINISHED"],
+      [
+        "EVALUATION_ACCEPTED",
+        "AUDIO_PROCESSING_STARTED",
+        "AUDIO_PROCESSING_FINISHED",
+      ],
       1_100,
       "replay"
     )

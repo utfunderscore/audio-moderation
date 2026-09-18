@@ -1,14 +1,13 @@
-import { cn } from "cn"
 import { Clock } from "@untitledui/icons"
-import { useEffect, useState, type ReactNode } from "react"
-
-import { Badge } from "@/components/ui/badge"
+import { cn } from "cn"
+import { type ReactNode, useEffect, useState } from "react"
 import { ElapsedDuration } from "@/components/demo/ElapsedDuration"
+import { Badge } from "@/components/ui/badge"
 import {
-  jobDisplayStatus,
   type AudioJobDisplayStatus,
   type AudioJobStatus,
   type AudioProcessingJob,
+  jobDisplayStatus,
 } from "@/domain/jobs"
 import type { ModerationScores } from "@/domain/moderation"
 

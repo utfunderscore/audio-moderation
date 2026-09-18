@@ -1,13 +1,13 @@
+import { cn } from "cn"
 import {
-  useEffect,
-  useRef,
-  useState,
   type CSSProperties,
   type PointerEvent,
   type ReactNode,
   type RefObject,
+  useEffect,
+  useRef,
+  useState,
 } from "react"
-import { cn } from "cn"
 
 import { Button } from "@/components/ui/button"
 import type { AudioProcessingJob } from "@/domain/jobs"
@@ -111,6 +111,7 @@ export function JobDetailsSidebar({
   }
 
   return (
+    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: The panel is an aside on desktop and a modal dialog on mobile.
     <aside
       ref={panelRef}
       role={isMobileViewport ? "dialog" : undefined}
@@ -127,6 +128,7 @@ export function JobDetailsSidebar({
         !resizing && "transition-[width] duration-200"
       )}
     >
+      {/* biome-ignore lint/a11y/useSemanticElements: This is an interactive ARIA separator, which cannot use a semantic hr element. */}
       <div
         ref={separatorRef}
         role="separator"
@@ -204,7 +206,6 @@ export function JobDetailsSidebar({
           </span>
         </Button>
       </div>
-
       <div
         ref={contentRef}
         className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] lg:overscroll-auto"

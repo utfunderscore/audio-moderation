@@ -1,10 +1,7 @@
+import { isTerminalEvent, type TerminalEvent } from "./events"
 import {
-  isTerminalEvent,
-  type TerminalEvent,
-} from "./events"
-import {
-  createStageTimes,
   createStages,
+  createStageTimes,
   STAGE_IDS,
   type StageId,
   type StageState,
@@ -80,7 +77,12 @@ export function createInitialState(): PipelineState {
   }
 }
 
-const STAGE_PROGRESS: StageState[] = ["pending", "processing", "complete", "failed"]
+const STAGE_PROGRESS: StageState[] = [
+  "pending",
+  "processing",
+  "complete",
+  "failed",
+]
 
 /**
  * Monotonic stage transition. A stage only ever advances, so replay and live
@@ -291,10 +293,7 @@ export function pipelineReducer(
       const duplicate = state.events.some((event) => event.name === name)
       const next: PipelineState = {
         ...state,
-        events: [
-          ...state.events,
-          { name, receivedAt: at, source, duplicate },
-        ],
+        events: [...state.events, { name, receivedAt: at, source, duplicate }],
       }
 
       // A duplicate frame carries no new information, and a terminal state is

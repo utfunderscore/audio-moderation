@@ -1,6 +1,5 @@
 "use client"
 
-import type { CSSProperties } from "react"
 import {
   AlertOctagon,
   AlertTriangle,
@@ -8,6 +7,7 @@ import {
   InfoCircle,
   Loading01,
 } from "@untitledui/icons"
+import type { CSSProperties } from "react"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 
 import { useTheme } from "@/components/theme-provider"

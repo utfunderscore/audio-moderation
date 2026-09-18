@@ -1,11 +1,7 @@
-import { useRef, useState } from "react"
-import type { DragEvent } from "react"
-import {
-  Clipboard,
-  MusicNote01,
-  UploadCloud02,
-} from "@untitledui/icons"
+import { Clipboard, MusicNote01, UploadCloud02 } from "@untitledui/icons"
 import { cn } from "cn"
+import type { DragEvent } from "react"
+import { useRef, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import type { AudioInputController } from "@/hooks/useAudioInput"
@@ -89,24 +85,14 @@ export function AudioPicker({
 
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-3">
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: HTML drag-and-drop has no semantic drop-zone element or ARIA role. */}
       <div
-        role="button"
-        tabIndex={selectionDisabled ? -1 : 0}
-        aria-disabled={selectionDisabled}
-        aria-label="Choose or drop an audio file"
         onDragOver={(event) => {
           event.preventDefault()
           if (!selectionDisabled) setDragging(true)
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={handleDrop}
-        onKeyDown={(event) => {
-          if (selectionDisabled || event.target !== event.currentTarget) return
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault()
-            inputRef.current?.click()
-          }
-        }}
         className={cn(
           "relative flex min-h-60 flex-col items-center justify-center rounded-[4px] border border-dashed bg-muted/35 px-4 pt-8 pb-16 text-center transition-colors",
           dragging ? "border-primary bg-primary/5" : "border-border",
@@ -145,10 +131,7 @@ export function AudioPicker({
             </span>
           </Button>
         </div>
-        <div
-          className="absolute inset-x-4 bottom-4 text-center text-xs text-muted-foreground"
-          aria-label="Example audio"
-        >
+        <div className="absolute inset-x-4 bottom-4 text-center text-xs text-muted-foreground">
           <span>Or try an example: </span>
           {SAMPLE_SCENARIOS.map((scenario, index) => (
             <span key={scenario.id}>
@@ -158,7 +141,7 @@ export function AudioPicker({
                 className="cursor-pointer border-b border-dotted border-current text-foreground outline-none hover:border-solid hover:text-primary focus-visible:border-solid focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
                 onClick={() => {
                   setLoadingScenarioId(scenario.id)
-                  void audio.useSample().then((loaded) => {
+                  void audio.loadSample().then((loaded) => {
                     setLoadingScenarioId(null)
                     if (!loaded) return
                     if (onSampleSelected !== undefined) {
@@ -181,7 +164,7 @@ export function AudioPicker({
           type="file"
           accept={AUDIO_TYPES}
           className="sr-only"
-            disabled={selectionDisabled}
+          disabled={selectionDisabled}
           onChange={(event) => {
             const file = event.target.files?.[0]
             if (file) selectFile(file)

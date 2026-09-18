@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react"
 import { cn } from "cn"
+import { useEffect, useRef, useState } from "react"
 
 const BUCKETS = 140
 
@@ -73,8 +73,7 @@ export function Waveform({ file, progress }: WaveformProps) {
       context.setTransform(ratio, 0, 0, ratio, 0, 0)
       context.clearRect(0, 0, width, height)
 
-      const values =
-        peaks ?? Array.from({ length: BUCKETS }, () => 0.22)
+      const values = peaks ?? Array.from({ length: BUCKETS }, () => 0.22)
       const color = getComputedStyle(canvas).color
       const barWidth = width / values.length
       const playedIndex = Math.round(progress * values.length)

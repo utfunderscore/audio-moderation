@@ -69,7 +69,7 @@ function AudioPlayerControls({
       element.removeEventListener("pause", markPaused)
       element.removeEventListener("ended", markPaused)
     }
-  }, [audio.audioRef, audio.url])
+  }, [audio.audioRef])
 
   const toggle = () => {
     const element = audio.audioRef.current

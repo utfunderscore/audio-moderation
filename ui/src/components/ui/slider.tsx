@@ -1,6 +1,6 @@
-import * as React from "react"
 import { cn } from "cn"
 import { Slider as SliderPrimitive } from "radix-ui"
+import * as React from "react"
 
 function Slider({
   className,
@@ -47,6 +47,7 @@ function Slider({
       {Array.from({ length: _values.length }, (_, index) => (
         <SliderPrimitive.Thumb
           data-slot="slider-thumb"
+          // biome-ignore lint/suspicious/noArrayIndexKey: Radix slider thumbs have fixed positional identity.
           key={index}
           aria-label={
             ariaLabel === undefined || _values.length === 1

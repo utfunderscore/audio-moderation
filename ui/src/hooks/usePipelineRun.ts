@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react"
-
+import type { ConnectionState } from "@/domain/reducer"
 import {
   createInitialState,
   isRunning,
   pipelineReducer,
 } from "@/domain/reducer"
-import type { ConnectionState } from "@/domain/reducer"
 import type { TaskEventsClient } from "@/transport/client"
 import { MockTaskEventsClient } from "@/transport/mockClient"
 import { getScenario, SCENARIOS, type Scenario } from "@/transport/scenarios"

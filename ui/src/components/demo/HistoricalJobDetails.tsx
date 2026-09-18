@@ -8,10 +8,10 @@ import { StagePage } from "@/components/demo/StagePage"
 import { AudioPlayer } from "@/components/demo/stages/AudioPlayer"
 import { ModerationStage } from "@/components/demo/stages/ModerationStage"
 import { TranscriptionStage } from "@/components/demo/stages/TranscriptionStage"
+import { Button } from "@/components/ui/button"
 import type { AudioProcessingJob } from "@/domain/jobs"
 import { useAudioInput } from "@/hooks/useAudioInput"
 import { preloadDemoAudioArtifact } from "@/transport/audioArtifacts"
-import { Button } from "@/components/ui/button"
 
 function HistoricalAudio({ fileName }: { fileName: string }) {
   const audio = useAudioInput()
@@ -19,6 +19,7 @@ function HistoricalAudio({ fileName }: { fileName: string }) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading")
   const [attempt, setAttempt] = useState(0)
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: Retrying increments attempt to deliberately restart this preload effect.
   useEffect(() => {
     let cancelled = false
 
@@ -41,6 +42,7 @@ function HistoricalAudio({ fileName }: { fileName: string }) {
 
   return (
     <>
+      {/* biome-ignore lint/a11y/useMediaCaption: This hidden media element is controlled by the adjacent custom player; the transcription stage renders its transcript. */}
       <audio
         ref={audio.audioRef}
         src={audio.url ?? undefined}
@@ -78,47 +80,45 @@ export function HistoricalJobDetails({ job }: { job: AudioProcessingJob }) {
   const complete = job.status === "complete"
 
   return (
-    <>
-      <PipelineTimeline>
+    <PipelineTimeline>
+      <StagePage
+        title="Audio"
+        icon={<MusicNote01 aria-hidden />}
+        status={complete ? "complete" : "failed"}
+        elapsed={complete ? 2_200 : null}
+        isLast={!complete}
+      >
+        {complete ? (
+          <HistoricalAudio key={job.fileName} fileName={job.fileName} />
+        ) : (
+          <p className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+            Processing stopped before the audio was ready.
+          </p>
+        )}
+      </StagePage>
+
+      {complete ? (
         <StagePage
-          title="Audio"
-          icon={<MusicNote01 aria-hidden />}
-          status={complete ? "complete" : "failed"}
-          elapsed={complete ? 2_200 : null}
-          isLast={!complete}
+          title="Transcription"
+          icon={<Microphone01 aria-hidden />}
+          status="complete"
+          elapsed={4_400}
         >
-          {complete ? (
-            <HistoricalAudio key={job.fileName} fileName={job.fileName} />
-          ) : (
-            <p className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-              Processing stopped before the audio was ready.
-            </p>
-          )}
+          <TranscriptionStage state="complete" transcript={job.transcript} />
         </StagePage>
+      ) : null}
 
-        {complete ? (
-          <StagePage
-            title="Transcription"
-            icon={<Microphone01 aria-hidden />}
-            status="complete"
-            elapsed={4_400}
-          >
-            <TranscriptionStage state="complete" transcript={job.transcript} />
-          </StagePage>
-        ) : null}
-
-        {complete ? (
-          <StagePage
-            title="Moderation"
-            icon={<ShieldTick aria-hidden />}
-            status="complete"
-            elapsed={4_200}
-            isLast
-          >
-            <ModerationStage state="complete" scores={job.scores} />
-          </StagePage>
-        ) : null}
-      </PipelineTimeline>
-    </>
+      {complete ? (
+        <StagePage
+          title="Moderation"
+          icon={<ShieldTick aria-hidden />}
+          status="complete"
+          elapsed={4_200}
+          isLast
+        >
+          <ModerationStage state="complete" scores={job.scores} />
+        </StagePage>
+      ) : null}
+    </PipelineTimeline>
   )
 }

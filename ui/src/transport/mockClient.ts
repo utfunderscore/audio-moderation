@@ -12,7 +12,9 @@ export class MockTaskEventsClient implements TaskEventsClient {
   private readonly getSpeed: () => number
   private readonly lateSubscribe: boolean
   private readonly frameHandlers = new Set<(frame: TaskFrame) => void>()
-  private readonly connectionHandlers = new Set<(state: ConnectionState) => void>()
+  private readonly connectionHandlers = new Set<
+    (state: ConnectionState) => void
+  >()
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
   private connection: ConnectionState = "idle"
   private closed = false

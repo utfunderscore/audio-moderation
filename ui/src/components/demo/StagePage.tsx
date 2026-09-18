@@ -1,6 +1,6 @@
-import type { ReactNode } from "react"
-import { cn } from "cn"
 import { AlertCircle, Clock, Loading01, SlashCircle01 } from "@untitledui/icons"
+import { cn } from "cn"
+import type { ReactNode } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { formatDuration } from "@/domain/reducer"

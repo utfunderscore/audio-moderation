@@ -1,5 +1,5 @@
-import { cn } from "cn"
 import { AlertTriangle } from "@untitledui/icons"
+import { cn } from "cn"
 
 import { Progress } from "@/components/ui/progress"
 import { Skeleton } from "@/components/ui/skeleton"
