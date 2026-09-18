@@ -41,16 +41,19 @@ export function usePipelineRun(
     createInitialState
   )
   const [scenarioId, setScenarioId] = useState(defaultScenarioId)
-  const [speed, setSpeed] = useState<number>(1)
+  const [speed, setSpeedState] = useState<number>(1)
   const [lateSubscribe, setLateSubscribe] = useState(false)
 
   const clientRef = useRef<TaskEventsClient | null>(null)
   const cleanupRef = useRef<Array<() => void>>([])
   const speedRef = useRef(speed)
 
-  useEffect(() => {
-    speedRef.current = speed
-  }, [speed])
+  // Keep the ref current as speed changes so the client reads the latest value
+  // without the subscription depending on it.
+  const setSpeed = useCallback((next: number) => {
+    speedRef.current = next
+    setSpeedState(next)
+  }, [])
 
   const teardown = useCallback(() => {
     for (const cleanup of cleanupRef.current) cleanup()

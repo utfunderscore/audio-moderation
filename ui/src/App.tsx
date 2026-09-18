@@ -25,6 +25,7 @@ import type { PipelineState } from "@/domain/reducer"
 import type { StageId, StageState } from "@/domain/stages"
 import { useAudioInput } from "@/hooks/useAudioInput"
 import { useJobHistory } from "@/hooks/useJobHistory"
+import { useMediaQuery } from "@/hooks/useMediaQuery"
 import { usePipelineRun } from "@/hooks/usePipelineRun"
 import { preloadDemoAudioArtifact } from "@/transport/audioArtifacts"
 
@@ -39,22 +40,6 @@ const FOCUSABLE_SELECTOR = [
   "textarea:not([disabled])",
   '[tabindex]:not([tabindex="-1"])',
 ].join(",")
-
-function useIsMobileViewport() {
-  const [isMobileViewport, setIsMobileViewport] = useState(
-    () => !window.matchMedia(DESKTOP_VIEWPORT_QUERY).matches
-  )
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia(DESKTOP_VIEWPORT_QUERY)
-    const updateViewport = () => setIsMobileViewport(!mediaQuery.matches)
-
-    mediaQuery.addEventListener("change", updateViewport)
-    return () => mediaQuery.removeEventListener("change", updateViewport)
-  }, [])
-
-  return isMobileViewport
-}
 
 /**
  * The audio page covers ingress and conversion, so it is active as soon as the
@@ -74,7 +59,7 @@ function audioPageState(state: PipelineState): StageState {
 export function App() {
   const audio = useAudioInput()
   const run = usePipelineRun()
-  const isMobileViewport = useIsMobileViewport()
+  const isMobileViewport = !useMediaQuery(DESKTOP_VIEWPORT_QUERY)
   const {
     jobs: previousJobs,
     loading: jobsLoading,
@@ -107,8 +92,11 @@ export function App() {
     })
   }, [])
 
+  const { state } = run
+  const { evaluationId, outcome, startedAt } = state
+  const scenario = run.scenario
+
   useEffect(() => {
-    const outcome = run.state.outcome
     if (outcome === null) {
       lastOutcome.current = null
       return
@@ -122,13 +110,9 @@ export function App() {
     } else {
       toast.info(`Job ${outcome.toLowerCase()}`)
     }
-  }, [run.state.outcome])
-
-  const { state } = run
-  const scenario = run.scenario
+  }, [outcome])
 
   useEffect(() => {
-    const { evaluationId, outcome, startedAt } = state
     if (
       evaluationId === null ||
       outcome === null ||
@@ -150,7 +134,15 @@ export function App() {
       transcript: scenario.transcript,
       scores: scenario.scores,
     })
-  }, [audio.file, saveJob, scenario.scores, scenario.transcript, state])
+  }, [
+    audio.file,
+    evaluationId,
+    outcome,
+    saveJob,
+    scenario.scores,
+    scenario.transcript,
+    startedAt,
+  ])
 
   const transcript =
     state.stages.transcription === "complete" ? scenario.transcript : undefined

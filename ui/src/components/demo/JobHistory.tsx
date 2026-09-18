@@ -1,6 +1,6 @@
 import { Clock } from "@untitledui/icons"
 import { cn } from "cn"
-import { type ReactNode, useEffect, useState } from "react"
+import type { ReactNode } from "react"
 import { ElapsedDuration } from "@/components/demo/ElapsedDuration"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -10,6 +10,7 @@ import {
   jobDisplayStatus,
 } from "@/domain/jobs"
 import type { ModerationScores } from "@/domain/moderation"
+import { useMediaQuery } from "@/hooks/useMediaQuery"
 
 interface Job {
   id: string
@@ -33,21 +34,6 @@ const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
 })
 
 const DESKTOP_VIEWPORT_QUERY = "(min-width: 1024px)"
-
-function useDesktopLayout() {
-  const [desktop, setDesktop] = useState(
-    () => window.matchMedia(DESKTOP_VIEWPORT_QUERY).matches
-  )
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia(DESKTOP_VIEWPORT_QUERY)
-    const updateLayout = () => setDesktop(mediaQuery.matches)
-    mediaQuery.addEventListener("change", updateLayout)
-    return () => mediaQuery.removeEventListener("change", updateLayout)
-  }, [])
-
-  return desktop
-}
 
 function formatSubmitted(timestamp: number) {
   const date = new Date(timestamp)
@@ -215,7 +201,7 @@ export function JobHistory({
   onOpenCurrent: () => void
   onSelectJob: (job: AudioProcessingJob) => void
 }) {
-  const desktop = useDesktopLayout()
+  const desktop = useMediaQuery(DESKTOP_VIEWPORT_QUERY)
   const current: Job | null =
     currentJob === null
       ? null
