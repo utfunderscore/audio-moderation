@@ -1,0 +1,87 @@
+# Consolidated release builder for every Lambda binary.
+#
+# All eight packages are compiled in a single `cargo build` invocation so the
+# large shared dependency graph (aws-sdk-*, sqlx, tokio, rustls, ...) is built
+# once instead of once per image. The deploy script builds each runtime stage
+# with `docker build --target <name>`; BuildKit caches the shared `builder`
+# stage, so the compile only happens on the first target.
+#
+# BuildKit cache mounts keep the cargo registry and target directory across
+# deploys, so repeat builds only recompile the workspace crates that changed.
+# The binaries are copied out of the target cache mount into /out because cache
+# mount contents are not part of the image layer and cannot be used by
+# `COPY --from` directly.
+
+# syntax=docker/dockerfile:1
+
+FROM rust:1.96-bookworm AS builder
+
+RUN rustup target add x86_64-unknown-linux-musl \
+    && apt-get update \
+    && apt-get install --yes --no-install-recommends musl-tools protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY backend ./backend
+COPY proto ./proto
+COPY migrations ./migrations
+WORKDIR /app/backend
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/app/backend/target,sharing=locked \
+    cargo build --release --target x86_64-unknown-linux-musl \
+        --package submit-audio-lambda \
+        --package confirm-upload-lambda \
+        --package audio-processing-lambda \
+        --package start-evaluation-lambda \
+        --package task-callback-lambda \
+        --package transcription-caller-lambda \
+        --package moderation-caller-lambda \
+        --package task-events-lambda \
+    && mkdir -p /out \
+    && cp \
+        target/x86_64-unknown-linux-musl/release/submit-audio-lambda \
+        target/x86_64-unknown-linux-musl/release/confirm-upload-lambda \
+        target/x86_64-unknown-linux-musl/release/audio-processing-lambda \
+        target/x86_64-unknown-linux-musl/release/start-evaluation-lambda \
+        target/x86_64-unknown-linux-musl/release/task-callback-lambda \
+        target/x86_64-unknown-linux-musl/release/transcription-caller-lambda \
+        target/x86_64-unknown-linux-musl/release/moderation-caller-lambda \
+        target/x86_64-unknown-linux-musl/release/task-events-lambda \
+        /out/
+
+FROM --platform=linux/amd64 mwader/static-ffmpeg:7.1.1 AS ffmpeg
+
+FROM public.ecr.aws/lambda/provided:al2023 AS submit-audio
+COPY --from=builder /out/submit-audio-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
+CMD ["bootstrap"]
+
+FROM public.ecr.aws/lambda/provided:al2023 AS confirm-upload
+COPY --from=builder /out/confirm-upload-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
+CMD ["bootstrap"]
+
+FROM public.ecr.aws/lambda/provided:al2023 AS audio-processing
+COPY --from=builder /out/audio-processing-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
+COPY --from=ffmpeg /ffmpeg /usr/local/bin/ffmpeg
+CMD ["bootstrap"]
+
+FROM public.ecr.aws/lambda/provided:al2023 AS start-evaluation
+COPY --from=builder /out/start-evaluation-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
+CMD ["bootstrap"]
+
+FROM public.ecr.aws/lambda/provided:al2023 AS task-callback
+COPY --from=builder /out/task-callback-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
+CMD ["bootstrap"]
+
+FROM public.ecr.aws/lambda/provided:al2023 AS transcription-caller
+COPY --from=builder /out/transcription-caller-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
+CMD ["bootstrap"]
+
+FROM public.ecr.aws/lambda/provided:al2023 AS moderation-caller
+COPY --from=builder /out/moderation-caller-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
+CMD ["bootstrap"]
+
+FROM public.ecr.aws/lambda/provided:al2023 AS task-events
+COPY --from=builder /out/task-events-lambda ${LAMBDA_RUNTIME_DIR}/bootstrap
+CMD ["bootstrap"]

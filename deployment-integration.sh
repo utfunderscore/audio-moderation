@@ -381,15 +381,17 @@ deploy() {
         "${PROJECT_NAME}-${ENVIRONMENT}-moderation-caller"
         "${PROJECT_NAME}-${ENVIRONMENT}-task-events"
     )
-    local dockerfiles=(
-        "backend/crates/submit-audio-lambda/Dockerfile"
-        "backend/crates/confirm-upload-lambda/Dockerfile"
-        "backend/crates/audio-processing-lambda/Dockerfile"
-        "backend/crates/start-evaluation-lambda/Dockerfile"
-        "backend/crates/task-callback-lambda/Dockerfile"
-        "backend/crates/transcription-caller-lambda/Dockerfile"
-        "backend/crates/moderation-caller-lambda/Dockerfile"
-        "backend/crates/task-events-lambda/Dockerfile"
+    # One consolidated Dockerfile builds every binary in a single cargo
+    # invocation; each entry selects a runtime stage with --target.
+    local targets=(
+        "submit-audio"
+        "confirm-upload"
+        "audio-processing"
+        "start-evaluation"
+        "task-callback"
+        "transcription-caller"
+        "moderation-caller"
+        "task-events"
     )
     local bootstrap_targets=(
         -target=aws_ecr_repository.submit_audio -target=aws_ecr_repository_policy.submit_audio_lambda_pull -target=aws_ecr_lifecycle_policy.submit_audio
@@ -428,7 +430,7 @@ deploy() {
     for index in "${!repositories[@]}"; do
         local image_uri="${registry}/${repositories[${index}]}:${IMAGE_TAG}"
         printf 'Building and pushing %s\n' "${image_uri}"
-        docker build --platform linux/amd64 --provenance=false --file "${ROOT_DIR}/${dockerfiles[${index}]}" --tag "${image_uri}" "${ROOT_DIR}"
+        docker build --platform linux/amd64 --provenance=false --file "${ROOT_DIR}/backend/Dockerfile.lambda" --target "${targets[${index}]}" --tag "${image_uri}" "${ROOT_DIR}"
         docker push "${image_uri}"
     done
 
