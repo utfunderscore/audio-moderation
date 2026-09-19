@@ -96,6 +96,26 @@ resource "aws_iam_role_policy" "confirm_upload_database_parameter" {
   })
 }
 
+resource "aws_iam_role_policy" "confirm_upload_state_machine" {
+  name = "${local.name_prefix}-confirm-upload-state-machine"
+  role = aws_iam_role.confirm_upload.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "states:StartExecution"
+        Resource = aws_sfn_state_machine.audio_processing.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = "states:DescribeExecution"
+        Resource = "${replace(aws_sfn_state_machine.audio_processing.arn, ":stateMachine:", ":execution:")}:*"
+      },
+    ]
+  })
+}
+
 resource "aws_cloudwatch_log_group" "confirm_upload" {
   name              = "/aws/lambda/${local.name_prefix}-confirm-upload"
   retention_in_days = 7
@@ -112,10 +132,13 @@ resource "aws_lambda_function" "confirm_upload" {
 
   environment {
     variables = {
-      DATABASE_URL_PARAMETER = var.database_parameter_name
-      UPLOADS_BUCKET_NAME    = aws_s3_bucket.uploads.bucket
-      TENANT_ID              = var.tenant_id
-      RUST_LOG               = "info"
+      ARTIFACTS_BUCKET_NAME           = aws_s3_bucket.artifacts.bucket
+      DATABASE_URL_PARAMETER          = var.database_parameter_name
+      STATE_MACHINE_ARN               = aws_sfn_state_machine.audio_processing.arn
+      TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
+      UPLOADS_BUCKET_NAME             = aws_s3_bucket.uploads.bucket
+      TENANT_ID                       = var.tenant_id
+      RUST_LOG                        = "info"
     }
   }
 
@@ -124,6 +147,8 @@ resource "aws_lambda_function" "confirm_upload" {
     aws_iam_role_policy_attachment.confirm_upload_logs,
     aws_iam_role_policy.confirm_upload_source_object,
     aws_iam_role_policy.confirm_upload_database_parameter,
+    aws_iam_role_policy.confirm_upload_state_machine,
+    aws_iam_role_policy.task_event_emission,
     aws_cloudwatch_log_group.confirm_upload,
   ]
 }
