@@ -18,6 +18,9 @@ mod task_events_websocket;
 use task_events_websocket::TaskEventsWebSocket;
 
 const START_EVALUATION_PATH: &str = "/audio.moderation.v1.AudioModerationService/StartEvaluation";
+const CREATE_TASK_EVENTS_TICKET_PATH: &str =
+    "/audio.moderation.v1.AudioModerationService/CreateTaskEventsTicket";
+const GET_EVALUATION_PATH: &str = "/audio.moderation.v1.AudioModerationService/GetEvaluation";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const WEBSOCKET_EVENT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -46,6 +49,7 @@ struct Environment {
 
 struct StoredTask {
     task_id: i32,
+    evaluation_id: String,
     caller_reference: Option<String>,
     outcome: Option<String>,
     execution_arn: Option<String>,
@@ -176,7 +180,31 @@ async fn completes_a_fresh_evaluation_and_replays_without_another_attempt()
         .await?,
     )?;
     let task = stored_task(&environment.pool, &environment.tenant_id, &key).await?;
-    assert_eq!(created["evaluationId"], task.task_id.to_string());
+    assert_eq!(created["evaluationId"], task.evaluation_id);
+    let access_token = created["accessToken"]
+        .as_str()
+        .ok_or_else(|| invalid_input("StartEvaluation response has no access token"))?;
+    assert_connect_error(
+        &post_get_evaluation(
+            &client,
+            &environment.get_evaluation_url(),
+            &task.evaluation_id,
+            None,
+        )
+        .await?,
+        StatusCode::UNAUTHORIZED,
+        "unauthenticated",
+    );
+    let fetched = successful_json(
+        post_get_evaluation(
+            &client,
+            &environment.get_evaluation_url(),
+            &task.evaluation_id,
+            Some(access_token),
+        )
+        .await?,
+    )?;
+    assert_eq!(fetched["evaluation"]["evaluationId"], task.evaluation_id);
     assert_eq!(created["status"], "PIPELINE_TASK_STATUS_PENDING");
     assert_eq!(
         task.caller_reference.as_deref(),
@@ -199,12 +227,15 @@ async fn completes_a_fresh_evaluation_and_replays_without_another_attempt()
     // failure so workflow diagnostics still run.
     let socket_result = match environment.task_events_endpoint() {
         Ok(endpoint) => {
-            TaskEventsWebSocket::connect_and_subscribe(
-                endpoint,
-                task.task_id,
-                WEBSOCKET_CONNECT_TIMEOUT,
+            let ticket = create_task_events_ticket(
+                &client,
+                &environment.task_events_ticket_url(),
+                &task.evaluation_id,
+                access_token,
             )
-            .await
+            .await?;
+            TaskEventsWebSocket::connect_and_subscribe(endpoint, &ticket, WEBSOCKET_CONNECT_TIMEOUT)
+                .await
         }
         Err(error) => Err(error),
     };
@@ -321,9 +352,16 @@ async fn completes_a_fresh_evaluation_and_replays_without_another_attempt()
     // A terminal workflow has no concurrent event producer. At-least-once
     // delivery can still duplicate frames, so require every durable name
     // rather than an exact frame count or a replay/live boundary ordering.
+    let replay_ticket = create_task_events_ticket(
+        &client,
+        &environment.task_events_ticket_url(),
+        &task.evaluation_id,
+        access_token,
+    )
+    .await?;
     let mut replay_socket = TaskEventsWebSocket::connect_and_subscribe(
         environment.task_events_endpoint()?,
-        task.task_id,
+        &replay_ticket,
         WEBSOCKET_CONNECT_TIMEOUT,
     )
     .await?;
@@ -367,7 +405,8 @@ async fn completes_a_fresh_evaluation_and_replays_without_another_attempt()
         .await?,
     )?;
     let after_replay = stored_task(&environment.pool, &environment.tenant_id, &key).await?;
-    assert_eq!(replayed["evaluationId"], task.task_id.to_string());
+    assert_eq!(replayed["evaluationId"], task.evaluation_id);
+    assert_eq!(replayed["accessToken"], created["accessToken"]);
     assert_eq!(after_replay.task_id, task.task_id);
     assert_eq!(
         after_replay.attempt_count, 1,
@@ -400,7 +439,7 @@ async fn evaluation_dispatch_dispatches_a_seeded_undispatched_task()
         .await?,
     )?;
     let task = stored_task(&environment.pool, &environment.tenant_id, &key).await?;
-    assert_eq!(response["evaluationId"], seeded.task_id.to_string());
+    assert_eq!(response["evaluationId"], seeded.evaluation_id);
     assert_eq!(task.attempt_count, 1);
     assert_dispatched(&task, &environment.audio_s3_uris).await?;
 
@@ -630,6 +669,22 @@ impl Environment {
         )
     }
 
+    fn task_events_ticket_url(&self) -> String {
+        format!(
+            "{}{}",
+            self.endpoint.trim_end_matches('/'),
+            CREATE_TASK_EVENTS_TICKET_PATH
+        )
+    }
+
+    fn get_evaluation_url(&self) -> String {
+        format!(
+            "{}{}",
+            self.endpoint.trim_end_matches('/'),
+            GET_EVALUATION_PATH
+        )
+    }
+
     fn task_events_endpoint(&self) -> Result<&str, Box<dyn Error + Send + Sync>> {
         self.task_events_endpoint.as_deref().ok_or_else(|| {
             invalid_input(
@@ -662,8 +717,8 @@ fn http_client() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()
 }
 
-fn unique_key(kind: &str) -> String {
-    format!("deployed-{kind}-{}", Uuid::new_v4())
+fn unique_key(_kind: &str) -> String {
+    Uuid::new_v4().to_string()
 }
 
 async fn post_start(
@@ -689,6 +744,54 @@ async fn post_start(
         request = request.header("idempotency-key", idempotency_key);
     }
 
+    let response = request.send().await?;
+    let status = response.status();
+    let body = response.text().await?;
+    Ok(HttpResponse { status, body })
+}
+
+async fn create_task_events_ticket(
+    client: &reqwest::Client,
+    url: &str,
+    evaluation_id: &str,
+    access_token: &str,
+) -> Result<String, Box<dyn Error + Send + Sync>> {
+    let response = client
+        .post(url)
+        .header("content-type", "application/json")
+        .header("connect-protocol-version", "1")
+        .bearer_auth(access_token)
+        .json(&json!({ "evaluationId": evaluation_id }))
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    if !status.is_success() {
+        return Err(IoError::other(format!(
+            "task-events ticket request failed with {status}: {body}"
+        ))
+        .into());
+    }
+    serde_json::from_str::<Value>(&body)?["ticket"]
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| invalid_input("task-events ticket response has no ticket"))
+}
+
+async fn post_get_evaluation(
+    client: &reqwest::Client,
+    url: &str,
+    evaluation_id: &str,
+    access_token: Option<&str>,
+) -> Result<HttpResponse, reqwest::Error> {
+    let mut request = client
+        .post(url)
+        .header("content-type", "application/json")
+        .header("connect-protocol-version", "1")
+        .json(&json!({ "evaluationId": evaluation_id }));
+    if let Some(access_token) = access_token {
+        request = request.bearer_auth(access_token);
+    }
     let response = request.send().await?;
     let status = response.status();
     let body = response.text().await?;
@@ -739,6 +842,7 @@ async fn stored_task(
 ) -> Result<StoredTask, sqlx::Error> {
     let row: (
         i32,
+        String,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -746,8 +850,8 @@ async fn stored_task(
         bool,
     ) = sqlx::query_as(
         r#"
-            SELECT task_id, caller_reference, outcome::TEXT, execution_arn, attempt_count,
-                dispatch_started_at IS NOT NULL AS active_lease
+            SELECT task_id, evaluation_id::TEXT, caller_reference, outcome::TEXT,
+                execution_arn, attempt_count, dispatch_started_at IS NOT NULL AS active_lease
             FROM pipeline_tasks
             WHERE tenant_id = $1 AND idempotency_key = $2
         "#,
@@ -758,11 +862,12 @@ async fn stored_task(
     .await?;
     Ok(StoredTask {
         task_id: row.0,
-        caller_reference: row.1,
-        outcome: row.2,
-        execution_arn: row.3,
-        attempt_count: row.4,
-        active_lease: row.5,
+        evaluation_id: row.1,
+        caller_reference: row.2,
+        outcome: row.3,
+        execution_arn: row.4,
+        attempt_count: row.5,
+        active_lease: row.6,
     })
 }
 
@@ -786,7 +891,7 @@ async fn assert_dispatched(
     assert!(execution_arn.starts_with("arn:aws:states:"));
     assert!(execution_arn.contains(":execution:"));
     assert!(
-        execution_arn.ends_with(&format!(":evaluation-{}", task.task_id)),
+        execution_arn.ends_with(&format!(":evaluation-{}", task.evaluation_id)),
         "unexpected execution ARN: {execution_arn}"
     );
 

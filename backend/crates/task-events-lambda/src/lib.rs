@@ -1,8 +1,8 @@
 use std::future::Future;
 
 use database::{
-    NewPipelineTaskWebSocketConnection, PipelineTaskWebSocketConnectionError,
-    PipelineTaskWebSocketConnectionStore,
+    NewPipelineTaskWebSocketConnection, PipelineTaskEventTicketError, PipelineTaskEventTicketStore,
+    PipelineTaskWebSocketConnectionError, PipelineTaskWebSocketConnectionStore,
 };
 use lambda_runtime::{Error, LambdaEvent};
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,7 @@ pub struct ConnectEvent {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscribeRequest {
-    pub task_id: i32,
+    pub ticket: String,
 }
 
 /// Input for the `subscribe` route.
@@ -81,8 +81,9 @@ pub struct WebSocketResponse {
 
 /// Handles incoming task-events WebSocket route invocations.
 #[derive(Clone)]
-pub struct TaskEventsHandler<S> {
+pub struct TaskEventsHandler<S, T> {
     connections: S,
+    tickets: T,
     events: Option<TaskEventEmitter>,
 }
 
@@ -98,6 +99,21 @@ pub trait TaskConnectionStore: Send + Sync {
         &self,
         connection_id: String,
     ) -> impl Future<Output = Result<u64, PipelineTaskWebSocketConnectionError>> + Send;
+}
+
+pub trait TaskEventTicketStore: Send + Sync {
+    fn consume(
+        &self,
+        ticket: String,
+    ) -> impl Future<Output = Result<i32, PipelineTaskEventTicketError>> + Send;
+}
+
+impl TaskEventTicketStore for PipelineTaskEventTicketStore {
+    async fn consume(&self, ticket: String) -> Result<i32, PipelineTaskEventTicketError> {
+        PipelineTaskEventTicketStore::consume(self, &ticket)
+            .await
+            .map(|ticket| ticket.task_id)
+    }
 }
 
 impl TaskConnectionStore for PipelineTaskWebSocketConnectionStore {
@@ -122,10 +138,11 @@ impl TaskConnectionStore for PipelineTaskWebSocketConnectionStore {
     }
 }
 
-impl<S> TaskEventsHandler<S> {
-    pub fn new(connections: S) -> Self {
+impl<S, T> TaskEventsHandler<S, T> {
+    pub fn new(connections: S, tickets: T) -> Self {
         Self {
             connections,
+            tickets,
             events: None,
         }
     }
@@ -136,7 +153,7 @@ impl<S> TaskEventsHandler<S> {
     }
 }
 
-impl<S: TaskConnectionStore> TaskEventsHandler<S> {
+impl<S: TaskConnectionStore, T: TaskEventTicketStore> TaskEventsHandler<S, T> {
     /// Dispatches an API Gateway WebSocket invocation to its route handler.
     pub async fn handle(
         &self,
@@ -172,16 +189,19 @@ impl<S: TaskConnectionStore> TaskEventsHandler<S> {
 
     /// Logs a requested task-event subscription.
     pub async fn subscribe(&self, event: SubscribeEvent) -> Result<WebSocketResponse, Error> {
+        let task_id = match self.tickets.consume(event.request.ticket).await {
+            Ok(task_id) => task_id,
+            Err(PipelineTaskEventTicketError::Invalid) => return Ok(unauthorized_response()),
+            Err(error) => return Err(error.into()),
+        };
         self.connections
-            .subscribe(event.request.task_id, event.connection_id.0.clone())
+            .subscribe(task_id, event.connection_id.0.clone())
             .await?;
         if let Some(events) = &self.events {
-            let replay = events
-                .replay(event.request.task_id, &event.connection_id.0)
-                .await?;
+            let replay = events.replay(task_id, &event.connection_id.0).await?;
             info!(
                 connectionId = %event.connection_id.0,
-                taskId = event.request.task_id,
+                taskId = task_id,
                 replayedEvents = replay.delivered,
                 removedStaleConnections = replay.removed_stale_connections,
                 "replayed WebSocket task events"
@@ -189,7 +209,7 @@ impl<S: TaskConnectionStore> TaskEventsHandler<S> {
         }
         info!(
             connectionId = %event.connection_id.0,
-            taskId = event.request.task_id,
+            taskId = task_id,
             "registered WebSocket task subscription"
         );
         Ok(success_response())
@@ -213,6 +233,13 @@ fn success_response() -> WebSocketResponse {
     }
 }
 
+fn unauthorized_response() -> WebSocketResponse {
+    WebSocketResponse {
+        status_code: 401,
+        body: Some("invalid or expired task-events ticket".into()),
+    }
+}
+
 fn invalid_input(message: &'static str) -> Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into()
 }
@@ -227,6 +254,22 @@ mod tests {
     struct RecordingConnectionStore {
         subscriptions: Arc<Mutex<Vec<(i32, String)>>>,
         removals: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingTicketStore {
+        consumed: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl TaskEventTicketStore for RecordingTicketStore {
+        async fn consume(&self, ticket: String) -> Result<i32, PipelineTaskEventTicketError> {
+            self.consumed.lock().unwrap().push(ticket.clone());
+            if ticket == "ticket-secret" {
+                Ok(42)
+            } else {
+                Err(PipelineTaskEventTicketError::Invalid)
+            }
+        }
     }
 
     impl TaskConnectionStore for RecordingConnectionStore {
@@ -274,18 +317,20 @@ mod tests {
 
     #[test]
     fn deserializes_a_subscribe_request() {
-        let request: SubscribeRequest = serde_json::from_str(r#"{"taskId": 42}"#).unwrap();
+        let request: SubscribeRequest =
+            serde_json::from_str(r#"{"ticket":"ticket-secret"}"#).unwrap();
 
-        assert_eq!(request.task_id, 42);
+        assert_eq!(request.ticket, "ticket-secret");
     }
 
     #[tokio::test]
     async fn dispatches_connect_subscribe_and_disconnect_events() {
         let connections = RecordingConnectionStore::default();
-        let handler = TaskEventsHandler::new(connections.clone());
+        let tickets = RecordingTicketStore::default();
+        let handler = TaskEventsHandler::new(connections.clone(), tickets.clone());
         for (route_key, body) in [
             ("$connect", None),
-            ("subscribe", Some(r#"{"taskId":42}"#)),
+            ("subscribe", Some(r#"{"ticket":"ticket-secret"}"#)),
             ("$disconnect", None),
         ] {
             let response = handler
@@ -314,25 +359,49 @@ mod tests {
             connections.removals.lock().unwrap().as_slice(),
             ["connection-123"]
         );
+        assert_eq!(
+            tickets.consumed.lock().unwrap().as_slice(),
+            ["ticket-secret"]
+        );
     }
 
     #[tokio::test]
     async fn rejects_a_subscribe_event_without_a_body() {
-        let error = TaskEventsHandler::new(RecordingConnectionStore::default())
-            .handle(LambdaEvent::new(
-                ApiGatewayWebSocketEvent {
-                    request_context: WebSocketRequestContext {
-                        connection_id: ConnectionId("connection-123".into()),
-                        route_key: WebSocketRoute::Subscribe,
-                    },
-                    body: None,
-                    is_base64_encoded: false,
+        let error = TaskEventsHandler::new(
+            RecordingConnectionStore::default(),
+            RecordingTicketStore::default(),
+        )
+        .handle(LambdaEvent::new(
+            ApiGatewayWebSocketEvent {
+                request_context: WebSocketRequestContext {
+                    connection_id: ConnectionId("connection-123".into()),
+                    route_key: WebSocketRoute::Subscribe,
                 },
-                Default::default(),
-            ))
-            .await
-            .unwrap_err();
+                body: None,
+                is_base64_encoded: false,
+            },
+            Default::default(),
+        ))
+        .await
+        .unwrap_err();
 
         assert_eq!(error.to_string(), "subscribe requests require a body");
+    }
+
+    #[tokio::test]
+    async fn rejects_an_invalid_ticket_without_subscribing() {
+        let connections = RecordingConnectionStore::default();
+        let response = TaskEventsHandler::new(connections.clone(), RecordingTicketStore::default())
+            .subscribe(SubscribeEvent {
+                connection_id: ConnectionId("connection-123".into()),
+                request: SubscribeRequest {
+                    ticket: "invalid".into(),
+                },
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(response, unauthorized_response());
+        assert!(connections.subscriptions.lock().unwrap().is_empty());
     }
 }

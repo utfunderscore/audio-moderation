@@ -68,9 +68,12 @@ resource "aws_iam_role_policy" "start_evaluation_database_parameter" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = "ssm:GetParameter"
-        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.database_parameter_name}"
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.database_parameter_name}",
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.evaluation_access_secret_parameter_name}",
+        ]
       },
       {
         Effect   = "Allow"
@@ -117,12 +120,13 @@ resource "aws_lambda_function" "start_evaluation" {
 
   environment {
     variables = {
-      ARTIFACTS_BUCKET_NAME           = aws_s3_bucket.artifacts.bucket
-      DATABASE_URL_PARAMETER          = var.database_parameter_name
-      STATE_MACHINE_ARN               = aws_sfn_state_machine.audio_processing.arn
-      TENANT_ID                       = var.tenant_id
-      TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
-      RUST_LOG                        = "info"
+      ARTIFACTS_BUCKET_NAME              = aws_s3_bucket.artifacts.bucket
+      DATABASE_URL_PARAMETER             = var.database_parameter_name
+      EVALUATION_ACCESS_SECRET_PARAMETER = var.evaluation_access_secret_parameter_name
+      STATE_MACHINE_ARN                  = aws_sfn_state_machine.audio_processing.arn
+      TENANT_ID                          = var.tenant_id
+      TASK_EVENTS_MANAGEMENT_ENDPOINT    = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
+      RUST_LOG                           = "info"
     }
   }
 
@@ -147,6 +151,18 @@ resource "aws_apigatewayv2_integration" "start_evaluation" {
 resource "aws_apigatewayv2_route" "start_evaluation_connect_rpc" {
   api_id    = aws_apigatewayv2_api.public.id
   route_key = "POST /audio.moderation.v1.AudioModerationService/StartEvaluation"
+  target    = "integrations/${aws_apigatewayv2_integration.start_evaluation.id}"
+}
+
+resource "aws_apigatewayv2_route" "get_evaluation_connect_rpc" {
+  api_id    = aws_apigatewayv2_api.public.id
+  route_key = "POST /audio.moderation.v1.AudioModerationService/GetEvaluation"
+  target    = "integrations/${aws_apigatewayv2_integration.start_evaluation.id}"
+}
+
+resource "aws_apigatewayv2_route" "create_task_events_ticket_connect_rpc" {
+  api_id    = aws_apigatewayv2_api.public.id
+  route_key = "POST /audio.moderation.v1.AudioModerationService/CreateTaskEventsTicket"
   target    = "integrations/${aws_apigatewayv2_integration.start_evaluation.id}"
 }
 

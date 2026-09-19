@@ -3,9 +3,12 @@ use std::env;
 use aws_config::BehaviorVersion;
 use aws_sdk_sfn::Client as SfnClient;
 use aws_sdk_ssm::Client as SsmClient;
-use common::load_database_url;
+use common::{EvaluationAccess, load_database_url, load_secure_parameter};
 use connectrpc::ConnectRpcService;
-use database::{PipelineTaskEventStore, PipelineTaskStore, PipelineTaskWebSocketConnectionStore};
+use database::{
+    PipelineTaskEventStore, PipelineTaskEventTicketStore, PipelineTaskStore,
+    PipelineTaskWebSocketConnectionStore,
+};
 use http_body_util::Full;
 use lambda_http::{Error, Request as LambdaRequest, run, service_fn};
 use sqlx::postgres::PgPoolOptions;
@@ -31,6 +34,9 @@ async fn main() -> Result<(), Error> {
     let sdk_config = aws_config::load_defaults(BehaviorVersion::latest()).await;
     let ssm_client = SsmClient::new(&sdk_config);
     let database_url = load_database_url(&ssm_client).await?;
+    let evaluation_access = EvaluationAccess::new(
+        load_secure_parameter(&ssm_client, "EVALUATION_ACCESS_SECRET_PARAMETER").await?,
+    )?;
     let pool = PgPoolOptions::new()
         .max_connections(3)
         .connect_lazy(&database_url)?;
@@ -47,7 +53,9 @@ async fn main() -> Result<(), Error> {
             .expect("TASK_EVENTS_MANAGEMENT_ENDPOINT must be set"),
     );
     let service = StartEvaluationService::new(
-        PipelineTaskStore::new(pool),
+        PipelineTaskStore::new(pool.clone()),
+        PipelineTaskEventTicketStore::new(pool),
+        evaluation_access,
         SfnClient::new(&sdk_config),
         state_machine_arn,
         artifacts_bucket,

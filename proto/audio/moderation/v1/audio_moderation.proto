@@ -2,8 +2,13 @@ syntax = "proto3";
 
 package audio.moderation.v1;
 
+import "google/protobuf/timestamp.proto";
+
 service AudioModerationService {
+  // Requires a UUID in the idempotency-key HTTP request header.
   rpc StartEvaluation(StartEvaluationRequest) returns (StartEvaluationResponse);
+  rpc GetEvaluation(GetEvaluationRequest) returns (GetEvaluationResponse);
+  rpc CreateTaskEventsTicket(CreateTaskEventsTicketRequest) returns (CreateTaskEventsTicketResponse);
 }
 
 message StartEvaluationRequest {
@@ -18,6 +23,88 @@ message AudioObjectReference {
 message StartEvaluationResponse {
   string evaluation_id = 1;
   PipelineTaskStatus status = 2;
+  string access_token = 3;
+}
+
+message GetEvaluationRequest {
+  string evaluation_id = 1;
+}
+
+message GetEvaluationResponse {
+  Evaluation evaluation = 1;
+}
+
+message CreateTaskEventsTicketRequest {
+  string evaluation_id = 1;
+}
+
+message CreateTaskEventsTicketResponse {
+  string ticket = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+// A complete, caller-visible snapshot of an evaluation and its pipeline steps.
+message Evaluation {
+  string evaluation_id = 1;
+  optional string caller_reference = 2;
+  PipelineTaskStatus status = 3;
+  optional PipelineTaskOutcome outcome = 4;
+  repeated AudioObjectReference audio_objects = 5;
+  AudioProcessingTask audio_processing = 6;
+  TranscriptionTask transcription = 7;
+  ModerationTask moderation = 8;
+  repeated PipelineTaskEvent events = 9;
+  google.protobuf.Timestamp created_at = 10;
+  google.protobuf.Timestamp updated_at = 11;
+  google.protobuf.Timestamp completed_at = 12;
+}
+
+message AudioProcessingTask {
+  PipelineStepStatus status = 1;
+  optional string stitched_audio_s3_uri = 2;
+  PipelineStepError error = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp completed_at = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message TranscriptionTask {
+  PipelineStepStatus status = 1;
+  optional string external_task_id = 2;
+  optional string transcript = 3;
+  PipelineStepError error = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp completed_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message ModerationTask {
+  PipelineStepStatus status = 1;
+  optional string external_task_id = 2;
+  ModerationScores scores = 3;
+  PipelineStepError error = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp completed_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message ModerationScores {
+  double sexual = 1;
+  double hate_or_discrimination = 2;
+  double harassment_or_abuse = 3;
+  double violence_or_threats = 4;
+  double asking_for_pii = 5;
+}
+
+message PipelineStepError {
+  optional string code = 1;
+  optional string message = 2;
+}
+
+message PipelineTaskEvent {
+  int64 event_id = 1;
+  string event_name = 2;
+  google.protobuf.Timestamp created_at = 3;
 }
 
 enum PipelineTaskStatus {
@@ -33,4 +120,20 @@ enum PipelineTaskStatus {
   PIPELINE_TASK_STATUS_FAILED = 9;
   PIPELINE_TASK_STATUS_TIMED_OUT = 10;
   PIPELINE_TASK_STATUS_CANCELLED = 11;
+}
+
+enum PipelineTaskOutcome {
+  PIPELINE_TASK_OUTCOME_UNSPECIFIED = 0;
+  PIPELINE_TASK_OUTCOME_SUCCEEDED = 1;
+  PIPELINE_TASK_OUTCOME_FAILED = 2;
+  PIPELINE_TASK_OUTCOME_TIMED_OUT = 3;
+  PIPELINE_TASK_OUTCOME_CANCELLED = 4;
+}
+
+enum PipelineStepStatus {
+  PIPELINE_STEP_STATUS_UNSPECIFIED = 0;
+  PIPELINE_STEP_STATUS_PENDING = 1;
+  PIPELINE_STEP_STATUS_PROCESSING = 2;
+  PIPELINE_STEP_STATUS_COMPLETED = 3;
+  PIPELINE_STEP_STATUS_FAILED = 4;
 }

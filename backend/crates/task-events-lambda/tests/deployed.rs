@@ -4,9 +4,10 @@ use std::io::{Error as IoError, ErrorKind};
 use std::time::{Duration, Instant};
 
 use aws_config::BehaviorVersion;
+use chrono::Duration as ChronoDuration;
 use database::{
-    NewPipelineTask, NewPipelineTaskEvent, PipelineTaskEventStore, PipelineTaskStore,
-    PipelineTaskWebSocketConnectionStore,
+    NewPipelineTask, NewPipelineTaskEvent, PipelineTaskEventStore, PipelineTaskEventTicketStore,
+    PipelineTaskStore, PipelineTaskWebSocketConnectionStore,
 };
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use task_event_emitter::TaskEventEmitter;
@@ -55,9 +56,15 @@ async fn replays_live_delivers_and_cleans_up_task_events()
             })
             .await?;
 
+        let tickets = PipelineTaskEventTicketStore::new(environment.pool.clone());
+        let ticket = format!("deployed-ticket-{}", Uuid::new_v4());
+        tickets
+            .create(task_id, &ticket, ChronoDuration::minutes(1))
+            .await?;
+
         let mut socket = TaskEventsWebSocket::connect_and_subscribe(
             &environment.endpoint,
-            task_id,
+            &ticket,
             CONNECT_TIMEOUT,
         )
         .await?;
@@ -94,9 +101,13 @@ async fn replays_live_delivers_and_cleans_up_task_events()
 
         // There are no concurrent producers during this replay. The expected
         // ordered history must nevertheless tolerate at-least-once frames.
+        let replay_ticket = format!("deployed-ticket-{}", Uuid::new_v4());
+        tickets
+            .create(task_id, &replay_ticket, ChronoDuration::minutes(1))
+            .await?;
         let mut replay_socket = TaskEventsWebSocket::connect_and_subscribe(
             &environment.endpoint,
-            task_id,
+            &replay_ticket,
             CONNECT_TIMEOUT,
         )
         .await?;
