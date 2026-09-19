@@ -39,8 +39,12 @@ coherent version of the codebase.
 | `moderation-caller` | Starts an external moderation request. |
 | `task-events` | Handles WebSocket connections and subscriptions and replays persisted task events. |
 
-Each crate has its own Dockerfile. The script builds every image for
-`linux/amd64`, even if only one Lambda changed.
+All eight binaries are built by a single consolidated Dockerfile,
+`backend/Dockerfile.lambda`. Its shared `builder` stage compiles every package
+in one `cargo build`, then each runtime stage copies its binary with
+`docker build --target`. The script builds every image for `linux/amd64`, even
+if only one Lambda changed, and BuildKit caches the cargo registry and target
+directory across deploys.
 
 ## ECR updates
 
