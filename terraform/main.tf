@@ -102,6 +102,19 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
 resource "aws_apigatewayv2_api" "public" {
   name          = "${local.name_prefix}-api"
   protocol_type = "HTTP"
+
+  cors_configuration {
+    allow_headers = [
+      "authorization",
+      "connect-protocol-version",
+      "connect-timeout-ms",
+      "content-type",
+      "idempotency-key",
+    ]
+    allow_methods = ["OPTIONS", "POST"]
+    allow_origins = ["*"]
+    max_age       = 3600
+  }
 }
 
 resource "aws_apigatewayv2_stage" "default" {

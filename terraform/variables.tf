@@ -58,6 +58,12 @@ variable "database_parameter_name" {
   default = "/audio-moderation/dev/database-url"
 }
 
+variable "evaluation_access_secret_parameter_name" {
+  description = "Secure SSM parameter containing the evaluation capability signing secret"
+  type        = string
+  default     = "/audio-moderation/dev/evaluation-access-secret"
+}
+
 variable "modal_proxy_token_id_parameter_name" {
   description = "Secure SSM parameter containing the Modal proxy token ID"
   type        = string

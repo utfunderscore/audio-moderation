@@ -63,11 +63,14 @@ Ingress also returns an `evaluationId` and a pipeline status
 (`PIPELINE_TASK_STATUS_*`, from `proto/audio/moderation/v1/audio_moderation.proto`)
 that the UI seeds from before the socket replay arrives.
 
-Transport facts the mock must honor (from `task-events-lambda/src/lib.rs` and
-`task-event-emitter/src/lib.rs`):
+The deployed transport contract (from `task-events-lambda/src/lib.rs` and
+`task-event-emitter/src/lib.rs`) that a future real adapter must honor:
 
-- One socket maps to one task. Subscribe with `{"action":"subscribe","taskId":<number>}`
-  (`evaluationId` is a string in the RPC response — the UI converts it).
+- One socket maps to one task. The deployed client authorizes its evaluation
+  access token with `CreateTaskEventsTicket`, then subscribes with
+  `{"action":"subscribe","ticket":<ticket>}`. The current mock interface and
+  unwired real adapter still use `taskId`; that is simulation-only and does not
+  match the deployed protocol.
 - Frames are raw UTF-8 event names. No payloads, IDs, timestamps, or error text.
 - On subscribe the server replays durable history in event order, then live events.
   Replay and live frames can interleave, and delivery is at-least-once → the client
@@ -217,10 +220,11 @@ interface TaskEventsClient {
   scenario script: each step is `{ event, delayMs, source? }`. On `subscribe` it
   delivers the script's replay prefix, then schedules the live remainder. It
   supports injected duplicates, connection drops, and re-subscription.
-- `WebSocketTaskEventsClient` — a stub file that documents the real handshake
-  (`wss://…`, `{"action":"subscribe","taskId":n}`, text-or-binary UTF-8 frames,
-  replay-then-live, at-least-once, `$disconnect` cleanup). Not wired and not tested
-  in this phase.
+- `WebSocketTaskEventsClient` — an unwired, stale stub. The deployed handshake is
+  `wss://…`, authorized `CreateTaskEventsTicket`, then
+  `{"action":"subscribe","ticket":...}` with text-or-binary UTF-8 frames,
+  replay-then-live, at-least-once delivery, and `$disconnect` cleanup. The stub
+  still sends `taskId`, cannot mint a ticket, and is not tested in this phase.
 - The app talks only to the interface through `usePipelineRun`, so switching
   implementations is a one-line change plus an endpoint/`evaluationId` source.
 

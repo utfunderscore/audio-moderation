@@ -12,8 +12,13 @@ AWS_PROFILE=admin ./deployment-integration.sh test task-events
 The runner resolves Terraform's `pipeline_task_events_websocket_endpoint` into
 `AUDIO_MODERATION_TASK_EVENTS_ENDPOINT`, validates its `wss://` scheme, and
 loads the tenant and database configuration with the local `admin` AWS profile.
-The test creates an isolated pipeline task, verifies durable replay and live
-fanout, checks disconnect cleanup, then verifies ordered replay after reconnect.
+Production clients obtain a one-time ticket through the authorized
+`CreateTaskEventsTicket` RPC, then send
+`{"action":"subscribe","ticket":<ticket>}`; the WebSocket never accepts a
+direct task ID subscription.
+The test creates an isolated pipeline task and one-time subscription tickets,
+verifies durable replay and live fanout, checks disconnect cleanup, then verifies
+ordered replay after reconnect.
 It uses one task per socket and accepts text or binary UTF-8 event-name frames.
 
 Task-event delivery is at-least-once. The test tolerates duplicates where replay

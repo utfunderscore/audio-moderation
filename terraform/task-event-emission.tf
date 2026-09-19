@@ -3,6 +3,7 @@
 resource "aws_iam_role_policy" "task_event_emission" {
   for_each = {
     audio_processing     = aws_iam_role.audio_processing.id
+    confirm_upload       = aws_iam_role.confirm_upload.id
     start_evaluation     = aws_iam_role.start_evaluation.id
     task_callback        = aws_iam_role.task_callback.id
     transcription_caller = aws_iam_role.transcription_caller.id

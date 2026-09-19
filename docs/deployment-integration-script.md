@@ -31,7 +31,7 @@ coherent version of the codebase.
 | Image | Purpose |
 |---|---|
 | `submit-audio` | Accepts review submissions and creates presigned S3 upload details. |
-| `confirm-upload` | Handles matching S3 upload notifications and confirms review uploads. |
+| `confirm-upload` | Handles matching S3 upload notifications and starts review evaluations. |
 | `audio-processing` | Downloads input audio, stitches it, writes the artifact, and finalizes workflow outcomes. |
 | `start-evaluation` | Accepts evaluation requests, creates pipeline tasks, and starts Step Functions executions. |
 | `task-callback` | Receives external transcription and moderation callbacks and resumes Step Functions tasks. |
@@ -105,7 +105,8 @@ The WebSocket API routes:
 
 to the `task-events` Lambda. Terraform updates the API, stage, Lambda integration,
 invocation permission, and the management-API permissions used to send event frames
-back to connected clients.
+back to connected clients. The `subscribe` route accepts a one-time ticket minted
+by the authorized `CreateTaskEventsTicket` HTTP RPC; it does not accept a task ID.
 
 ## Workflow and event updates
 
@@ -281,3 +282,11 @@ Running `all <suite>` performs the full deployment above and then executes one
 selected suite. Tests may upload temporary S3 objects, create database rows, open
 WebSocket connections, invoke Lambdas, or start Step Functions executions, but those
 are test fixtures and executions rather than additional application infrastructure.
+
+`review-confirmation` validates the upload-to-dispatch boundary only: it verifies
+the persisted idempotent task and Step Functions input after a real upload. It then
+performs a second real PUT and observes no duplicate persisted dispatch effects for
+the notification-delivery window. Because the test cannot observe S3 delivery to
+the Lambda, it does not prove that the second notification was delivered. It does
+not wait for transcription, moderation, model completion, or terminal review-job
+status.

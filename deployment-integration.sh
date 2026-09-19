@@ -15,6 +15,7 @@ PROJECT_NAME="${PROJECT_NAME:-audio-moderation}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 TENANT_ID="${TENANT_ID:-default}"
 DATABASE_URL_PARAMETER="${DATABASE_URL_PARAMETER:-}"
+EVALUATION_ACCESS_SECRET_PARAMETER="${EVALUATION_ACCESS_SECRET_PARAMETER:-}"
 MODAL_PROXY_TOKEN_ID_PARAMETER="${MODAL_PROXY_TOKEN_ID_PARAMETER:-}"
 MODAL_PROXY_TOKEN_SECRET_PARAMETER="${MODAL_PROXY_TOKEN_SECRET_PARAMETER:-}"
 TRANSCRIPTION_ENDPOINT_URL="${TRANSCRIPTION_ENDPOINT_URL:-}"
@@ -42,7 +43,7 @@ Commands:
 
 Suites, ordered from isolated/cheap to full:
   review-submit          SubmitReview creates an awaiting-upload review.
-  review-confirmation    A presigned source upload triggers confirm-upload.
+  review-confirmation    A presigned source upload creates one pipeline task and dispatches its evaluation.
   evaluation-ingress     StartEvaluation validation, lease/terminal retry behavior, and
                          idempotency conflicts, with synthetic non-dispatched audio URIs.
   evaluation-dispatch    Seeded dispatch and retry through the production workflow. Requires
@@ -62,6 +63,8 @@ Options:
   --environment NAME                      Environment (default: dev)
   --tenant-id ID                          Tenant ID (default: default)
   --database-parameter-name NAME          SecureString database URL parameter
+  --evaluation-access-secret-parameter-name NAME
+                                            SecureString evaluation capability secret parameter
   --modal-token-id-parameter-name NAME    SecureString Modal token ID parameter
   --modal-token-secret-parameter-name NAME
                                             SecureString Modal token secret parameter
@@ -154,6 +157,7 @@ while [[ $# -gt 0 ]]; do
         --environment) require_value "$@"; ENVIRONMENT="$2"; shift 2 ;;
         --tenant-id) require_value "$@"; TENANT_ID="$2"; shift 2 ;;
         --database-parameter-name) require_value "$@"; DATABASE_URL_PARAMETER="$2"; shift 2 ;;
+        --evaluation-access-secret-parameter-name) require_value "$@"; EVALUATION_ACCESS_SECRET_PARAMETER="$2"; shift 2 ;;
         --modal-token-id-parameter-name) require_value "$@"; MODAL_PROXY_TOKEN_ID_PARAMETER="$2"; shift 2 ;;
         --modal-token-secret-parameter-name) require_value "$@"; MODAL_PROXY_TOKEN_SECRET_PARAMETER="$2"; shift 2 ;;
         --transcription-endpoint-url) require_value "$@"; TRANSCRIPTION_ENDPOINT_URL="$2"; shift 2 ;;
@@ -172,6 +176,7 @@ done
 export AWS_REGION
 
 DATABASE_URL_PARAMETER="${DATABASE_URL_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/database-url}"
+EVALUATION_ACCESS_SECRET_PARAMETER="${EVALUATION_ACCESS_SECRET_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/evaluation-access-secret}"
 MODAL_PROXY_TOKEN_ID_PARAMETER="${MODAL_PROXY_TOKEN_ID_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/modal-proxy-token-id}"
 MODAL_PROXY_TOKEN_SECRET_PARAMETER="${MODAL_PROXY_TOKEN_SECRET_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/modal-proxy-token-secret}"
 
@@ -276,22 +281,29 @@ preflight() {
         full)
             for command in cargo docker git jq; do require_command "${command}"; done
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
+            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
             validate_secure_parameter "${MODAL_PROXY_TOKEN_ID_PARAMETER}"
             validate_secure_parameter "${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
             validate_modal_oidc_provider
             validate_transcription_endpoint
             validate_modal_endpoint
-            printf 'Database schema prerequisite: apply the current schema before deployment or deployed tests. This runner deliberately does not run migrations.\n'
+            printf 'Database schema prerequisite: the current review-job, pipeline-task, task-event, and WebSocket schemas must be applied before deployment or deployed tests. This runner deliberately does not run migrations.\n'
             if [[ -n "${AUDIO_FILE}" ]]; then validate_audio_file; fi
             ;;
-        review-submit|review-confirmation)
+        review-submit)
             require_command cargo
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
             printf 'Database schema prerequisite: the review-job schema must already be current.\n'
             ;;
+        review-confirmation)
+            require_command cargo
+            validate_secure_parameter "${DATABASE_URL_PARAMETER}"
+            printf 'Database schema prerequisite: the current review-job, pipeline-task, task-event, and WebSocket schemas must already be applied.\n'
+            ;;
         evaluation-ingress)
             for command in cargo jq; do require_command "${command}"; done
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
+            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
             printf 'Database schema prerequisite: the pipeline-task schema must already be current.\n'
             ;;
         audio-conversion)
@@ -317,6 +329,7 @@ preflight() {
         evaluation-e2e)
             for command in cargo jq; do require_command "${command}"; done
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
+            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
             validate_secure_parameter "${MODAL_PROXY_TOKEN_ID_PARAMETER}"
             validate_secure_parameter "${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
             validate_modal_oidc_provider
@@ -329,6 +342,7 @@ preflight() {
         evaluation-dispatch)
             for command in cargo jq; do require_command "${command}"; done
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
+            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
             validate_audio_file
             printf 'Database schema prerequisite: the pipeline-task schema must already be current.\n'
             ;;
@@ -343,6 +357,7 @@ set_terraform_vars() {
         -var="environment=${ENVIRONMENT}"
         -var="tenant_id=${TENANT_ID}"
         -var="database_parameter_name=${DATABASE_URL_PARAMETER}"
+        -var="evaluation_access_secret_parameter_name=${EVALUATION_ACCESS_SECRET_PARAMETER}"
         -var="modal_proxy_token_id_parameter_name=${MODAL_PROXY_TOKEN_ID_PARAMETER}"
         -var="modal_proxy_token_secret_parameter_name=${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
         -var="transcription_endpoint_url=${TRANSCRIPTION_ENDPOINT_URL}"
@@ -468,6 +483,15 @@ load_evaluation_environment() {
     load_pipeline_database_environment
 }
 
+load_review_confirmation_environment() {
+    load_api_endpoint
+    load_pipeline_database_environment
+    AUDIO_MODERATION_UPLOADS_BUCKET="$(terraform -chdir="${TERRAFORM_DIR}" output -raw uploads_bucket_name)"
+    AUDIO_MODERATION_ARTIFACTS_BUCKET="$(terraform -chdir="${TERRAFORM_DIR}" output -raw artifacts_bucket_name)"
+    AUDIO_MODERATION_STATE_MACHINE_ARN="$(terraform -chdir="${TERRAFORM_DIR}" output -raw audio_processing_state_machine_arn)"
+    export AUDIO_MODERATION_UPLOADS_BUCKET AUDIO_MODERATION_ARTIFACTS_BUCKET AUDIO_MODERATION_STATE_MACHINE_ARN
+}
+
 load_task_events_endpoint() {
     validate_task_events_endpoint
     AUDIO_MODERATION_TASK_EVENTS_ENDPOINT="${TASK_EVENTS_ENDPOINT}"
@@ -552,8 +576,8 @@ run_suite() {
             ;;
         review-confirmation)
             preflight review-confirmation
-            load_api_endpoint
-            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package submit-audio-lambda --test deployed confirms_uploaded_review_against_aws -- --ignored --nocapture
+            load_review_confirmation_environment
+            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package submit-audio-lambda --test deployed starts_uploaded_review_evaluation_against_aws -- --ignored --nocapture
             ;;
         evaluation-ingress)
             preflight evaluation-ingress

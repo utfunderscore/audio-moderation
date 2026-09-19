@@ -8,15 +8,20 @@ export interface WebSocketTaskEventsOptions {
 }
 
 /**
- * Real transport adapter, not wired into the demo yet.
+ * Stale transport adapter, not wired into the demo.
  *
- * Handshake (see task-events-lambda/src/lib.rs):
+ * The deployed handshake (see task-events-lambda/src/lib.rs) is:
  * 1. Open `wss://<stage>`.
- * 2. Send `{"action":"subscribe","taskId":<number>}`. API Gateway's route
- *    selection expression is `$request.body.action`; the handler reads `taskId`.
- * 3. Receive raw UTF-8 event-name frames. They may arrive as text or binary.
- *    Server-side replay-then-live cannot be distinguished per frame, so every
- *    frame is tagged `live`; the reducer already dedupes by name.
+ * 2. Obtain a one-time ticket from the authorized CreateTaskEventsTicket RPC.
+ * 3. Send `{"action":"subscribe","ticket":<ticket>}`. API Gateway's route
+ *    selection expression is `$request.body.action`.
+ *
+ * This adapter still sends `taskId` and cannot obtain a ticket, so it is not
+ * compatible with the deployed server. Its frame handling remains useful as a
+ * reference for the eventual implementation:
+ * - Receive raw UTF-8 event-name frames. They may arrive as text or binary.
+ * - Server-side replay-then-live cannot be distinguished per frame, so every
+ *   frame is tagged `live`; the reducer already dedupes by name.
  *
  * Delivery is at-least-once: callers must tolerate duplicates at the
  * replay/live boundary, exactly like `MockTaskEventsClient`.

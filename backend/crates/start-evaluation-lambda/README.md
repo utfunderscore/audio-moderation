@@ -1,5 +1,11 @@
 # Start evaluation Lambda
 
+## Request contract
+
+`StartEvaluation` requires an `idempotency-key` HTTP header containing a UUID. The
+same UUID with the same request replays its existing evaluation; reusing it with a
+different request is rejected.
+
 ## Deployed integration tests
 
 `tests/deployed.rs` is ignored by default. It calls the deployed Connect endpoint, reads the same PostgreSQL database used by the Lambda, and describes the resulting Step Functions executions. Run it through the repository-root `deployment-integration.sh` command rather than directly. It requires:
@@ -20,8 +26,8 @@ automatic resolution.
 For `evaluation-e2e`, the runner also resolves
 `pipeline_task_events_websocket_endpoint` as
 `AUDIO_MODERATION_TASK_EVENTS_ENDPOINT` and validates that it is a `wss://` URL.
-After StartEvaluation returns, the test subscribes one socket to its task and
-collects lifecycle events while it waits for the workflow. Event frames are plain
+After StartEvaluation returns, the test exchanges its evaluation access token for
+a one-time task-events ticket and subscribes one socket. Event frames are plain
 UTF-8 names and delivery is at-least-once, so the assertion requires all eight
 successful lifecycle names while tolerating duplicate frames around the
 replay/live boundary. It prints expected, observed, and persisted event history

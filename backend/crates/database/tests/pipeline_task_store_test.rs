@@ -2,9 +2,10 @@ mod common;
 
 use chrono::{DateTime, Utc};
 use database::{
-    ModerationResult, NewPipelineTask, PipelineTaskError, PipelineTaskOutcome, PipelineTaskStatus,
-    PipelineTaskStore,
+    DEFAULT_DISPATCH_LEASE, ModerationResult, NewPipelineTask, PipelineTaskError,
+    PipelineTaskOutcome, PipelineTaskStatus, PipelineTaskStore, RecordExecutionResult,
 };
+use uuid::Uuid;
 
 use common::TestDatabase;
 
@@ -43,7 +44,22 @@ async fn creates_ordered_inputs_and_replays_by_tenant_idempotency_key() {
     assert!(created.asr_task_id.is_none());
     assert!(!replayed.created);
     assert_eq!(replayed.task_id, created.task_id);
+    assert_eq!(replayed.evaluation_id, created.evaluation_id);
+    assert_eq!(created.evaluation_id.len(), 36);
     assert_eq!(replayed.audio_s3_uris, created.audio_s3_uris);
+
+    let details = store
+        .get_details(Uuid::parse_str(&created.evaluation_id).unwrap(), "tenant-a")
+        .await
+        .unwrap();
+    assert_eq!(details.task_id, created.task_id);
+    assert_eq!(details.audio_s3_uris, created.audio_s3_uris);
+    assert!(matches!(
+        store
+            .get_details(Uuid::parse_str(&created.evaluation_id).unwrap(), "tenant-b")
+            .await,
+        Err(PipelineTaskError::NotFound)
+    ));
 
     let step_statuses: (String, String, String) = sqlx::query_as(
         r#"
@@ -204,10 +220,13 @@ async fn recording_execution_releases_claim() {
     store.record_dispatch_failure(task.task_id).await.unwrap();
     store.claim_dispatch(task.task_id).await.unwrap().unwrap();
 
-    store
-        .record_execution(task.task_id, "arn:aws:states:execution:42")
-        .await
-        .unwrap();
+    assert_eq!(
+        store
+            .record_execution(task.task_id, "arn:aws:states:execution:42")
+            .await
+            .unwrap(),
+        RecordExecutionResult::Recorded
+    );
 
     assert_eq!(store.claim_dispatch(task.task_id).await.unwrap(), None);
     let row: (Option<String>, Option<DateTime<Utc>>) = sqlx::query_as(
@@ -223,6 +242,84 @@ async fn recording_execution_releases_claim() {
     .unwrap();
     assert_eq!(row.0.as_deref(), Some("arn:aws:states:execution:42"));
     assert!(row.1.is_none());
+}
+
+#[tokio::test]
+async fn records_the_same_execution_idempotently_and_rejects_conflicts() {
+    let database = TestDatabase::start().await;
+    let store = PipelineTaskStore::new(database.pool.clone());
+    let task = new_task(&store).await;
+
+    assert_eq!(
+        store
+            .record_execution(task.task_id, "arn:aws:states:execution:42")
+            .await
+            .unwrap(),
+        RecordExecutionResult::Recorded
+    );
+    assert_eq!(
+        store
+            .record_execution(task.task_id, "arn:aws:states:execution:42")
+            .await
+            .unwrap(),
+        RecordExecutionResult::AlreadyRecorded
+    );
+    assert!(matches!(
+        store
+            .record_execution(task.task_id, "arn:aws:states:execution:other")
+            .await,
+        Err(PipelineTaskError::ExecutionConflict { .. })
+    ));
+    assert!(matches!(
+        store
+            .record_execution(task.task_id + 1, "arn:aws:states:execution:42")
+            .await,
+        Err(PipelineTaskError::TaskNotFound(_))
+    ));
+
+    let terminal = store
+        .create_or_get(NewPipelineTask {
+            tenant_id: "tenant-lifecycle",
+            idempotency_key: "request-terminal-execution",
+            caller_reference: None,
+            audio_s3_uris: &["s3://uploads/terminal.wav".to_owned()],
+        })
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE pipeline_tasks SET outcome = 'FAILED', completed_at = NOW() WHERE task_id = $1",
+    )
+    .bind(terminal.task_id)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+    assert!(matches!(
+        store
+            .record_execution(terminal.task_id, "arn:aws:states:execution:terminal")
+            .await,
+        Err(PipelineTaskError::ExecutionNotRecordable(_))
+    ));
+}
+
+#[tokio::test]
+async fn reclaims_an_expired_dispatch_lease() {
+    let database = TestDatabase::start().await;
+    let store = PipelineTaskStore::new(database.pool.clone());
+    let task = new_task(&store).await;
+
+    assert_eq!(store.claim_dispatch(task.task_id).await.unwrap(), Some(1));
+    let expired_by_seconds = i64::try_from(DEFAULT_DISPATCH_LEASE.as_secs()).unwrap() + 1;
+    sqlx::query(
+        "UPDATE pipeline_tasks SET dispatch_started_at = NOW() - ($2 * INTERVAL '1 second') \
+         WHERE task_id = $1",
+    )
+    .bind(task.task_id)
+    .bind(expired_by_seconds)
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    assert_eq!(store.claim_dispatch(task.task_id).await.unwrap(), Some(2));
 }
 
 #[tokio::test]

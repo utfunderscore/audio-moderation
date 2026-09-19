@@ -27,14 +27,14 @@ impl TaskEventsWebSocket {
     /// Connects and subscribes this socket to exactly one pipeline task.
     pub async fn connect_and_subscribe(
         endpoint: &str,
-        task_id: i32,
+        ticket: &str,
         connect_timeout: Duration,
     ) -> Result<Self, Error> {
         ensure_rustls_crypto_provider();
         let (mut stream, _) = timeout(connect_timeout, connect_async(endpoint))
             .await
             .map_err(|_| timeout_error("WebSocket connection", connect_timeout))??;
-        let subscription = json!({ "action": "subscribe", "taskId": task_id }).to_string();
+        let subscription = json!({ "action": "subscribe", "ticket": ticket }).to_string();
         timeout(
             connect_timeout,
             stream.send(Message::Text(subscription.into())),

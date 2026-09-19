@@ -19,6 +19,7 @@ CREATE TYPE pipeline_callback_step AS ENUM (
 
 CREATE TABLE pipeline_tasks (
     task_id        SERIAL PRIMARY KEY,
+    evaluation_id  UUID NOT NULL DEFAULT gen_random_uuid(),
     tenant_id      TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
     caller_reference TEXT,
@@ -32,6 +33,8 @@ CREATE TABLE pipeline_tasks (
 
     CONSTRAINT pipeline_tasks_outcome_completion_consistent
         CHECK ((outcome IS NULL) = (completed_at IS NULL)),
+    CONSTRAINT pipeline_tasks_evaluation_id_unique
+        UNIQUE (evaluation_id),
     CONSTRAINT pipeline_tasks_idempotency_unique
         UNIQUE (tenant_id, idempotency_key)
 );

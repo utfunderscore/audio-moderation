@@ -8,3 +8,16 @@ CREATE TABLE pipeline_task_websocket_connections (
 
 CREATE INDEX idx_pipeline_task_websocket_connections_connection_id
     ON pipeline_task_websocket_connections (connection_id);
+
+CREATE TABLE pipeline_task_event_tickets (
+    ticket_hash CHAR(64) PRIMARY KEY,
+    task_id     INTEGER NOT NULL REFERENCES pipeline_tasks (task_id) ON DELETE CASCADE,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT pipeline_task_event_tickets_expiry_valid
+        CHECK (expires_at > created_at)
+);
+
+CREATE INDEX idx_pipeline_task_event_tickets_expiry
+    ON pipeline_task_event_tickets (expires_at);

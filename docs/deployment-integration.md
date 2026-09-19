@@ -26,17 +26,17 @@ AWS_PROFILE=admin ./deployment-integration.sh --help
 
 ## Business Flow Boundaries
 
-Review upload and evaluation are separate business flows:
+Review upload feeds the evaluation flow:
 
 ```text
-SubmitReview -> presigned S3 upload -> confirm-upload -> PENDING_PROCESSING
+SubmitReview -> presigned S3 upload -> confirm-upload -> Step Functions evaluation
 ```
 
 ```text
 StartEvaluation -> Step Functions -> audio conversion -> transcription -> moderation -> callbacks
 ```
 
-There is no review-to-evaluation integration. Do not describe `review-confirmation` as starting an evaluation, and do not construct a test that assumes it does.
+The upload notification creates an idempotent pipeline task and starts the evaluation. The review reaches `PROCESSING` after the Step Functions execution is recorded. Pipeline terminal outcomes are not synchronized back to `review_jobs` by the workflow; a later upload notification can observe an already-terminal task and update the review then. `review-confirmation` covers only the dispatch boundary (including the persisted task and execution input), not model completion or a terminal review-job status.
 
 ## Commands
 
@@ -54,7 +54,7 @@ Without a suite, `preflight` validates the complete deployment. Without a suite,
 | Suite | Coverage | Fixture | Status |
 |---|---|---|---|
 | `review-submit` | SubmitReview response and presigned upload details | None | Supported |
-| `review-confirmation` | SubmitReview, real S3 upload, S3 notification, and confirmation status | Generated WAV | Supported |
+| `review-confirmation` | SubmitReview, real S3 upload, persisted pipeline task, and Step Functions dispatch/input; second PUT observes no duplicate persisted dispatch effects | Generated WAV | Supported; does not establish delivery of the second S3 notification or wait for model completion |
 | `evaluation-ingress` | Validation, active leases, terminal retry behavior, and idempotency conflicts | Synthetic non-dispatched S3 URIs | Supported |
 | `evaluation-dispatch` | Seeded dispatch and retry through the production workflow | `--audio-file` | Supported; does not wait for completion |
 | `audio-conversion` | Direct synchronous audio-processing Lambda invocation and artifact creation | `--audio-file` | Supported |
@@ -69,7 +69,9 @@ The unsupported `transcription-caller`, `moderation-caller`, and `task-callback`
 `task-events` and `evaluation-e2e` resolve the Terraform
 `pipeline_task_events_websocket_endpoint` output into
 `AUDIO_MODERATION_TASK_EVENTS_ENDPOINT`. It must be a `wss://` URL. Task-event
-frames are plain UTF-8 event names for one task per socket. Delivery is
+frames are plain UTF-8 event names for one task per socket. A client first
+exchanges an authorized evaluation access token for a one-time ticket, then sends
+`{"action":"subscribe","ticket":<ticket>}` on the socket. Delivery is
 at-least-once: tests require every expected lifecycle name but tolerate duplicate
 frames at the replay/live subscription boundary.
 
@@ -80,7 +82,9 @@ The complete deployment and `evaluation-e2e` require:
 - AWS CLI credentials available through the local `admin` profile.
 - Docker, Cargo, Git, Terraform, and `jq`.
 - A reachable database with the current checked-in schema already applied.
-- SecureString parameters for the database URL, Modal token ID, and Modal token secret.
+- SecureString parameters for the database URL, evaluation access secret, Modal token ID,
+  and Modal token secret. The deployed start-evaluation Lambda requires the
+  evaluation access secret to contain at least 32 bytes.
 - The Modal OIDC provider in the target AWS account.
 - An HTTPS endpoint verified to accept this repository's Rust `TranscriptionRequest` contract. It defaults to the `transcription_endpoint_url` Terraform variable, so the runner can resolve it from Terraform output or the deployed transcription-caller instead of requiring `--transcription-endpoint-url`.
 - An HTTPS Modal base URL whose `/moderation/` route accepts this repository's `ModerationRequest` contract. Pass it with `--modal-endpoint-url`, or let the runner resolve `modal_endpoint_url` from Terraform or the deployed moderation-caller.
@@ -90,7 +94,15 @@ The complete deployment and `evaluation-e2e` require:
   `AUDIO_MODERATION_TASK_EVENTS_ENDPOINT` is explicitly set. `all task-events`
   and `all evaluation-e2e` defer this one prerequisite until after deployment.
 
-The runner validates prerequisites but deliberately does not run database migrations or contact either external endpoint.
+Preflight checks required SSM parameter existence/type but does not decrypt their
+values, validate the evaluation access secret's 32-byte minimum, run migrations,
+or verify database schema objects. It also does not contact either external
+endpoint.
+
+`review-confirmation` specifically needs the current review-job, pipeline-task,
+task-event, and WebSocket schemas. It loads the database URL, tenant, uploads and
+artifacts buckets, and evaluation state-machine ARN from the existing deployment so
+the test can inspect the persisted dispatch and call `DescribeExecution` directly.
 
 The callback test state machine and its IAM role are conditional Terraform resources. A normal Terraform apply leaves `enable_test_resources` at `false`; `deployment-integration.sh deploy` explicitly sets it to `true` for an integration environment.
 
@@ -240,7 +252,8 @@ ECR tags are immutable. If any repository already contains the tag, choose a new
 - Tests use unique identifiers to avoid idempotency collisions.
 - Evaluation fixtures use `reviews/integration-tests/<run-id>/...` and never end in `/source`, so they do not trigger confirm-upload.
 - `review-submit`, `review-confirmation`, and evaluation tests leave database rows for diagnosis.
-- `review-confirmation` leaves its uploaded review object for the bucket lifecycle policy.
+- `review-confirmation` leaves its uploaded object, asynchronous execution history,
+  database rows, and any generated evaluation artifact for diagnosis/lifecycle cleanup.
 - `evaluation-dispatch` retains its input fixtures because its production workflows continue asynchronously.
 - `task-callback` leaves Step Functions execution history.
 - `evaluation-e2e` leaves database rows, execution history, and generated evaluation artifacts.
