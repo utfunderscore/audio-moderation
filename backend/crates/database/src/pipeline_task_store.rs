@@ -1,6 +1,13 @@
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
+use std::time::Duration;
+use uuid::Uuid;
+
+/// A Lambda invocation has ten seconds to dispatch an execution. Keep the
+/// lease short enough that Lambda's asynchronous retry can reclaim a task when
+/// an invocation exits before persisting its Step Functions response.
+pub const DEFAULT_DISPATCH_LEASE: Duration = Duration::from_secs(30);
 
 /// Errors returned while accessing or dispatching persisted pipeline tasks.
 #[derive(Debug, thiserror::Error)]
@@ -10,6 +17,12 @@ pub enum PipelineTaskError {
 
     #[error("failed to record pipeline task execution")]
     RecordExecution(#[source] sqlx::Error),
+
+    #[error("pipeline task {task_id} already has a different execution ARN")]
+    ExecutionConflict { task_id: i32 },
+
+    #[error("pipeline task {0} cannot record an execution")]
+    ExecutionNotRecordable(i32),
 
     #[error("failed to record ASR task ID")]
     RecordAsrTask(#[source] sqlx::Error),
@@ -61,6 +74,12 @@ pub enum PipelineTaskError {
 
     #[error("moderation callback job ID does not match its task token")]
     ModerationJobConflict,
+
+    #[error("failed to retrieve pipeline task")]
+    Get(#[source] sqlx::Error),
+
+    #[error("pipeline task was not found")]
+    NotFound,
 }
 
 /// Scores produced by the moderation pipeline step.
@@ -95,6 +114,7 @@ pub struct CallbackAttempt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineTask {
     pub task_id: i32,
+    pub evaluation_id: String,
     pub tenant_id: String,
     pub idempotency_key: String,
     pub caller_reference: Option<String>,
@@ -108,6 +128,77 @@ pub struct PipelineTask {
     pub created: bool,
 }
 
+/// The outcome of persisting a Step Functions execution ARN.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordExecutionResult {
+    /// This call recorded the execution ARN and released the dispatch lease.
+    Recorded,
+    /// A concurrent or retried call had already recorded this exact ARN.
+    AlreadyRecorded,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineTaskDetails {
+    pub task_id: i32,
+    pub evaluation_id: Uuid,
+    pub caller_reference: Option<String>,
+    pub status: PipelineTaskStatus,
+    pub outcome: Option<PipelineTaskOutcome>,
+    pub audio_s3_uris: Vec<String>,
+    pub audio_processing: AudioProcessingTaskDetails,
+    pub transcription: TranscriptionTaskDetails,
+    pub moderation: ModerationTaskDetails,
+    pub events: Vec<PipelineTaskEventDetails>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineStepErrorDetails {
+    pub code: Option<String>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioProcessingTaskDetails {
+    pub status: PipelineStepStatus,
+    pub stitched_audio_s3_uri: Option<String>,
+    pub error: PipelineStepErrorDetails,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TranscriptionTaskDetails {
+    pub status: PipelineStepStatus,
+    pub external_task_id: Option<String>,
+    pub transcript: Option<String>,
+    pub error: PipelineStepErrorDetails,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModerationTaskDetails {
+    pub status: PipelineStepStatus,
+    pub external_task_id: Option<String>,
+    pub scores: Option<ModerationResult>,
+    pub error: PipelineStepErrorDetails,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct PipelineTaskEventDetails {
+    pub event_id: i64,
+    pub event_name: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Values required to create an idempotent pipeline task.
 pub struct NewPipelineTask<'a> {
     pub tenant_id: &'a str,
@@ -119,6 +210,7 @@ pub struct NewPipelineTask<'a> {
 #[derive(sqlx::FromRow)]
 struct PersistedPipelineTask {
     task_id: i32,
+    evaluation_id: String,
     tenant_id: String,
     idempotency_key: String,
     caller_reference: Option<String>,
@@ -127,6 +219,11 @@ struct PersistedPipelineTask {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     created: bool,
+}
+
+#[derive(sqlx::FromRow)]
+struct PersistedExecution {
+    execution_arn: Option<String>,
 }
 
 /// Workflow state derived from the pipeline outcome and individual step rows.
@@ -162,7 +259,7 @@ pub enum PipelineTaskOutcome {
     type_name = "pipeline_step_status",
     rename_all = "SCREAMING_SNAKE_CASE"
 )]
-enum PipelineStepStatus {
+pub enum PipelineStepStatus {
     Pending,
     Processing,
     Completed,
@@ -174,6 +271,44 @@ struct PipelineStepState {
     audio_status: PipelineStepStatus,
     transcription_status: PipelineStepStatus,
     moderation_status: PipelineStepStatus,
+}
+
+#[derive(sqlx::FromRow)]
+struct PipelineTaskDetailsRow {
+    task_id: i32,
+    evaluation_id: Uuid,
+    caller_reference: Option<String>,
+    outcome: Option<PipelineTaskOutcome>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    completed_at: Option<DateTime<Utc>>,
+    audio_status: PipelineStepStatus,
+    stitched_audio_s3_uri: Option<String>,
+    audio_error_code: Option<String>,
+    audio_error_message: Option<String>,
+    audio_started_at: Option<DateTime<Utc>>,
+    audio_completed_at: Option<DateTime<Utc>>,
+    audio_updated_at: DateTime<Utc>,
+    transcription_status: PipelineStepStatus,
+    transcription_external_task_id: Option<String>,
+    transcript: Option<String>,
+    transcription_error_code: Option<String>,
+    transcription_error_message: Option<String>,
+    transcription_started_at: Option<DateTime<Utc>>,
+    transcription_completed_at: Option<DateTime<Utc>>,
+    transcription_updated_at: DateTime<Utc>,
+    moderation_status: PipelineStepStatus,
+    moderation_external_task_id: Option<String>,
+    sexual: Option<f64>,
+    hate_or_discrimination: Option<f64>,
+    harassment_or_abuse: Option<f64>,
+    violence_or_threats: Option<f64>,
+    asking_for_pii: Option<f64>,
+    moderation_error_code: Option<String>,
+    moderation_error_message: Option<String>,
+    moderation_started_at: Option<DateTime<Utc>>,
+    moderation_completed_at: Option<DateTime<Utc>>,
+    moderation_updated_at: DateTime<Utc>,
 }
 
 impl PipelineStepState {
@@ -216,12 +351,177 @@ impl PipelineStepState {
 #[derive(Clone)]
 pub struct PipelineTaskStore {
     pool: PgPool,
+    dispatch_lease: Duration,
 }
 
 impl PipelineTaskStore {
     /// Creates a store using the application's PostgreSQL connection pool.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self::with_dispatch_lease(pool, DEFAULT_DISPATCH_LEASE)
+    }
+
+    /// Creates a store with an explicit dispatch lease duration.
+    ///
+    /// This is primarily useful to align a deployment with its Lambda retry
+    /// policy and to exercise expired-lease recovery in focused tests.
+    pub fn with_dispatch_lease(pool: PgPool, dispatch_lease: Duration) -> Self {
+        assert!(
+            !dispatch_lease.is_zero(),
+            "dispatch lease duration must be greater than zero"
+        );
+        Self {
+            pool,
+            dispatch_lease,
+        }
+    }
+
+    pub async fn get_details(
+        &self,
+        evaluation_id: Uuid,
+        tenant_id: &str,
+    ) -> Result<PipelineTaskDetails, PipelineTaskError> {
+        let mut transaction = self.pool.begin().await.map_err(PipelineTaskError::Get)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *transaction)
+            .await
+            .map_err(PipelineTaskError::Get)?;
+
+        let row = sqlx::query_as::<_, PipelineTaskDetailsRow>(
+            r#"
+                SELECT pipeline.task_id, pipeline.evaluation_id, pipeline.caller_reference,
+                    pipeline.outcome, pipeline.created_at, pipeline.updated_at,
+                    pipeline.completed_at,
+                    audio.status AS audio_status, audio.stitched_audio_s3_uri,
+                    audio.error_code AS audio_error_code,
+                    audio.error_message AS audio_error_message,
+                    audio.started_at AS audio_started_at,
+                    audio.completed_at AS audio_completed_at,
+                    audio.updated_at AS audio_updated_at,
+                    transcription.status AS transcription_status,
+                    transcription.external_task_id AS transcription_external_task_id,
+                    transcription.transcript,
+                    transcription.error_code AS transcription_error_code,
+                    transcription.error_message AS transcription_error_message,
+                    transcription.started_at AS transcription_started_at,
+                    transcription.completed_at AS transcription_completed_at,
+                    transcription.updated_at AS transcription_updated_at,
+                    moderation.status AS moderation_status,
+                    moderation.external_task_id AS moderation_external_task_id,
+                    moderation.sexual, moderation.hate_or_discrimination,
+                    moderation.harassment_or_abuse, moderation.violence_or_threats,
+                    moderation.asking_for_pii,
+                    moderation.error_code AS moderation_error_code,
+                    moderation.error_message AS moderation_error_message,
+                    moderation.started_at AS moderation_started_at,
+                    moderation.completed_at AS moderation_completed_at,
+                    moderation.updated_at AS moderation_updated_at
+                FROM pipeline_tasks pipeline
+                JOIN audio_processing_tasks audio USING (task_id)
+                JOIN transcription_tasks transcription USING (task_id)
+                JOIN moderation_tasks moderation USING (task_id)
+                WHERE pipeline.evaluation_id = $1 AND pipeline.tenant_id = $2
+            "#,
+        )
+        .bind(evaluation_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(PipelineTaskError::Get)?
+        .ok_or(PipelineTaskError::NotFound)?;
+
+        let audio_s3_uris = sqlx::query_scalar::<_, String>(
+            "SELECT audio_s3_uri FROM pipeline_task_inputs WHERE task_id = $1 ORDER BY sequence",
+        )
+        .bind(row.task_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(PipelineTaskError::Get)?;
+        let events = sqlx::query_as::<_, PipelineTaskEventDetails>(
+            r#"
+                SELECT event_id, event_name, created_at
+                FROM pipeline_task_events
+                WHERE task_id = $1
+                ORDER BY event_id
+            "#,
+        )
+        .bind(row.task_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(PipelineTaskError::Get)?;
+        transaction.commit().await.map_err(PipelineTaskError::Get)?;
+
+        let status = PipelineStepState {
+            audio_status: row.audio_status,
+            transcription_status: row.transcription_status,
+            moderation_status: row.moderation_status,
+        }
+        .status(row.outcome);
+        let scores = match (
+            row.sexual,
+            row.hate_or_discrimination,
+            row.harassment_or_abuse,
+            row.violence_or_threats,
+            row.asking_for_pii,
+        ) {
+            (Some(sexual), Some(hate), Some(harassment), Some(violence), Some(pii)) => {
+                Some(ModerationResult {
+                    sexual,
+                    hate_or_discrimination: hate,
+                    harassment_or_abuse: harassment,
+                    violence_or_threats: violence,
+                    asking_for_pii: pii,
+                })
+            }
+            _ => None,
+        };
+
+        Ok(PipelineTaskDetails {
+            task_id: row.task_id,
+            evaluation_id: row.evaluation_id,
+            caller_reference: row.caller_reference,
+            status,
+            outcome: row.outcome,
+            audio_s3_uris,
+            audio_processing: AudioProcessingTaskDetails {
+                status: row.audio_status,
+                stitched_audio_s3_uri: row.stitched_audio_s3_uri,
+                error: PipelineStepErrorDetails {
+                    code: row.audio_error_code,
+                    message: row.audio_error_message,
+                },
+                started_at: row.audio_started_at,
+                completed_at: row.audio_completed_at,
+                updated_at: row.audio_updated_at,
+            },
+            transcription: TranscriptionTaskDetails {
+                status: row.transcription_status,
+                external_task_id: row.transcription_external_task_id,
+                transcript: row.transcript,
+                error: PipelineStepErrorDetails {
+                    code: row.transcription_error_code,
+                    message: row.transcription_error_message,
+                },
+                started_at: row.transcription_started_at,
+                completed_at: row.transcription_completed_at,
+                updated_at: row.transcription_updated_at,
+            },
+            moderation: ModerationTaskDetails {
+                status: row.moderation_status,
+                external_task_id: row.moderation_external_task_id,
+                scores,
+                error: PipelineStepErrorDetails {
+                    code: row.moderation_error_code,
+                    message: row.moderation_error_message,
+                },
+                started_at: row.moderation_started_at,
+                completed_at: row.moderation_completed_at,
+                updated_at: row.moderation_updated_at,
+            },
+            events,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            completed_at: row.completed_at,
+        })
     }
 
     /// Creates a task and its ordered inputs, or returns the task for the same
@@ -244,7 +544,8 @@ impl PipelineTaskStore {
                 VALUES ($1, $2, $3)
                 ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
                     SET tenant_id = pipeline_tasks.tenant_id
-                RETURNING task_id, tenant_id, idempotency_key, caller_reference,
+                RETURNING task_id, evaluation_id::TEXT AS evaluation_id, tenant_id,
+                    idempotency_key, caller_reference,
                     execution_arn,
                     (
                         SELECT external_task_id
@@ -321,6 +622,7 @@ impl PipelineTaskStore {
 
         Ok(PipelineTask {
             task_id: persisted.task_id,
+            evaluation_id: persisted.evaluation_id,
             tenant_id: persisted.tenant_id,
             idempotency_key: persisted.idempotency_key,
             caller_reference: persisted.caller_reference,
@@ -335,27 +637,50 @@ impl PipelineTaskStore {
     }
 
     /// Records a successful Step Functions start and releases the dispatch lease.
+    ///
+    /// A retry that observes the same ARN is reported as `AlreadyRecorded`; a
+    /// different ARN or a task that cannot accept an execution is an error.
     pub async fn record_execution(
         &self,
         task_id: i32,
         execution_arn: &str,
-    ) -> Result<(), PipelineTaskError> {
-        sqlx::query(
+    ) -> Result<RecordExecutionResult, PipelineTaskError> {
+        let recorded = sqlx::query_scalar::<_, i32>(
             r#"
                 UPDATE pipeline_tasks
                 SET execution_arn = $2,
                     dispatch_started_at = NULL,
                     updated_at = NOW()
                 WHERE task_id = $1 AND execution_arn IS NULL AND outcome IS NULL
+                RETURNING task_id
             "#,
         )
         .bind(task_id)
         .bind(execution_arn)
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await
         .map_err(PipelineTaskError::RecordExecution)?;
 
-        Ok(())
+        if recorded.is_some() {
+            return Ok(RecordExecutionResult::Recorded);
+        }
+
+        let persisted = sqlx::query_as::<_, PersistedExecution>(
+            "SELECT execution_arn FROM pipeline_tasks WHERE task_id = $1",
+        )
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(PipelineTaskError::RecordExecution)?
+        .ok_or(PipelineTaskError::TaskNotFound(task_id))?;
+
+        match persisted.execution_arn {
+            Some(existing) if existing == execution_arn => {
+                Ok(RecordExecutionResult::AlreadyRecorded)
+            }
+            Some(_) => Err(PipelineTaskError::ExecutionConflict { task_id }),
+            None => Err(PipelineTaskError::ExecutionNotRecordable(task_id)),
+        }
     }
 
     /// Records the external ASR task ID returned for a pipeline task.
@@ -1300,6 +1625,8 @@ impl PipelineTaskStore {
     /// Returning `None` means another invocation owns the lease, the task was
     /// already dispatched, or the retry limit has been reached.
     pub async fn claim_dispatch(&self, task_id: i32) -> Result<Option<i32>, PipelineTaskError> {
+        let lease_seconds = i64::try_from(self.dispatch_lease.as_secs())
+            .expect("dispatch lease duration must fit in PostgreSQL BIGINT seconds");
         let attempt_count = sqlx::query_scalar::<_, i32>(
             r#"
                 UPDATE pipeline_tasks
@@ -1312,12 +1639,13 @@ impl PipelineTaskStore {
                     AND attempt_count < 3
                     AND (
                         dispatch_started_at IS NULL
-                        OR dispatch_started_at < NOW() - INTERVAL '5 minutes'
+                        OR dispatch_started_at < NOW() - ($2 * INTERVAL '1 second')
                     )
                 RETURNING attempt_count
             "#,
         )
         .bind(task_id)
+        .bind(lease_seconds)
         .fetch_optional(&self.pool)
         .await
         .map_err(PipelineTaskError::ClaimDispatch)?;

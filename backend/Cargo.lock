@@ -958,6 +958,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "buffa-types"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c7d518783cc611d9f144a71cf7dbc7b5588c5d16ff96ca43e74ac105ea3cb05"
+dependencies = [
+ "buffa",
+ "bytes",
+ "jiff",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1065,6 +1079,9 @@ name = "common"
 version = "0.1.0"
 dependencies = [
  "aws-sdk-ssm",
+ "base64 0.22.1",
+ "hmac 0.12.1",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -1073,13 +1090,16 @@ version = "0.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
+ "aws-sdk-sfn",
  "aws-sdk-ssm",
  "aws_lambda_events",
  "common",
  "database",
  "lambda_runtime",
+ "serde",
  "serde_json",
  "sqlx",
+ "task-event-emitter",
  "thiserror",
  "tokio",
  "tracing",
@@ -1330,6 +1350,7 @@ dependencies = [
  "testcontainers",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -3961,6 +3982,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "url",
+ "uuid",
  "webpki-roots 0.26.11",
 ]
 
@@ -4042,6 +4064,7 @@ dependencies = [
  "stringprep",
  "thiserror",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -4080,6 +4103,7 @@ dependencies = [
  "stringprep",
  "thiserror",
  "tracing",
+ "uuid",
  "whoami",
 ]
 
@@ -4106,6 +4130,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -4122,6 +4147,8 @@ dependencies = [
  "aws-sdk-sfn",
  "aws-sdk-ssm",
  "buffa",
+ "buffa-types",
+ "chrono",
  "common",
  "connectrpc",
  "connectrpc-build",
@@ -4190,6 +4217,7 @@ version = "0.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
+ "aws-sdk-sfn",
  "aws-sdk-ssm",
  "buffa",
  "common",
@@ -4291,6 +4319,7 @@ version = "0.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-ssm",
+ "chrono",
  "common",
  "database",
  "futures-util",

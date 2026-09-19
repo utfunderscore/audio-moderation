@@ -8,8 +8,9 @@ build = "build.rs"
 [dependencies]
 chrono = { version = "0.4.44", default-features = false, features = ["std"] }
 sha2 = "0.10.9"
-sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio-rustls"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
 thiserror = "2.0.18"
+uuid = "1.22.0"
 
 [dev-dependencies]
 testcontainers = "0.28.0"
