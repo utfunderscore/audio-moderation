@@ -1,32 +1,51 @@
-## Repository layout
+## Boundaries that matter
 
-- `backend/` — Rust Cargo workspace and all AWS Lambda crates. Run Cargo
-  commands from `backend/`.
-- `models/` — Python services deployed to Modal; see `models/README.md`.
-- `ui/` — front-end application (placeholder).
-- `proto/`, `migrations/`, `terraform/`, `docs/` — shared contracts, database
-  schema, infrastructure, and documentation at the repository root.
+- Component commands and implementation gotchas live in `backend/AGENTS.md`,
+  `models/AGENTS.md`, and `ui/AGENTS.md`. Cargo's workspace root is `backend/`.
+- Review upload notifications create an idempotent pipeline task and start the
+  Step Functions conversion → transcription → moderation flow. Public callers
+  can also start that flow with explicit audio object URIs through
+  `start-evaluation-lambda`.
+- `models/` is a separate Modal deployable. Rust callers and Python services share
+  JSON request/callback contracts, not code. Keep both sides in sync; terminal
+  callbacks go through `task-callback-lambda` to resume Step Functions.
+- Public RPC sources live in root `proto/`; database schema lives in `migrations/`.
+- `ui/` is a React/Vite browser-only demo, despite the root README's placeholder
+  description. `usePipelineRun` wires `MockTaskEventsClient`; transcripts and scores
+  are fixtures. Real task-event WebSocket frames contain event names only, with
+  at-least-once replay/live delivery. See `ui/README.md` for the transport boundary.
 
-## Migration Policy
+## Shared policies and local database
 
-This project has not reached production. Update existing migration files directly when changing the current schema; do not create incremental migrations solely to preserve a deployed migration history.
+- Do not run `git diff --check` (repository policy).
+- Pre-production policy: edit existing files in `migrations/` for current-schema
+  changes; do not add incremental migrations solely to preserve deployment history.
+- Root `compose.yaml` provides local PostgreSQL and a Flyway migration service;
+  database tests instead use their own isolated containers.
 
-## Verification Policy
+## Deployment and deployed tests
 
-Do not run `git diff --check`; it is not a useful verification step for this project.
-
-## Deployment
-
-All agents must use the local `admin` AWS CLI profile for AWS CLI, Terraform, and deployment commands. Prefix commands with `AWS_PROFILE=admin`; do not use the default profile or another AWS account.
-
-Use the canonical root command: `AWS_PROFILE=admin ./deployment-integration.sh`. Start with `AWS_PROFILE=admin ./deployment-integration.sh preflight`, then run `AWS_PROFILE=admin ./deployment-integration.sh deploy` for deployment only, `AWS_PROFILE=admin ./deployment-integration.sh test <suite>` for a deployed suite, or `AWS_PROFILE=admin ./deployment-integration.sh all <suite>` to deploy and run one suite. `--auto-approve` is available for unattended `deploy` and `all` commands.
-
-Follow `docs/deployment-integration.md` for agent safety rules, prerequisites, suite selection, common workflows, cleanup behavior, and failure handling.
-
-`deploy` bootstraps all eight ECR repositories, builds and pushes all eight Lambda images under one collision-checked immutable tag, explicitly passes every image tag to one full Terraform apply, and waits for all eight Lambdas. Never use a direct Terraform apply with `latest`; the eight image-tag variables are required. The command uses local Terraform state, so do not deploy concurrently from separate worktrees.
-
-The selectable deployed suites, in increasing scope, are `review-submit`, `review-confirmation`, `evaluation-ingress`, `evaluation-dispatch`, `audio-conversion`, `task-events`, `task-callback`, `transcription-caller`, `moderation-caller`, and `evaluation-e2e`. `task-events` checks WebSocket replay, live fanout, and disconnect cleanup using an isolated task. `evaluation-ingress` covers request validation, active leases, terminal retry behavior, and idempotency conflicts with synthetic non-dispatched S3 URIs. `evaluation-dispatch` covers seeded dispatch and retry through the production state machine; it requires `--audio-file`, does not wait for terminal execution, and retains its fixtures for asynchronous work. The isolated caller suites remain unsupported because they need dedicated safe task/token fixtures. `evaluation-e2e` waits for conversion, transcription, moderation, task callback delivery, terminal Step Functions success, and WebSocket lifecycle delivery.
-
-The full deployment and end-to-end suite require configured HTTPS transcription and moderation endpoints, Modal OIDC, three encrypted SSM parameters, and a database with the current schema. Configure the Modal moderation base URL with `--modal-endpoint-url URL`; the caller posts to its `/moderation/` route. Preflight validates configuration without printing parameter values and deliberately does not run migrations.
-
-Review upload and evaluation are separate business flows. There is no review-to-evaluation integration: review-confirmation checks the S3 upload notification flow, while evaluation suites submit explicit evaluation audio object URIs.
+- Prefix **all** AWS CLI, Terraform, and deployment commands with `AWS_PROFILE=admin`.
+- Read `docs/deployment-integration.md` before remote operations; it defines
+  approval requirements, prerequisites, suite selection, and fixture cleanup.
+  AWS deployment requires explicit user approval; Modal modifications require
+  explicit approval immediately before the command.
+- From the root, start with `AWS_PROFILE=admin ./deployment-integration.sh preflight`
+  (or `preflight <suite>` for focused testing). Then use the same prefix with
+  `deploy`, `test <suite>`, or `all <suite>`. `all` deploys all eight Lambdas even
+  for a narrow suite; use `test` for an existing deployment.
+- Use the runner rather than direct Terraform apply or ad hoc image publication.
+  It coordinates all eight images under one immutable tag; never use `latest`.
+  Terraform state is local: do not deploy concurrently from separate worktrees.
+- Preflight checks that required SSM parameters exist as `SecureString` values, but
+  neither decrypts them nor validates the evaluation secret's 32-byte minimum. It
+  also neither applies migrations nor verifies database schema objects, and does
+  not contact model endpoints. Full deploy and E2E need the current database
+  schema, Modal OIDC, four SecureString SSM parameters, and compatible HTTPS
+  endpoints. `--modal-endpoint-url` is a base URL; moderation appends
+  `/moderation/`. Never print decrypted secrets.
+- `task-callback`, `transcription-caller`, and `moderation-caller` isolated suites
+  are unsupported; do not bypass them with placeholder task tokens.
+  `evaluation-dispatch` requires `--audio-file`, returns before workflow completion,
+  and retains fixtures. `evaluation-e2e` waits for terminal workflow and WebSocket
+  lifecycle delivery; see the runbook for cleanup on success/failure.

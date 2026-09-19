@@ -14,6 +14,7 @@ export interface TaskFrame {
  */
 export interface TaskEventsClient {
   connect(): Promise<void>
+  /** Simulation seam; the deployed WebSocket instead consumes a one-time ticket. */
   subscribe(taskId: number): Promise<void>
   close(): void
   onFrame(handler: (frame: TaskFrame) => void): () => void

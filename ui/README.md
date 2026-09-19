@@ -61,10 +61,14 @@ src/
 ## Swapping in the real transport
 
 `src/transport/webSocketClient.ts` implements `TaskEventsClient` against the
-real `wss://` endpoint and documents the handshake
-(`{"action":"subscribe","taskId":<number>}`, raw UTF-8 event-name frames,
-replay-then-live, at-least-once). Wiring it up requires an API endpoint and CORS
-configuration, which are deliberately out of scope for this UI-only phase.
+real `wss://` endpoint shape, but it is not usable against the deployed server:
+it is unwired and still sends `{"action":"subscribe","taskId":<number>}`.
+The deployed handshake is to authorize an evaluation access token to the
+`CreateTaskEventsTicket` HTTP RPC, receive a one-time ticket, then send
+`{"action":"subscribe","ticket":<ticket>}`. Frames are raw UTF-8 event names
+with replay-then-live, at-least-once delivery. Updating the adapter and wiring it
+up require an API endpoint, authorization/token exchange, and CORS configuration;
+all remain deliberately out of scope for this UI-only phase.
 
 ## Icons and components
 
