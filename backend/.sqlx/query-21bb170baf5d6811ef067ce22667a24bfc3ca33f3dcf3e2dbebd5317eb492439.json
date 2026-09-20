@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE moderation_tasks SET sexual = 1.01 WHERE task_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "21bb170baf5d6811ef067ce22667a24bfc3ca33f3dcf3e2dbebd5317eb492439"
+}
