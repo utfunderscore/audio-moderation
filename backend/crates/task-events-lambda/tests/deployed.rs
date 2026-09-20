@@ -123,8 +123,7 @@ async fn replays_live_delivers_and_cleans_up_task_events()
     .await;
 
     if result.is_ok() {
-        sqlx::query("DELETE FROM pipeline_tasks WHERE task_id = $1")
-            .bind(task_id)
+        sqlx::query!("DELETE FROM pipeline_tasks WHERE task_id = $1", task_id)
             .execute(&environment.pool)
             .await?;
     } else {
@@ -192,10 +191,10 @@ async fn wait_for_subscription(
 ) -> Result<String, Box<dyn Error + Send + Sync>> {
     let deadline = Instant::now() + SUBSCRIPTION_TIMEOUT;
     loop {
-        if let Some(connection_id) = sqlx::query_scalar(
+        if let Some(connection_id) = sqlx::query_scalar!(
             "SELECT connection_id FROM pipeline_task_websocket_connections WHERE task_id = $1",
+            task_id,
         )
-        .bind(task_id)
         .fetch_optional(pool)
         .await?
         {
@@ -218,10 +217,10 @@ async fn wait_for_disconnect(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let deadline = Instant::now() + DISCONNECT_TIMEOUT;
     loop {
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM pipeline_task_websocket_connections WHERE connection_id = $1)",
+        let exists = sqlx::query_scalar!(
+            "SELECT EXISTS(SELECT 1 FROM pipeline_task_websocket_connections WHERE connection_id = $1) AS \"exists!\"",
+            connection_id,
         )
-        .bind(connection_id)
         .fetch_one(pool)
         .await?;
         if !exists {

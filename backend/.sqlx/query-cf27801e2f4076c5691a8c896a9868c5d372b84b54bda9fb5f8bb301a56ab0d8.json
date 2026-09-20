@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT task.outcome::TEXT AS outcome,\n                audio.status::TEXT AS \"audio_status!\",\n                audio.stitched_audio_s3_uri,\n                transcription.status::TEXT AS \"transcription_status!\",\n                transcription.external_task_id AS transcription_task_id,\n                transcription.transcript AS transcription,\n                moderation.status::TEXT AS \"moderation_status!\",\n                moderation.external_task_id AS moderation_task_id,\n                moderation.sexual,\n                moderation.hate_or_discrimination,\n                moderation.harassment_or_abuse,\n                moderation.violence_or_threats,\n                moderation.asking_for_pii\n            FROM pipeline_tasks task\n            JOIN audio_processing_tasks audio USING (task_id)\n            JOIN transcription_tasks transcription USING (task_id)\n            JOIN moderation_tasks moderation USING (task_id)\n            WHERE task.task_id = $1\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outcome",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "audio_status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "stitched_audio_s3_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "transcription_status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "transcription_task_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "transcription",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "moderation_status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "moderation_task_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "sexual",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 9,
+        "name": "hate_or_discrimination",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 10,
+        "name": "harassment_or_abuse",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 11,
+        "name": "violence_or_threats",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 12,
+        "name": "asking_for_pii",
+        "type_info": "Float8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      true,
+      null,
+      true,
+      true,
+      null,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "cf27801e2f4076c5691a8c896a9868c5d372b84b54bda9fb5f8bb301a56ab0d8"
+}

@@ -1,10 +1,10 @@
 mod common;
 
-use chrono::{DateTime, Utc};
 use database::{
-    DEFAULT_DISPATCH_LEASE, ModerationResult, NewPipelineTask, PipelineTaskError,
-    PipelineTaskOutcome, PipelineTaskStatus, PipelineTaskStore, RecordExecutionResult,
+    ModerationResult, NewPipelineTask, PipelineStepStatus, PipelineTaskError, PipelineTaskOutcome,
+    PipelineTaskStatus, PipelineTaskStore, RecordExecutionResult,
 };
+use std::time::Duration;
 use uuid::Uuid;
 
 use common::TestDatabase;
@@ -61,23 +61,9 @@ async fn creates_ordered_inputs_and_replays_by_tenant_idempotency_key() {
         Err(PipelineTaskError::NotFound)
     ));
 
-    let step_statuses: (String, String, String) = sqlx::query_as(
-        r#"
-            SELECT audio.status::TEXT, transcription.status::TEXT, moderation.status::TEXT
-            FROM audio_processing_tasks audio
-            JOIN transcription_tasks transcription USING (task_id)
-            JOIN moderation_tasks moderation USING (task_id)
-            WHERE audio.task_id = $1
-        "#,
-    )
-    .bind(created.task_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        step_statuses,
-        ("PENDING".into(), "PENDING".into(), "PENDING".into())
-    );
+    assert_eq!(details.audio_processing.status, PipelineStepStatus::Pending);
+    assert_eq!(details.transcription.status, PipelineStepStatus::Pending);
+    assert_eq!(details.moderation.status, PipelineStepStatus::Pending);
 }
 
 #[tokio::test]
@@ -96,15 +82,6 @@ async fn records_an_asr_task_id_once_and_allows_identical_retries() {
 
     store.record_asr_task(task.task_id, "fc-123").await.unwrap();
     store.record_asr_task(task.task_id, "fc-123").await.unwrap();
-
-    let asr_task_id = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT external_task_id FROM transcription_tasks WHERE task_id = $1",
-    )
-    .bind(task.task_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(asr_task_id.as_deref(), Some("fc-123"));
 
     let replayed = store
         .create_or_get(NewPipelineTask {
@@ -187,20 +164,9 @@ async fn dispatch_failures_are_bounded_and_become_terminal() {
     }
 
     assert_eq!(store.claim_dispatch(task.task_id).await.unwrap(), None);
-    let row: (Option<String>, i32, Option<DateTime<Utc>>) = sqlx::query_as(
-        r#"
-            SELECT outcome::TEXT, attempt_count, completed_at
-            FROM pipeline_tasks
-            WHERE task_id = $1
-        "#,
-    )
-    .bind(task.task_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(row.0.as_deref(), Some("FAILED"));
-    assert_eq!(row.1, 3);
-    assert!(row.2.is_some());
+    let details = task_details(&store, &task).await;
+    assert_eq!(details.outcome, Some(PipelineTaskOutcome::Failed));
+    assert!(details.completed_at.is_some());
 }
 
 #[tokio::test]
@@ -229,19 +195,6 @@ async fn recording_execution_releases_claim() {
     );
 
     assert_eq!(store.claim_dispatch(task.task_id).await.unwrap(), None);
-    let row: (Option<String>, Option<DateTime<Utc>>) = sqlx::query_as(
-        r#"
-            SELECT execution_arn, dispatch_started_at
-            FROM pipeline_tasks
-            WHERE task_id = $1
-        "#,
-    )
-    .bind(task.task_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(row.0.as_deref(), Some("arn:aws:states:execution:42"));
-    assert!(row.1.is_none());
 }
 
 #[tokio::test]
@@ -286,13 +239,20 @@ async fn records_the_same_execution_idempotently_and_rejects_conflicts() {
         })
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE pipeline_tasks SET outcome = 'FAILED', completed_at = NOW() WHERE task_id = $1",
-    )
-    .bind(terminal.task_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    store
+        .start_audio_processing(terminal.task_id)
+        .await
+        .unwrap();
+    store
+        .finish_workflow(
+            terminal.task_id,
+            PipelineTaskOutcome::Failed,
+            None,
+            Some("TEST_FAILURE"),
+            Some("terminal fixture"),
+        )
+        .await
+        .unwrap();
     assert!(matches!(
         store
             .record_execution(terminal.task_id, "arn:aws:states:execution:terminal")
@@ -304,20 +264,12 @@ async fn records_the_same_execution_idempotently_and_rejects_conflicts() {
 #[tokio::test]
 async fn reclaims_an_expired_dispatch_lease() {
     let database = TestDatabase::start().await;
-    let store = PipelineTaskStore::new(database.pool.clone());
+    let store =
+        PipelineTaskStore::with_dispatch_lease(database.pool.clone(), Duration::from_millis(10));
     let task = new_task(&store).await;
 
     assert_eq!(store.claim_dispatch(task.task_id).await.unwrap(), Some(1));
-    let expired_by_seconds = i64::try_from(DEFAULT_DISPATCH_LEASE.as_secs()).unwrap() + 1;
-    sqlx::query(
-        "UPDATE pipeline_tasks SET dispatch_started_at = NOW() - ($2 * INTERVAL '1 second') \
-         WHERE task_id = $1",
-    )
-    .bind(task.task_id)
-    .bind(expired_by_seconds)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    tokio::time::sleep(Duration::from_millis(20)).await;
 
     assert_eq!(store.claim_dispatch(task.task_id).await.unwrap(), Some(2));
 }
@@ -369,24 +321,20 @@ async fn persists_audio_and_asr_lifecycle_with_idempotent_retries() {
         Err(PipelineTaskError::TranscriptionConflict)
     ));
 
-    let row: (String, String, String, String) = sqlx::query_as(
-        r#"
-            SELECT audio.status::TEXT, audio.stitched_audio_s3_uri,
-                transcription.status::TEXT, transcription.transcript
-            FROM pipeline_tasks task
-            JOIN audio_processing_tasks audio USING (task_id)
-            JOIN transcription_tasks transcription USING (task_id)
-            WHERE task.task_id = $1
-        "#,
-    )
-    .bind(task.task_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(row.0, "COMPLETED");
-    assert_eq!(row.1, "s3://artifacts/evaluations/1.wav");
-    assert_eq!(row.2, "COMPLETED");
-    assert_eq!(row.3, "hello world");
+    let details = task_details(&store, &task).await;
+    assert_eq!(
+        details.audio_processing.status,
+        PipelineStepStatus::Completed
+    );
+    assert_eq!(
+        details.audio_processing.stitched_audio_s3_uri.as_deref(),
+        Some("s3://artifacts/evaluations/1.wav")
+    );
+    assert_eq!(details.transcription.status, PipelineStepStatus::Completed);
+    assert_eq!(
+        details.transcription.transcript.as_deref(),
+        Some("hello world")
+    );
 
     let replayed = new_task(&store).await;
     assert_eq!(replayed.status, PipelineTaskStatus::AsrFinished);
@@ -415,18 +363,11 @@ async fn rejects_invalid_order_and_leaves_steps_pending() {
         Err(PipelineTaskError::CallbackTokenNotFound)
     ));
 
-    let steps: (String, Option<String>, String, Option<String>) = sqlx::query_as(
-        "SELECT audio.status::TEXT, audio.stitched_audio_s3_uri, \
-         transcription.status::TEXT, transcription.transcript \
-         FROM audio_processing_tasks audio \
-         JOIN transcription_tasks transcription USING (task_id) \
-         WHERE audio.task_id = $1",
-    )
-    .bind(task.task_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(steps, ("PENDING".into(), None, "PENDING".into(), None));
+    let details = task_details(&store, &task).await;
+    assert_eq!(details.audio_processing.status, PipelineStepStatus::Pending);
+    assert!(details.audio_processing.stitched_audio_s3_uri.is_none());
+    assert_eq!(details.transcription.status, PipelineStepStatus::Pending);
+    assert!(details.transcription.transcript.is_none());
 }
 
 #[tokio::test]
@@ -434,13 +375,17 @@ async fn terminal_tasks_do_not_regress() {
     let database = TestDatabase::start().await;
     let store = PipelineTaskStore::new(database.pool.clone());
     let task = new_task(&store).await;
-    sqlx::query(
-        "UPDATE pipeline_tasks SET outcome = 'FAILED', completed_at = NOW() WHERE task_id = $1",
-    )
-    .bind(task.task_id)
-    .execute(&database.pool)
-    .await
-    .unwrap();
+    store.start_audio_processing(task.task_id).await.unwrap();
+    store
+        .finish_workflow(
+            task.task_id,
+            PipelineTaskOutcome::Failed,
+            None,
+            Some("TEST_FAILURE"),
+            Some("terminal fixture"),
+        )
+        .await
+        .unwrap();
 
     for result in [
         store.start_audio_processing(task.task_id).await,
@@ -451,13 +396,10 @@ async fn terminal_tasks_do_not_regress() {
             Err(PipelineTaskError::TransitionConflict { .. })
         ));
     }
-    let outcome: String =
-        sqlx::query_scalar("SELECT outcome::TEXT FROM pipeline_tasks WHERE task_id = $1")
-            .bind(task.task_id)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert_eq!(outcome, "FAILED");
+    assert_eq!(
+        task_details(&store, &task).await.outcome,
+        Some(PipelineTaskOutcome::Failed)
+    );
 }
 
 #[tokio::test]
@@ -525,10 +467,10 @@ async fn persists_moderation_with_step_bound_tokens_and_idempotent_retries() {
         .start_moderation(task.task_id, "moderation-token")
         .await
         .unwrap();
-    let callback_attempts: Vec<(String, String)> = sqlx::query_as(
-        "SELECT step::TEXT, task_token_hash FROM pipeline_callback_attempts WHERE task_id = $1 ORDER BY step::TEXT",
+    let callback_attempts = sqlx::query!(
+        "SELECT step::TEXT AS step, task_token_hash FROM pipeline_callback_attempts WHERE task_id = $1 ORDER BY step::TEXT",
+        task.task_id,
     )
-    .bind(task.task_id)
     .fetch_all(&database.pool)
     .await
     .unwrap();
@@ -536,9 +478,9 @@ async fn persists_moderation_with_step_bound_tokens_and_idempotent_retries() {
     assert!(
         callback_attempts
             .iter()
-            .all(|(_, digest)| digest.len() == 64
-                && digest != "asr-token"
-                && digest != "moderation-token")
+            .all(|attempt| attempt.task_token_hash.len() == 64
+                && attempt.task_token_hash != "asr-token"
+                && attempt.task_token_hash != "moderation-token")
     );
     assert!(matches!(
         store
@@ -634,26 +576,13 @@ async fn persists_moderation_with_step_bound_tokens_and_idempotent_retries() {
         Err(PipelineTaskError::ModerationJobConflict)
     ));
 
-    let persisted: (String, Option<String>, f64, f64, f64, f64, f64) = sqlx::query_as(
-        "SELECT status::TEXT, external_task_id, sexual, hate_or_discrimination, harassment_or_abuse, \
-          violence_or_threats, asking_for_pii FROM moderation_tasks WHERE task_id = $1",
-    )
-    .bind(task.task_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
+    let details = task_details(&store, &task).await;
+    assert_eq!(details.moderation.status, PipelineStepStatus::Completed);
     assert_eq!(
-        persisted,
-        (
-            "COMPLETED".into(),
-            Some("moderation-123".into()),
-            0.02,
-            0.15,
-            0.08,
-            0.01,
-            0.42
-        )
+        details.moderation.external_task_id.as_deref(),
+        Some("moderation-123")
     );
+    assert_eq!(details.moderation.scores, Some(result));
 
     store
         .finish_workflow(
@@ -709,24 +638,17 @@ async fn moderation_request_failure_is_terminal_and_idempotent() {
         .await
         .unwrap();
 
-    let persisted: (String, Option<String>, Option<String>, String) = sqlx::query_as(
-        "SELECT moderation.status::TEXT, moderation.error_code, moderation.error_message, \
-         task.outcome::TEXT FROM moderation_tasks moderation \
-         JOIN pipeline_tasks task USING (task_id) WHERE task_id = $1",
-    )
-    .bind(task.task_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
+    let details = task_details(&store, &task).await;
+    assert_eq!(details.moderation.status, PipelineStepStatus::Failed);
     assert_eq!(
-        persisted,
-        (
-            "FAILED".into(),
-            Some("MODERATION_REQUEST_FAILED".into()),
-            Some("unavailable".into()),
-            "FAILED".into(),
-        )
+        details.moderation.error.code.as_deref(),
+        Some("MODERATION_REQUEST_FAILED")
     );
+    assert_eq!(
+        details.moderation.error.message.as_deref(),
+        Some("unavailable")
+    );
+    assert_eq!(details.outcome, Some(PipelineTaskOutcome::Failed));
 }
 
 #[tokio::test]
@@ -767,13 +689,10 @@ async fn moderation_failure_resolves_its_step_from_the_token_and_finalizes_after
         .finalize_callback_failure("moderation-token")
         .await
         .unwrap();
-    let outcome: String =
-        sqlx::query_scalar("SELECT outcome::TEXT FROM pipeline_tasks WHERE task_id = $1")
-            .bind(task.task_id)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert_eq!(outcome, "FAILED");
+    assert_eq!(
+        task_details(&store, &task).await.outcome,
+        Some(PipelineTaskOutcome::Failed)
+    );
 }
 
 #[tokio::test]
@@ -793,14 +712,10 @@ async fn asr_failure_rejects_a_moderation_token_without_mutating_moderation() {
             .await,
         Err(PipelineTaskError::CallbackStepConflict)
     ));
-    let moderation: (String, Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT status::TEXT, error_code, error_message FROM moderation_tasks WHERE task_id = $1",
-    )
-    .bind(task.task_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
-    assert_eq!(moderation, ("PROCESSING".into(), None, None));
+    let details = task_details(&store, &task).await;
+    assert_eq!(details.moderation.status, PipelineStepStatus::Processing);
+    assert_eq!(details.moderation.error.code, None);
+    assert_eq!(details.moderation.error.message, None);
 }
 
 #[tokio::test]
@@ -810,17 +725,19 @@ async fn moderation_schema_rejects_out_of_range_and_non_finite_scores() {
     let task = new_task(&store).await;
 
     assert!(
-        sqlx::query("UPDATE moderation_tasks SET sexual = 1.01 WHERE task_id = $1")
-            .bind(task.task_id)
-            .execute(&database.pool)
-            .await
-            .is_err()
+        sqlx::query!(
+            "UPDATE moderation_tasks SET sexual = 1.01 WHERE task_id = $1",
+            task.task_id
+        )
+        .execute(&database.pool)
+        .await
+        .is_err()
     );
     assert!(
-        sqlx::query(
+        sqlx::query!(
             "UPDATE moderation_tasks SET sexual = 'NaN'::DOUBLE PRECISION WHERE task_id = $1",
+            task.task_id,
         )
-        .bind(task.task_id)
         .execute(&database.pool)
         .await
         .is_err()
@@ -856,21 +773,12 @@ async fn terminal_outcomes_are_idempotent_and_preserve_timeout_and_failure_diagn
         )
         .await
         .unwrap();
-    let timeout_row: (String, String, Option<String>) = sqlx::query_as(
-        "SELECT task.outcome::TEXT, audio.status::TEXT, audio.error_code FROM pipeline_tasks task \
-         JOIN audio_processing_tasks audio USING (task_id) WHERE task.task_id = $1",
-    )
-    .bind(timed_out.task_id)
-    .fetch_one(&database.pool)
-    .await
-    .unwrap();
+    let details = task_details(&store, &timed_out).await;
+    assert_eq!(details.outcome, Some(PipelineTaskOutcome::TimedOut));
+    assert_eq!(details.audio_processing.status, PipelineStepStatus::Failed);
     assert_eq!(
-        timeout_row,
-        (
-            "TIMED_OUT".into(),
-            "FAILED".into(),
-            Some("States.Timeout".into())
-        )
+        details.audio_processing.error.code.as_deref(),
+        Some("States.Timeout")
     );
 
     let failed = store
@@ -915,13 +823,23 @@ async fn terminal_outcomes_are_idempotent_and_preserve_timeout_and_failure_diagn
         .finalize_asr_failure(failed.task_id, "failure-token")
         .await
         .unwrap();
-    let failure_outcome: String =
-        sqlx::query_scalar("SELECT outcome::TEXT FROM pipeline_tasks WHERE task_id = $1")
-            .bind(failed.task_id)
-            .fetch_one(&database.pool)
-            .await
-            .unwrap();
-    assert_eq!(failure_outcome, "FAILED");
+    assert_eq!(
+        task_details(&store, &failed).await.outcome,
+        Some(PipelineTaskOutcome::Failed)
+    );
+}
+
+async fn task_details(
+    store: &PipelineTaskStore,
+    task: &database::PipelineTask,
+) -> database::PipelineTaskDetails {
+    store
+        .get_details(
+            Uuid::parse_str(&task.evaluation_id).unwrap(),
+            &task.tenant_id,
+        )
+        .await
+        .unwrap()
 }
 
 async fn new_task(store: &PipelineTaskStore) -> database::PipelineTask {

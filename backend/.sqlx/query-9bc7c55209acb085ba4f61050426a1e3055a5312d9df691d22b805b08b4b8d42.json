@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT task_id, evaluation_id::TEXT AS \"evaluation_id!\", caller_reference,\n                execution_arn, attempt_count, dispatch_started_at IS NOT NULL AS \"active_lease!\"\n            FROM pipeline_tasks\n            WHERE tenant_id = $1 AND idempotency_key = $2\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "task_id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "evaluation_id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "caller_reference",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "execution_arn",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "attempt_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "active_lease!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      true,
+      true,
+      false,
+      null
+    ]
+  },
+  "hash": "9bc7c55209acb085ba4f61050426a1e3055a5312d9df691d22b805b08b4b8d42"
+}

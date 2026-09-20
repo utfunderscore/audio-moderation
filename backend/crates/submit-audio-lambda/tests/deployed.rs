@@ -358,15 +358,16 @@ async fn processing_report(
     pool: &PgPool,
     task_id: i32,
 ) -> Result<ProcessingReportRow, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as!(
+        ProcessingReportRow,
         r#"
             SELECT task.outcome::TEXT AS outcome,
-                audio.status::TEXT AS audio_status,
+                audio.status::TEXT AS "audio_status!",
                 audio.stitched_audio_s3_uri,
-                transcription.status::TEXT AS transcription_status,
+                transcription.status::TEXT AS "transcription_status!",
                 transcription.external_task_id AS transcription_task_id,
                 transcription.transcript AS transcription,
-                moderation.status::TEXT AS moderation_status,
+                moderation.status::TEXT AS "moderation_status!",
                 moderation.external_task_id AS moderation_task_id,
                 moderation.sexual,
                 moderation.hate_or_discrimination,
@@ -379,8 +380,8 @@ async fn processing_report(
             JOIN moderation_tasks moderation USING (task_id)
             WHERE task.task_id = $1
         "#,
+        task_id,
     )
-    .bind(task_id)
     .fetch_one(pool)
     .await
 }
@@ -480,10 +481,10 @@ async fn assert_durable_lifecycle(
     pool: &PgPool,
     task_id: i32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let events: Vec<String> = sqlx::query_scalar(
+    let events = sqlx::query_scalar!(
         "SELECT event_name FROM pipeline_task_events WHERE task_id = $1 ORDER BY event_id",
+        task_id,
     )
-    .bind(task_id)
     .fetch_all(pool)
     .await?;
     let missing: Vec<_> = SUCCESSFUL_LIFECYCLE_EVENTS
@@ -633,25 +634,26 @@ async fn matching_tasks(
     tenant_id: &str,
     pipeline_key: &str,
 ) -> Result<Vec<StoredPipelineTask>, sqlx::Error> {
-    sqlx::query_as(
+    sqlx::query_as!(
+        StoredPipelineTask,
         r#"
-            SELECT task_id, evaluation_id::TEXT AS evaluation_id, caller_reference,
-                execution_arn, attempt_count, dispatch_started_at IS NOT NULL AS active_lease
+            SELECT task_id, evaluation_id::TEXT AS "evaluation_id!", caller_reference,
+                execution_arn, attempt_count, dispatch_started_at IS NOT NULL AS "active_lease!"
             FROM pipeline_tasks
             WHERE tenant_id = $1 AND idempotency_key = $2
         "#,
+        tenant_id,
+        pipeline_key,
     )
-    .bind(tenant_id)
-    .bind(pipeline_key)
     .fetch_all(pool)
     .await
 }
 
 async fn stored_inputs(pool: &PgPool, task_id: i32) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
+    sqlx::query_scalar!(
         "SELECT audio_s3_uri FROM pipeline_task_inputs WHERE task_id = $1 ORDER BY sequence",
+        task_id,
     )
-    .bind(task_id)
     .fetch_all(pool)
     .await
 }
@@ -662,11 +664,11 @@ async fn review_input_path(
     review_job_id: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let review_job_id = review_job_id.parse::<i32>()?;
-    sqlx::query_scalar(
+    sqlx::query_scalar!(
         "SELECT input_file_path FROM review_jobs WHERE job_id = $1 AND tenant_id = $2",
+        review_job_id,
+        tenant_id,
     )
-    .bind(review_job_id)
-    .bind(tenant_id)
     .fetch_optional(pool)
     .await?
     .ok_or_else(|| IoError::other(format!("review job {review_job_id} was not persisted")))

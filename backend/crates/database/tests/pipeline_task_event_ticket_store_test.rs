@@ -48,20 +48,13 @@ async fn rejects_expired_and_unknown_tickets() {
         })
         .await
         .unwrap();
-    let pool = database.pool.clone();
     let tickets = PipelineTaskEventTicketStore::new(database.pool);
 
     tickets
-        .create(task.task_id, "expired-ticket", Duration::minutes(1))
+        .create(task.task_id, "expired-ticket", Duration::milliseconds(10))
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE pipeline_task_event_tickets SET created_at = NOW() - INTERVAL '2 seconds', expires_at = NOW() - INTERVAL '1 second' WHERE task_id = $1",
-    )
-    .bind(task.task_id)
-    .execute(&pool)
-    .await
-    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
     assert!(matches!(
         tickets.consume("expired-ticket").await,

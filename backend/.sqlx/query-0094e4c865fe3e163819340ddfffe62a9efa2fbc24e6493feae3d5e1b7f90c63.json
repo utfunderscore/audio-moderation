@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE moderation_tasks SET sexual = 'NaN'::DOUBLE PRECISION WHERE task_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0094e4c865fe3e163819340ddfffe62a9efa2fbc24e6493feae3d5e1b7f90c63"
+}
