@@ -107,6 +107,9 @@ to the `task-events` Lambda. Terraform updates the API, stage, Lambda integratio
 invocation permission, and the management-API permissions used to send event frames
 back to connected clients. The `subscribe` route accepts a one-time ticket minted
 by the authorized `CreateTaskEventsTicket` HTTP RPC; it does not accept a task ID.
+Review-originated callers use the expiring review capability returned by
+`SubmitReview`: poll `GetReview` until `evaluationId` is present, then pass that
+capability to `GetEvaluation` or `CreateTaskEventsTicket`.
 
 ## Workflow and event updates
 
@@ -218,7 +221,6 @@ AWS_PROFILE=admin ./deployment-integration.sh test review-submit
 
 AWS_PROFILE=admin ./deployment-integration.sh test review-confirmation
 
-AWS_PROFILE=admin ./deployment-integration.sh test evaluation-ingress
 ```
 
 ### Test audio conversion
@@ -233,8 +235,9 @@ AWS_PROFILE=admin ./deployment-integration.sh test audio-conversion \
 
 ### Run the complete evaluation flow
 
-Run the existing deployment through audio processing, transcription, moderation,
-callbacks, terminal workflow handling, and WebSocket lifecycle delivery:
+Run the existing deployment from `SubmitReview` through its presigned real-audio
+upload, S3 notification, audio processing, transcription, moderation, callbacks,
+and terminal durable persistence assertions. It does not use WebSocket delivery:
 
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh test evaluation-e2e \

@@ -1,6 +1,6 @@
 mod common;
 
-use database::{NewReviewJob, ReviewJobStatus, ReviewJobStore};
+use database::{NewPipelineTask, NewReviewJob, PipelineTaskStore, ReviewJobStatus, ReviewJobStore};
 
 use common::TestDatabase;
 
@@ -81,6 +81,55 @@ async fn upload_completion_is_idempotent_and_does_not_move_status_backwards() {
     assert!(
         store
             .mark_upload_complete(&job.input_file_path, "tenant-b")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn details_expose_only_the_same_tenant_linked_evaluation() {
+    let database = TestDatabase::start().await;
+    let reviews = ReviewJobStore::new(database.pool.clone());
+    let pipelines = PipelineTaskStore::new(database.pool.clone());
+    let review = reviews
+        .create_or_get(NewReviewJob {
+            tenant_id: "tenant-a",
+            idempotency_key: Some("request-1"),
+        })
+        .await
+        .unwrap();
+
+    let before = reviews
+        .get_details(review.job_id, "tenant-a")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.evaluation_id, None);
+
+    let caller_reference = format!("review-job:{}", review.job_id);
+    let pipeline = pipelines
+        .create_or_get(NewPipelineTask {
+            tenant_id: "tenant-a",
+            idempotency_key: "review-upload:1",
+            caller_reference: Some(&caller_reference),
+            audio_s3_uris: &["s3://uploads/reviews/1/source".to_owned()],
+        })
+        .await
+        .unwrap();
+    let after = reviews
+        .get_details(review.job_id, "tenant-a")
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        after.evaluation_id.unwrap().to_string(),
+        pipeline.evaluation_id
+    );
+    assert!(
+        reviews
+            .get_details(review.job_id, "tenant-b")
             .await
             .unwrap()
             .is_none()

@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use uuid::Uuid;
 
 /// Errors returned while accessing persisted review jobs.
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +29,13 @@ pub struct ReviewJob {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub created: bool,
+}
+
+/// Caller-visible review state and its asynchronously-created evaluation linkage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewJobDetails {
+    pub job: ReviewJob,
+    pub evaluation_id: Option<Uuid>,
 }
 
 /// Values required to create a review job.
@@ -114,6 +122,63 @@ impl ReviewJobStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(DatabaseError::Get)
+    }
+
+    /// Gets a tenant-scoped review and the evaluation created for its upload, if any.
+    pub async fn get_details(
+        &self,
+        job_id: i32,
+        tenant_id: &str,
+    ) -> Result<Option<ReviewJobDetails>, DatabaseError> {
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            job_id: i32,
+            tenant_id: String,
+            idempotency_key: Option<String>,
+            status: ReviewJobStatus,
+            input_file_path: String,
+            created_at: DateTime<Utc>,
+            updated_at: DateTime<Utc>,
+            evaluation_id: Option<Uuid>,
+        }
+
+        let row = sqlx::query_as::<_, Row>(
+            r#"
+                SELECT review.job_id, review.tenant_id, review.idempotency_key,
+                    CASE
+                        WHEN pipeline.outcome = 'SUCCEEDED' THEN 'COMPLETED'::review_job_status
+                        WHEN pipeline.outcome IS NOT NULL THEN 'ERROR'::review_job_status
+                        ELSE review.status
+                    END AS status,
+                    review.input_file_path, review.created_at,
+                    GREATEST(review.updated_at, COALESCE(pipeline.updated_at, review.updated_at)) AS updated_at,
+                    pipeline.evaluation_id
+                FROM review_jobs review
+                LEFT JOIN pipeline_tasks pipeline
+                    ON pipeline.tenant_id = review.tenant_id
+                    AND pipeline.caller_reference = 'review-job:' || review.job_id::TEXT
+                WHERE review.job_id = $1 AND review.tenant_id = $2
+            "#,
+        )
+        .bind(job_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DatabaseError::Get)?;
+
+        Ok(row.map(|row| ReviewJobDetails {
+            job: ReviewJob {
+                job_id: row.job_id,
+                tenant_id: row.tenant_id,
+                idempotency_key: row.idempotency_key,
+                status: row.status,
+                input_file_path: row.input_file_path,
+                created_at: row.created_at,
+                updated_at: row.updated_at,
+                created: true,
+            },
+            evaluation_id: row.evaluation_id,
+        }))
     }
 
     /// Updates a job's workflow status and returns the updated row.

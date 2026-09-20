@@ -20,15 +20,17 @@ Run from `ui/`:
   `MockTaskEventsClient`; selecting a file does not upload it or start AWS work.
   Transcripts and moderation scores come from `src/transport/scenarios.ts`.
 - `src/transport/client.ts` defines the transport interface.
-  The deployed protocol first exchanges an authorized evaluation access token for
-  a one-time task-events ticket, then subscribes with
+  The deployed review protocol polls `GetReview` with the short-lived review access
+  token returned by `SubmitReview`. Once `evaluationId` appears, that same token can
+  call `GetEvaluation` and request a one-time task-events ticket, then the client
+  subscribes with
   `{"action":"subscribe","ticket":<ticket>}`. Incoming frames are raw UTF-8
   event names, not JSON results; replay/live delivery can duplicate events.
   `webSocketClient.ts` is unwired and stale: it still sends `taskId`, cannot mint a
   ticket, and therefore cannot subscribe to the deployed server. It also cannot
   distinguish replay from live frames.
 - Keep lifecycle transitions in `src/domain/reducer.ts`: it seeds from the
-  StartEvaluation status and handles duplicate/out-of-order events without
+  initial persisted pipeline status and handles duplicate/out-of-order events without
   regressing stages. Preserve unknown-event handling when extending the protocol.
 - `@/` resolves to `src/` in both Vite and Vitest. Vendored shadcn components
   live in `src/components/ui/`; demo-specific views live in `components/demo/`.

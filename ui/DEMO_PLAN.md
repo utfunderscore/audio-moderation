@@ -322,7 +322,7 @@ correctness lives.
 
 ## 10. Out of scope (recorded for later)
 
-- Real `StartEvaluation` / `SubmitReview` calls, S3 upload, CORS, and Terraform.
+- Real `SubmitReview` calls, S3 upload, CORS, and Terraform.
 - Real `WebSocketTaskEventsClient` wiring and reconnect/backoff.
 - Reading transcript or moderation scores — the public API has no read RPC today;
   the UI will not invent one. If the demo later needs results, that is a backend

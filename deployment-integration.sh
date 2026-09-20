@@ -42,20 +42,18 @@ Commands:
   all [suite]        Deploy, then run a suite (default: evaluation-e2e).
 
 Suites, ordered from isolated/cheap to full:
-  review-submit          SubmitReview creates an awaiting-upload review.
+  review-submit          SubmitReview returns upload/review access and GetReview reports awaiting upload.
   review-confirmation    A presigned source upload creates one pipeline task and dispatches its evaluation.
-  evaluation-ingress     StartEvaluation validation, lease/terminal retry behavior, and
-                         idempotency conflicts, with synthetic non-dispatched audio URIs.
-  evaluation-dispatch    Seeded dispatch and retry through the production workflow. Requires
-                         an audio fixture; executions continue asynchronously.
+  evaluation-ingress     Unsupported: StartEvaluation ingress was retired; submit a review instead.
+  evaluation-dispatch    Unsupported: StartEvaluation dispatch was retired; use review-confirmation.
   audio-conversion       Direct synchronous audio-processing Lambda invocation.
   task-events            WebSocket task-event replay, live delivery, and disconnect cleanup.
   task-callback          Unsupported: requires an ASR-created persisted callback attempt.
   transcription-caller   Unsupported: requires a compatible external transcription API and
                           a safe task-token/task fixture harness that does not yet exist.
   moderation-caller      Unsupported: requires completed transcription and task-token fixtures.
-  evaluation-e2e         StartEvaluation through conversion, transcription, moderation,
-                          callbacks, and terminal workflow completion.
+  evaluation-e2e         SubmitReview upload notification through conversion, transcription,
+                         moderation, callbacks, and terminal workflow completion.
 
 Options:
   --region REGION                         AWS region (default: eu-west-2)
@@ -73,7 +71,7 @@ Options:
                                             variable / deployed transcription-caller)
   --modal-workspace-id ID                 Modal workspace ID
   --modal-endpoint-url URL                Base URL for the Modal moderation API
-  --audio-file FILE                       Readable audio fixture for audio-conversion or e2e
+  --audio-file FILE                       Readable audio fixture for audio-conversion or evaluation-e2e
   --image-tag TAG                         Immutable image tag (deploy only; default is git SHA
                                             plus UTC timestamp)
   --auto-approve                          Skip Terraform approval prompts (deploy/all only)
@@ -266,6 +264,16 @@ validate_task_events_endpoint() {
 preflight() {
     local target_suite="${1:-full}"
     local allow_missing_deployed_endpoint="${2:-false}"
+    case "${target_suite}" in
+        evaluation-ingress)
+            printf 'evaluation-ingress is unsupported: StartEvaluation was retired. Use review-submit, review-confirmation, or evaluation-e2e.\n' >&2
+            exit 1
+            ;;
+        evaluation-dispatch)
+            printf 'evaluation-dispatch is unsupported: StartEvaluation was retired. Use review-confirmation for dispatch-only coverage.\n' >&2
+            exit 1
+            ;;
+    esac
     require_command aws
     require_command terraform
     ACCOUNT_ID="$(aws sts get-caller-identity --region "${AWS_REGION}" --query Account --output text)"
@@ -300,12 +308,6 @@ preflight() {
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
             printf 'Database schema prerequisite: the current review-job, pipeline-task, task-event, and WebSocket schemas must already be applied.\n'
             ;;
-        evaluation-ingress)
-            for command in cargo jq; do require_command "${command}"; done
-            validate_secure_parameter "${DATABASE_URL_PARAMETER}"
-            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
-            printf 'Database schema prerequisite: the pipeline-task schema must already be current.\n'
-            ;;
         audio-conversion)
             require_command jq
             validate_audio_file
@@ -329,22 +331,13 @@ preflight() {
         evaluation-e2e)
             for command in cargo jq; do require_command "${command}"; done
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
-            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
             validate_secure_parameter "${MODAL_PROXY_TOKEN_ID_PARAMETER}"
             validate_secure_parameter "${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
             validate_modal_oidc_provider
             validate_transcription_endpoint
             validate_modal_endpoint
-            validate_task_events_endpoint "${allow_missing_deployed_endpoint}"
-            printf 'Database schema prerequisite: the pipeline-task schema must already be current.\n'
+            printf 'Database schema prerequisite: the current review-job, pipeline-task, task-event, and WebSocket schemas must already be current.\n'
             if [[ "${target_suite}" == "evaluation-e2e" ]]; then validate_audio_file; fi
-            ;;
-        evaluation-dispatch)
-            for command in cargo jq; do require_command "${command}"; done
-            validate_secure_parameter "${DATABASE_URL_PARAMETER}"
-            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
-            validate_audio_file
-            printf 'Database schema prerequisite: the pipeline-task schema must already be current.\n'
             ;;
     esac
 }
@@ -528,44 +521,6 @@ cleanup_fixtures() {
     done
 }
 
-provision_input_fixtures() {
-    validate_audio_file
-    FIXTURE_BUCKET="$(terraform -chdir="${TERRAFORM_DIR}" output -raw uploads_bucket_name)"
-    local run_id
-    run_id="$(fixture_run_id)"
-    FIXTURE_KEYS=(
-        "reviews/integration-tests/${run_id}/first.wav"
-        "reviews/integration-tests/${run_id}/second.wav"
-    )
-    FIXTURE_OBJECT_URIS=(
-        "s3://${FIXTURE_BUCKET}/${FIXTURE_KEYS[0]}"
-        "s3://${FIXTURE_BUCKET}/${FIXTURE_KEYS[1]}"
-    )
-    local key
-    for key in "${FIXTURE_KEYS[@]}"; do
-        aws s3 cp "${AUDIO_FILE}" "s3://${FIXTURE_BUCKET}/${key}" --region "${AWS_REGION}"
-    done
-    AUDIO_MODERATION_TEST_AUDIO_S3_URIS="$(jq -cn --arg bucket "${FIXTURE_BUCKET}" --arg first "${FIXTURE_KEYS[0]}" --arg second "${FIXTURE_KEYS[1]}" '["s3://" + $bucket + "/" + $first, "s3://" + $bucket + "/" + $second]')"
-    export AUDIO_MODERATION_TEST_AUDIO_S3_URIS
-}
-
-wait_for_execution_success() {
-    local execution_arn="$1"
-    local status
-    for _ in {1..60}; do
-        status="$(aws stepfunctions describe-execution --region "${AWS_REGION}" --execution-arn "${execution_arn}" --query status --output text)"
-        case "${status}" in
-            SUCCEEDED) return 0 ;;
-            FAILED|TIMED_OUT|ABORTED)
-                printf 'Test Step Functions execution ended as %s: %s\n' "${status}" "$(aws stepfunctions describe-execution --region "${AWS_REGION}" --execution-arn "${execution_arn}" --query cause --output text)" >&2
-                return 1
-                ;;
-        esac
-        sleep 2
-    done
-    printf 'Test Step Functions execution did not complete within two minutes: %s\n' "${execution_arn}" >&2
-    return 1
-}
 
 run_suite() {
     case "${SUITE}" in
@@ -580,19 +535,12 @@ run_suite() {
             cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package submit-audio-lambda --test deployed starts_uploaded_review_evaluation_against_aws -- --ignored --nocapture
             ;;
         evaluation-ingress)
-            preflight evaluation-ingress
-            unset AUDIO_MODERATION_TEST_AUDIO_S3_URIS
-            load_evaluation_environment
-            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package start-evaluation-lambda --test deployed evaluation_ingress_ -- --ignored --nocapture
+            printf 'evaluation-ingress is unsupported: StartEvaluation was retired. Use review-submit, review-confirmation, or evaluation-e2e.\n' >&2
+            return 1
             ;;
         evaluation-dispatch)
-            preflight evaluation-dispatch
-            load_evaluation_environment
-            # Dispatch assertions finish before the production workflows do.
-            # Retain and report their fixtures for those asynchronous executions.
-            trap cleanup_fixtures EXIT
-            provision_input_fixtures
-            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package start-evaluation-lambda --test deployed evaluation_dispatch_ -- --ignored --nocapture
+            printf 'evaluation-dispatch is unsupported: StartEvaluation was retired. Use review-confirmation for dispatch-only coverage.\n' >&2
+            return 1
             ;;
         audio-conversion)
             preflight audio-conversion
@@ -649,14 +597,10 @@ run_suite() {
             ;;
         evaluation-e2e)
             preflight evaluation-e2e
-            load_evaluation_environment
-            load_task_events_endpoint
-            # Keep partial or failed asynchronous fixtures, but report every
-            # possible URI so they can be investigated or removed manually.
-            trap cleanup_fixtures EXIT
-            provision_input_fixtures
-            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package start-evaluation-lambda --test deployed completes_a_fresh_evaluation_and_replays_without_another_attempt -- --ignored --nocapture
-            FIXTURES_SAFE_TO_DELETE=true
+            load_review_confirmation_environment
+            AUDIO_MODERATION_TEST_AUDIO_FILE="${AUDIO_FILE}"
+            export AUDIO_MODERATION_TEST_AUDIO_FILE
+            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package submit-audio-lambda --test deployed completes_uploaded_review_evaluation_against_aws -- --ignored --nocapture
             ;;
     esac
 }

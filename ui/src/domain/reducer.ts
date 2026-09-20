@@ -27,7 +27,7 @@ export interface ReceivedEvent {
 
 export interface PipelineState {
   evaluationId: string | null
-  /** PIPELINE_TASK_STATUS_* returned by StartEvaluation. */
+  /** Initial PIPELINE_TASK_STATUS_* for the simulated pipeline task. */
   ingressStatus: string | null
   stages: Record<StageId, StageState>
   stageTimes: StageTimes
@@ -46,7 +46,7 @@ export type PipelineAction =
 
 /**
  * Pipeline status values from proto/audio/moderation/v1/audio_moderation.proto,
- * returned by StartEvaluation and used to seed the tracker before replay lands.
+ * used to seed the tracker before replay lands.
  */
 export const PIPELINE_STATUS = {
   pending: "PIPELINE_TASK_STATUS_PENDING",
