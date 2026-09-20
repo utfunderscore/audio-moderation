@@ -24,23 +24,25 @@ Lambda, Step Functions, transcription, moderation, or database costs.
 
 ## Implemented access controls
 
-### Evaluation capability tokens
+### Review and evaluation capability tokens
 
-- An evaluation ID is an unguessable public identifier. Its access token is a
-  deterministic HMAC-SHA-256 value derived from that ID and the global evaluation
-  access secret; the token is prefixed `eval_v1.`.
-- `StartEvaluation` returns the same token for an idempotent replay as for the
-  original request. Tokens are not stored per evaluation, and no per-evaluation
-  token digest or first-issuance record exists.
+- `SubmitReview` returns a signed `review_v1.` bearer capability scoped to the
+  configured tenant and review job. It expires after 24 hours and carries only the
+  `review:read`, `evaluation:read`, and `task-events:create` scopes. The signature,
+  expiry, tenant, scope, and requested review are all verified; token presence alone
+  is never authorization.
+- `GetReview` accepts that capability and safely represents the pre-upload state by
+  omitting `evaluation_id`. After upload confirmation creates the evaluation, the
+  same response exposes its ID. The review capability can then authorize
+  `GetEvaluation` and `CreateTaskEventsTicket`, but only after a tenant-scoped
+  persisted review-to-evaluation linkage check.
+
 - `GetEvaluation` and `CreateTaskEventsTicket` require
-  `Authorization: Bearer <token>`. Verification binds the token to the requested
-  evaluation ID.
+  `Authorization: Bearer <token>`. They accept the review capability only when its
+  persisted tenant-scoped linkage matches the requested evaluation ID.
 - Rotating the global evaluation access secret is the current revocation mechanism:
-  it invalidates all previously issued evaluation tokens. Individual-token
+  it invalidates all previously issued review tokens. Individual-token
   revocation is not implemented.
-- Review-triggered evaluations do not expose an evaluation access token through the
-  review API. `SubmitReview` returns review/upload details only, not an evaluation
-  ID or access token.
 - Do not place access tokens in URLs, logs, events, analytics, or WebSocket frames.
 - `CreateTaskEventsTicket` mints a random, task-scoped ticket after capability
   authorization. The server stores only its SHA-256 hash, expires it after two

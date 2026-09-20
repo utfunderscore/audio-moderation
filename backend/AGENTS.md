@@ -38,9 +38,9 @@
 
 - Follow root `docs/deployment-integration.md` and the root `AGENTS.md` deployment
   rules. Crate READMEs add details for start-evaluation and task-events tests.
-- `evaluation-ingress` uses synthetic non-dispatched URIs; dispatch/E2E tests need
-  real audio. `review-confirmation` verifies that an uploaded review creates one
-  idempotent pipeline task and dispatches the expected Step Functions execution.
-  It then repeats the PUT and observes no duplicate persisted dispatch effects for
-  its delivery window; it cannot prove S3 delivered that second notification. It
-  does not wait for model completion or a terminal review-job status.
+- `review-confirmation` verifies that an uploaded review creates one idempotent
+  pipeline task and dispatches the expected Step Functions execution. It then repeats
+  the PUT and observes no duplicate persisted dispatch effects for its delivery window;
+  it cannot prove S3 delivered that second notification. `evaluation-e2e` owns the
+  terminal upload-triggered flow with real audio and durable lifecycle assertions;
+  neither test asserts a terminal review-job status.

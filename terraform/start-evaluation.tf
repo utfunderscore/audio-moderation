@@ -84,26 +84,6 @@ resource "aws_iam_role_policy" "start_evaluation_database_parameter" {
   })
 }
 
-resource "aws_iam_role_policy" "start_evaluation_state_machine" {
-  name = "${local.name_prefix}-start-evaluation-state-machine"
-  role = aws_iam_role.start_evaluation.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = "states:StartExecution"
-        Resource = aws_sfn_state_machine.audio_processing.arn
-      },
-      {
-        Effect   = "Allow"
-        Action   = "states:DescribeExecution"
-        Resource = "${replace(aws_sfn_state_machine.audio_processing.arn, ":stateMachine:", ":execution:")}:*"
-      },
-    ]
-  })
-}
-
 resource "aws_cloudwatch_log_group" "start_evaluation" {
   name              = "/aws/lambda/${local.name_prefix}-start-evaluation"
   retention_in_days = 7
@@ -120,12 +100,9 @@ resource "aws_lambda_function" "start_evaluation" {
 
   environment {
     variables = {
-      ARTIFACTS_BUCKET_NAME              = aws_s3_bucket.artifacts.bucket
       DATABASE_URL_PARAMETER             = var.database_parameter_name
       EVALUATION_ACCESS_SECRET_PARAMETER = var.evaluation_access_secret_parameter_name
-      STATE_MACHINE_ARN                  = aws_sfn_state_machine.audio_processing.arn
       TENANT_ID                          = var.tenant_id
-      TASK_EVENTS_MANAGEMENT_ENDPOINT    = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
       RUST_LOG                           = "info"
     }
   }
@@ -134,8 +111,6 @@ resource "aws_lambda_function" "start_evaluation" {
     aws_ecr_repository_policy.start_evaluation_lambda_pull,
     aws_iam_role_policy_attachment.start_evaluation_logs,
     aws_iam_role_policy.start_evaluation_database_parameter,
-    aws_iam_role_policy.start_evaluation_state_machine,
-    aws_iam_role_policy.task_event_emission,
     aws_cloudwatch_log_group.start_evaluation,
   ]
 }
@@ -146,12 +121,6 @@ resource "aws_apigatewayv2_integration" "start_evaluation" {
   integration_uri        = aws_lambda_function.start_evaluation.invoke_arn
   integration_method     = "POST"
   payload_format_version = "2.0"
-}
-
-resource "aws_apigatewayv2_route" "start_evaluation_connect_rpc" {
-  api_id    = aws_apigatewayv2_api.public.id
-  route_key = "POST /audio.moderation.v1.AudioModerationService/StartEvaluation"
-  target    = "integrations/${aws_apigatewayv2_integration.start_evaluation.id}"
 }
 
 resource "aws_apigatewayv2_route" "get_evaluation_connect_rpc" {

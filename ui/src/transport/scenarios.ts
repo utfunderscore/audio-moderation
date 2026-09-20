@@ -12,7 +12,7 @@ export interface Scenario {
   id: string
   name: string
   summary: string
-  /** PIPELINE_TASK_STATUS_* returned by the simulated StartEvaluation call. */
+  /** Initial PIPELINE_TASK_STATUS_* for the simulated pipeline task. */
   ingressStatus: string
   /** Leading steps delivered as replay when this scenario is chosen. */
   replayPrefix?: number

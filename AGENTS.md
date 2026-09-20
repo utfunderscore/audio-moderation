@@ -44,8 +44,8 @@
   schema, Modal OIDC, four SecureString SSM parameters, and compatible HTTPS
   endpoints. `--modal-endpoint-url` is a base URL; moderation appends
   `/moderation/`. Never print decrypted secrets.
-- `task-callback`, `transcription-caller`, and `moderation-caller` isolated suites
-  are unsupported; do not bypass them with placeholder task tokens.
-  `evaluation-dispatch` requires `--audio-file`, returns before workflow completion,
-  and retains fixtures. `evaluation-e2e` waits for terminal workflow and WebSocket
-  lifecycle delivery; see the runbook for cleanup on success/failure.
+- `task-callback`, `transcription-caller`, `moderation-caller`, `evaluation-ingress`,
+  and `evaluation-dispatch` isolated suites are unsupported; do not bypass them with
+  placeholder task tokens or synthetic ingress fixtures. `evaluation-e2e` submits a
+  real review upload, waits for terminal workflow persistence, and does not depend on
+  task-event WebSocket delivery; see the runbook for source cleanup on success/failure.

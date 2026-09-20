@@ -27,5 +27,5 @@ pub use pipeline_task_websocket_connection_store::{
 };
 
 pub use review_job_store::{
-    DatabaseError, NewReviewJob, ReviewJob, ReviewJobStatus, ReviewJobStore,
+    DatabaseError, NewReviewJob, ReviewJob, ReviewJobDetails, ReviewJobStatus, ReviewJobStore,
 };

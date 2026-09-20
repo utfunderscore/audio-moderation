@@ -1,17 +1,22 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::presigning::PresigningConfig;
+use buffa_types::google::protobuf::Timestamp;
+use common::ReviewAccess;
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest};
 use database::{NewReviewJob, ReviewJobStatus as DatabaseReviewJobStatus, ReviewJobStore};
 use tracing::{error, info, warn};
 
 use crate::proto::audio::review::v1::{
-    AudioReviewService, ReviewJobStatus, SubmitReviewRequest, SubmitReviewResponse,
+    AudioReviewService, GetReviewRequest, GetReviewResponse, Review, ReviewJobStatus,
+    SubmitReviewRequest, SubmitReviewResponse,
 };
 
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 const UPLOAD_URL_TTL: Duration = Duration::from_secs(15 * 60);
+const REVIEW_ACCESS_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const AUTHORIZATION_HEADER: &str = "authorization";
 
 #[derive(Clone)]
 pub(crate) struct SubmitReviewService {
@@ -19,6 +24,7 @@ pub(crate) struct SubmitReviewService {
     s3_client: S3Client,
     uploads_bucket: String,
     tenant_id: String,
+    access: ReviewAccess,
 }
 
 impl SubmitReviewService {
@@ -27,13 +33,47 @@ impl SubmitReviewService {
         s3_client: S3Client,
         uploads_bucket: String,
         tenant_id: String,
+        access: ReviewAccess,
     ) -> Self {
         Self {
             store,
             s3_client,
             uploads_bucket,
             tenant_id,
+            access,
         }
+    }
+
+    fn authorize(&self, ctx: &RequestContext, review_id: i32) -> Result<(), ConnectError> {
+        let token = bearer_token(ctx, "review access token")?;
+        if !self
+            .access
+            .verify(&self.tenant_id, review_id, token, SystemTime::now())
+        {
+            return Err(ConnectError::unauthenticated("invalid review access token"));
+        }
+        Ok(())
+    }
+
+    fn capability(
+        &self,
+        review_id: i32,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) -> (String, Timestamp) {
+        // Anchor expiry to creation so an idempotent SubmitReview replay cannot
+        // silently extend the lifetime of an already-issued capability.
+        let expires_at = SystemTime::from(created_at) + REVIEW_ACCESS_TTL;
+        let expires_at = UNIX_EPOCH
+            + Duration::from_secs(
+                expires_at
+                    .duration_since(UNIX_EPOCH)
+                    .expect("review creation is after Unix epoch")
+                    .as_secs(),
+            );
+        (
+            self.access.token(&self.tenant_id, review_id, expires_at),
+            system_timestamp(expires_at),
+        )
     }
 }
 
@@ -88,7 +128,11 @@ impl AudioReviewService for SubmitReviewService {
                 outcome = "idempotent_replay",
                 "returned existing audio submission"
             );
-            return Response::ok(response_for_existing_job(job.job_id, job.status));
+            return Response::ok(self.response_for_existing_job(
+                job.job_id,
+                job.status,
+                job.created_at,
+            ));
         }
 
         if replayed {
@@ -130,7 +174,11 @@ impl AudioReviewService for SubmitReviewService {
                     outcome = "source_already_uploaded",
                     "returned existing audio submission"
                 );
-                return Response::ok(response_for_existing_job(job.job_id, job.status));
+                return Response::ok(self.response_for_existing_job(
+                    job.job_id,
+                    job.status,
+                    job.created_at,
+                ));
             }
         }
 
@@ -166,22 +214,118 @@ impl AudioReviewService for SubmitReviewService {
             "accepted audio submission"
         );
 
+        let (access_token, access_expires_at) = self.capability(job.job_id, job.created_at);
         Response::ok(SubmitReviewResponse {
             task_id: job.job_id.to_string(),
+            review_id: job.job_id.to_string(),
             upload_url: upload.uri().to_owned(),
             upload_headers,
             status: ReviewJobStatus::AwaitingUpload.into(),
+            access_token,
+            access_expires_at: access_expires_at.into(),
+            ..Default::default()
+        })
+    }
+
+    async fn get_review<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetReviewRequest>,
+    ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<GetReviewResponse> + Send + use<'a>>
+    {
+        let review_id = parse_review_id(request.review_id)?;
+        self.authorize(&ctx, review_id)?;
+        let details = self
+            .store
+            .get_details(review_id, &self.tenant_id)
+            .await
+            .map_err(|error| {
+                error!(reviewId = review_id, error = ?error, "failed to retrieve review");
+                ConnectError::internal("failed to retrieve review")
+            })?
+            .ok_or_else(|| ConnectError::not_found("review not found"))?;
+
+        Response::ok(GetReviewResponse {
+            review: Review {
+                review_id: details.job.job_id.to_string(),
+                status: ReviewJobStatus::from(details.job.status).into(),
+                evaluation_id: details.evaluation_id.map(|id| id.to_string()),
+                created_at: timestamp(
+                    details.job.created_at.timestamp(),
+                    details.job.created_at.timestamp_subsec_nanos(),
+                )
+                .into(),
+                updated_at: timestamp(
+                    details.job.updated_at.timestamp(),
+                    details.job.updated_at.timestamp_subsec_nanos(),
+                )
+                .into(),
+                ..Default::default()
+            }
+            .into(),
             ..Default::default()
         })
     }
 }
 
-fn response_for_existing_job(job_id: i32, status: DatabaseReviewJobStatus) -> SubmitReviewResponse {
-    SubmitReviewResponse {
-        task_id: job_id.to_string(),
-        status: ReviewJobStatus::from(status).into(),
+impl SubmitReviewService {
+    fn response_for_existing_job(
+        &self,
+        job_id: i32,
+        status: DatabaseReviewJobStatus,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) -> SubmitReviewResponse {
+        let (access_token, access_expires_at) = self.capability(job_id, created_at);
+        SubmitReviewResponse {
+            task_id: job_id.to_string(),
+            review_id: job_id.to_string(),
+            status: ReviewJobStatus::from(status).into(),
+            access_token,
+            access_expires_at: access_expires_at.into(),
+            ..Default::default()
+        }
+    }
+}
+
+fn parse_review_id(value: &str) -> Result<i32, ConnectError> {
+    value
+        .trim()
+        .parse::<i32>()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ConnectError::invalid_argument("review_id must be a positive integer"))
+}
+
+fn bearer_token<'a>(ctx: &'a RequestContext, credential: &str) -> Result<&'a str, ConnectError> {
+    let value = ctx
+        .header(AUTHORIZATION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ConnectError::unauthenticated(format!("{credential} is required")))?;
+    let (scheme, token) = value
+        .trim()
+        .split_once(' ')
+        .ok_or_else(|| ConnectError::unauthenticated(format!("invalid {credential}")))?;
+    if !scheme.eq_ignore_ascii_case("Bearer") || token.is_empty() {
+        return Err(ConnectError::unauthenticated(format!(
+            "invalid {credential}"
+        )));
+    }
+    Ok(token)
+}
+
+fn timestamp(seconds: i64, nanos: u32) -> Timestamp {
+    Timestamp {
+        seconds,
+        nanos: nanos as i32,
         ..Default::default()
     }
+}
+
+fn system_timestamp(value: SystemTime) -> Timestamp {
+    let value = value
+        .duration_since(UNIX_EPOCH)
+        .expect("expiry is after Unix epoch");
+    timestamp(value.as_secs() as i64, value.subsec_nanos())
 }
 
 impl From<DatabaseReviewJobStatus> for ReviewJobStatus {
@@ -313,16 +457,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn replay_after_upload_returns_existing_job_without_upload_instructions() {
+    #[tokio::test]
+    async fn replay_after_upload_returns_existing_job_without_upload_instructions() {
         let job_id = 42;
-
-        let response = response_for_existing_job(job_id, DatabaseReviewJobStatus::Completed);
+        let access = ReviewAccess::new("a sufficiently long test secret value".into()).unwrap();
+        let service = SubmitReviewService {
+            store: ReviewJobStore::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgres://localhost/test")
+                    .unwrap(),
+            ),
+            s3_client: S3Client::from_conf(
+                aws_sdk_s3::Config::builder()
+                    .behavior_version_latest()
+                    .build(),
+            ),
+            uploads_bucket: "unused".into(),
+            tenant_id: "tenant-a".into(),
+            access,
+        };
+        let response = service.response_for_existing_job(
+            job_id,
+            DatabaseReviewJobStatus::Completed,
+            chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+        );
 
         assert_eq!(response.task_id, job_id.to_string());
+        assert_eq!(response.review_id, job_id.to_string());
         assert_eq!(response.status, ReviewJobStatus::Completed);
         assert!(response.upload_url.is_empty());
         assert!(response.upload_headers.is_empty());
+        assert!(response.access_token.starts_with("review_v1."));
     }
 
     #[tokio::test]

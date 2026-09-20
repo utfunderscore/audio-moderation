@@ -63,8 +63,10 @@ src/
 `src/transport/webSocketClient.ts` implements `TaskEventsClient` against the
 real `wss://` endpoint shape, but it is not usable against the deployed server:
 it is unwired and still sends `{"action":"subscribe","taskId":<number>}`.
-The deployed handshake is to authorize an evaluation access token to the
-`CreateTaskEventsTicket` HTTP RPC, receive a one-time ticket, then send
+The deployed review handshake is to retain the short-lived review access token from
+`SubmitReview`, poll `GetReview` until it includes an evaluation ID, and use that
+same bearer token with `GetEvaluation` and `CreateTaskEventsTicket`. The latter
+returns a one-time ticket, then the client sends
 `{"action":"subscribe","ticket":<ticket>}`. Frames are raw UTF-8 event names
 with replay-then-live, at-least-once delivery. Updating the adapter and wiring it
 up require an API endpoint, authorization/token exchange, and CORS configuration;
