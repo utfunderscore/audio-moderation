@@ -69,10 +69,33 @@ resource "aws_iam_role_policy" "confirm_upload_source_object" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect   = "Allow"
-      Action   = "s3:GetObject"
-      Resource = "${aws_s3_bucket.uploads.arn}/reviews/*/source"
+      Effect = "Allow"
+      Action = "s3:GetObject"
+      Resource = [
+        "${aws_s3_bucket.uploads.arn}/reviews/*/source",
+        "${aws_s3_bucket.uploads.arn}/evaluations/*/source",
+      ]
     }]
+  })
+}
+
+resource "aws_iam_role_policy" "confirm_upload_state_machine" {
+  name = "${local.name_prefix}-confirm-upload-state-machine"
+  role = aws_iam_role.confirm_upload.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "states:StartExecution"
+        Resource = aws_sfn_state_machine.audio_processing.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = "states:DescribeExecution"
+        Resource = "${replace(aws_sfn_state_machine.audio_processing.arn, ":stateMachine:", ":execution:")}:*"
+      },
+    ]
   })
 }
 
@@ -112,10 +135,13 @@ resource "aws_lambda_function" "confirm_upload" {
 
   environment {
     variables = {
-      DATABASE_URL_PARAMETER = var.database_parameter_name
-      UPLOADS_BUCKET_NAME    = aws_s3_bucket.uploads.bucket
-      TENANT_ID              = var.tenant_id
-      RUST_LOG               = "info"
+      DATABASE_URL_PARAMETER          = var.database_parameter_name
+      UPLOADS_BUCKET_NAME             = aws_s3_bucket.uploads.bucket
+      ARTIFACTS_BUCKET_NAME           = aws_s3_bucket.artifacts.bucket
+      STATE_MACHINE_ARN               = aws_sfn_state_machine.audio_processing.arn
+      TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
+      TENANT_ID                       = var.tenant_id
+      RUST_LOG                        = "info"
     }
   }
 
@@ -124,6 +150,8 @@ resource "aws_lambda_function" "confirm_upload" {
     aws_iam_role_policy_attachment.confirm_upload_logs,
     aws_iam_role_policy.confirm_upload_source_object,
     aws_iam_role_policy.confirm_upload_database_parameter,
+    aws_iam_role_policy.confirm_upload_state_machine,
+    aws_iam_role_policy.task_event_emission,
     aws_cloudwatch_log_group.confirm_upload,
   ]
 }
@@ -144,6 +172,13 @@ resource "aws_s3_bucket_notification" "confirm_upload" {
     lambda_function_arn = aws_lambda_function.confirm_upload.arn
     events              = ["s3:ObjectCreated:*"]
     filter_prefix       = "reviews/"
+    filter_suffix       = "/source"
+  }
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.confirm_upload.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "evaluations/"
     filter_suffix       = "/source"
   }
 

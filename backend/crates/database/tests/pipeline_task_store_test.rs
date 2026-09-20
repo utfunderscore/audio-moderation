@@ -2,8 +2,8 @@ mod common;
 
 use chrono::{DateTime, Utc};
 use database::{
-    ModerationResult, NewPipelineTask, PipelineTaskError, PipelineTaskOutcome, PipelineTaskStatus,
-    PipelineTaskStore,
+    ModerationResult, NewPipelineTask, NewPipelineUpload, PipelineTaskError, PipelineTaskOutcome,
+    PipelineTaskStatus, PipelineTaskStore,
 };
 
 use common::TestDatabase;
@@ -62,6 +62,63 @@ async fn creates_ordered_inputs_and_replays_by_tenant_idempotency_key() {
         step_statuses,
         ("PENDING".into(), "PENDING".into(), "PENDING".into())
     );
+}
+
+#[tokio::test]
+async fn creates_a_browser_upload_and_dispatches_only_after_confirmation() {
+    let database = TestDatabase::start().await;
+    let store = PipelineTaskStore::new(database.pool.clone());
+
+    let task = store
+        .create_upload_or_get(NewPipelineUpload {
+            tenant_id: "tenant-a",
+            idempotency_key: "upload-request-1",
+            caller_reference: Some("browser-42"),
+            content_type: "audio/mpeg",
+            uploads_bucket: "uploads",
+        })
+        .await
+        .unwrap();
+
+    assert!(task.created);
+    assert_eq!(task.status, PipelineTaskStatus::AwaitingUpload);
+    assert_eq!(
+        task.audio_s3_uris,
+        vec![format!("s3://uploads/evaluations/{}/source", task.task_id)]
+    );
+    assert!(!task.source_upload_confirmed);
+    assert_eq!(store.claim_dispatch(task.task_id).await.unwrap(), None);
+
+    let replayed = store
+        .create_upload_or_get(NewPipelineUpload {
+            tenant_id: "tenant-a",
+            idempotency_key: "upload-request-1",
+            caller_reference: Some("browser-42"),
+            content_type: "audio/mpeg",
+            uploads_bucket: "uploads",
+        })
+        .await
+        .unwrap();
+    assert!(!replayed.created);
+    assert_eq!(replayed.task_id, task.task_id);
+    assert_eq!(replayed.audio_s3_uris, task.audio_s3_uris);
+
+    assert_eq!(
+        store
+            .confirm_upload("tenant-a", &task.audio_s3_uris[0])
+            .await
+            .unwrap(),
+        Some(task.task_id)
+    );
+    assert_eq!(
+        store
+            .confirm_upload("tenant-a", &task.audio_s3_uris[0])
+            .await
+            .unwrap(),
+        Some(task.task_id),
+        "duplicate S3 notifications must be harmless"
+    );
+    assert_eq!(store.claim_dispatch(task.task_id).await.unwrap(), Some(1));
 }
 
 #[tokio::test]

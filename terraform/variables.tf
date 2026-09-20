@@ -87,6 +87,12 @@ variable "tenant_id" {
   default     = "default"
 }
 
+variable "frontend_allowed_origins" {
+  description = "Browser origins allowed to call the public API and upload directly to S3"
+  type        = set(string)
+  default     = ["http://localhost:5173"]
+}
+
 variable "upload_retention_days" {
   type    = number
   default = 7

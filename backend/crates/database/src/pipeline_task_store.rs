@@ -100,6 +100,8 @@ pub struct PipelineTask {
     pub caller_reference: Option<String>,
     pub status: PipelineTaskStatus,
     pub execution_arn: Option<String>,
+    pub source_upload_content_type: Option<String>,
+    pub source_upload_confirmed: bool,
     pub asr_task_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -116,6 +118,15 @@ pub struct NewPipelineTask<'a> {
     pub audio_s3_uris: &'a [String],
 }
 
+/// Values required to create an evaluation which is waiting for a browser upload.
+pub struct NewPipelineUpload<'a> {
+    pub tenant_id: &'a str,
+    pub idempotency_key: &'a str,
+    pub caller_reference: Option<&'a str>,
+    pub content_type: &'a str,
+    pub uploads_bucket: &'a str,
+}
+
 #[derive(sqlx::FromRow)]
 struct PersistedPipelineTask {
     task_id: i32,
@@ -123,6 +134,8 @@ struct PersistedPipelineTask {
     idempotency_key: String,
     caller_reference: Option<String>,
     execution_arn: Option<String>,
+    source_upload_content_type: Option<String>,
+    source_upload_confirmed: bool,
     asr_task_id: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -132,6 +145,7 @@ struct PersistedPipelineTask {
 /// Workflow state derived from the pipeline outcome and individual step rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipelineTaskStatus {
+    AwaitingUpload,
     Pending,
     StartedAudioProcessing,
     AudioProcessingFinished,
@@ -177,12 +191,17 @@ struct PipelineStepState {
 }
 
 impl PipelineStepState {
-    fn status(&self, outcome: Option<PipelineTaskOutcome>) -> PipelineTaskStatus {
+    fn status(
+        &self,
+        outcome: Option<PipelineTaskOutcome>,
+        awaiting_upload: bool,
+    ) -> PipelineTaskStatus {
         match outcome {
             Some(PipelineTaskOutcome::Succeeded) => PipelineTaskStatus::Succeeded,
             Some(PipelineTaskOutcome::Failed) => PipelineTaskStatus::Failed,
             Some(PipelineTaskOutcome::TimedOut) => PipelineTaskStatus::TimedOut,
             Some(PipelineTaskOutcome::Cancelled) => PipelineTaskStatus::Cancelled,
+            None if awaiting_upload => PipelineTaskStatus::AwaitingUpload,
             None if self.audio_status == PipelineStepStatus::Failed
                 || self.transcription_status == PipelineStepStatus::Failed
                 || self.moderation_status == PipelineStepStatus::Failed =>
@@ -245,7 +264,8 @@ impl PipelineTaskStore {
                 ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
                     SET tenant_id = pipeline_tasks.tenant_id
                 RETURNING task_id, tenant_id, idempotency_key, caller_reference,
-                    execution_arn,
+                    execution_arn, source_upload_content_type,
+                    source_upload_confirmed_at IS NOT NULL AS source_upload_confirmed,
                     (
                         SELECT external_task_id
                         FROM transcription_tasks
@@ -326,12 +346,171 @@ impl PipelineTaskStore {
             caller_reference: persisted.caller_reference,
             status,
             execution_arn: persisted.execution_arn,
+            source_upload_content_type: persisted.source_upload_content_type,
+            source_upload_confirmed: persisted.source_upload_confirmed,
             asr_task_id: persisted.asr_task_id,
             created_at: persisted.created_at,
             updated_at: persisted.updated_at,
             audio_s3_uris,
             created: persisted.created,
         })
+    }
+
+    /// Creates an evaluation and its deterministic browser-upload destination,
+    /// or returns the same evaluation for an idempotent retry.
+    pub async fn create_upload_or_get(
+        &self,
+        upload: NewPipelineUpload<'_>,
+    ) -> Result<PipelineTask, PipelineTaskError> {
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(PipelineTaskError::CreateOrGet)?;
+        let persisted = sqlx::query_as::<_, PersistedPipelineTask>(
+            r#"
+                INSERT INTO pipeline_tasks (
+                    tenant_id, idempotency_key, caller_reference, source_upload_content_type
+                )
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
+                    SET tenant_id = pipeline_tasks.tenant_id
+                RETURNING task_id, tenant_id, idempotency_key, caller_reference,
+                    execution_arn, source_upload_content_type,
+                    source_upload_confirmed_at IS NOT NULL AS source_upload_confirmed,
+                    (
+                        SELECT external_task_id
+                        FROM transcription_tasks
+                        WHERE transcription_tasks.task_id = pipeline_tasks.task_id
+                    ) AS asr_task_id,
+                    created_at, updated_at, (xmax = 0) AS created
+            "#,
+        )
+        .bind(upload.tenant_id)
+        .bind(upload.idempotency_key)
+        .bind(upload.caller_reference)
+        .bind(upload.content_type)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(PipelineTaskError::CreateOrGet)?;
+
+        if persisted.created {
+            insert_pipeline_steps(&mut transaction, persisted.task_id).await?;
+            let source_uri = format!(
+                "s3://{}/evaluations/{}/source",
+                upload.uploads_bucket, persisted.task_id
+            );
+            insert_pipeline_inputs(&mut transaction, persisted.task_id, &[source_uri]).await?;
+        }
+
+        let audio_s3_uris = pipeline_inputs(&mut transaction, persisted.task_id).await?;
+        let status = task_status_for_update(&mut transaction, persisted.task_id).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(PipelineTaskError::CreateOrGet)?;
+
+        Ok(PipelineTask {
+            task_id: persisted.task_id,
+            tenant_id: persisted.tenant_id,
+            idempotency_key: persisted.idempotency_key,
+            caller_reference: persisted.caller_reference,
+            status,
+            execution_arn: persisted.execution_arn,
+            source_upload_content_type: persisted.source_upload_content_type,
+            source_upload_confirmed: persisted.source_upload_confirmed,
+            asr_task_id: persisted.asr_task_id,
+            created_at: persisted.created_at,
+            updated_at: persisted.updated_at,
+            audio_s3_uris,
+            created: persisted.created,
+        })
+    }
+
+    /// Confirms an object at a pre-created evaluation upload location. Repeated
+    /// S3 notifications are safe and return the same task.
+    pub async fn confirm_upload(
+        &self,
+        tenant_id: &str,
+        source_uri: &str,
+    ) -> Result<Option<i32>, PipelineTaskError> {
+        sqlx::query_scalar(
+            r#"
+                UPDATE pipeline_tasks task
+                SET source_upload_confirmed_at = COALESCE(source_upload_confirmed_at, NOW()),
+                    updated_at = CASE
+                        WHEN source_upload_confirmed_at IS NULL THEN NOW()
+                        ELSE updated_at
+                    END
+                FROM pipeline_task_inputs input
+                WHERE input.task_id = task.task_id
+                    AND task.tenant_id = $1
+                    AND input.audio_s3_uri = $2
+                    AND task.source_upload_content_type IS NOT NULL
+                RETURNING task.task_id
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(source_uri)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(PipelineTaskError::Lifecycle)
+    }
+
+    /// Retrieves a pipeline task and its inputs by durable identity.
+    pub async fn get(&self, task_id: i32) -> Result<Option<PipelineTask>, PipelineTaskError> {
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(PipelineTaskError::Lifecycle)?;
+        let persisted = sqlx::query_as::<_, PersistedPipelineTask>(
+            r#"
+                SELECT task_id, tenant_id, idempotency_key, caller_reference,
+                    execution_arn, source_upload_content_type,
+                    source_upload_confirmed_at IS NOT NULL AS source_upload_confirmed,
+                    (
+                        SELECT external_task_id
+                        FROM transcription_tasks
+                        WHERE transcription_tasks.task_id = pipeline_tasks.task_id
+                    ) AS asr_task_id,
+                    created_at, updated_at, FALSE AS created
+                FROM pipeline_tasks
+                WHERE task_id = $1
+            "#,
+        )
+        .bind(task_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(PipelineTaskError::Lifecycle)?;
+        let Some(persisted) = persisted else {
+            transaction
+                .commit()
+                .await
+                .map_err(PipelineTaskError::Lifecycle)?;
+            return Ok(None);
+        };
+        let audio_s3_uris = pipeline_inputs(&mut transaction, persisted.task_id).await?;
+        let status = task_status_for_update(&mut transaction, persisted.task_id).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(PipelineTaskError::Lifecycle)?;
+        Ok(Some(PipelineTask {
+            task_id: persisted.task_id,
+            tenant_id: persisted.tenant_id,
+            idempotency_key: persisted.idempotency_key,
+            caller_reference: persisted.caller_reference,
+            status,
+            execution_arn: persisted.execution_arn,
+            source_upload_content_type: persisted.source_upload_content_type,
+            source_upload_confirmed: persisted.source_upload_confirmed,
+            asr_task_id: persisted.asr_task_id,
+            created_at: persisted.created_at,
+            updated_at: persisted.updated_at,
+            audio_s3_uris,
+            created: false,
+        }))
     }
 
     /// Records a successful Step Functions start and releases the dispatch lease.
@@ -1309,6 +1488,10 @@ impl PipelineTaskStore {
                 WHERE task_id = $1
                     AND execution_arn IS NULL
                     AND outcome IS NULL
+                    AND (
+                        source_upload_content_type IS NULL
+                        OR source_upload_confirmed_at IS NOT NULL
+                    )
                     AND attempt_count < 3
                     AND (
                         dispatch_started_at IS NULL
@@ -1454,5 +1637,78 @@ async fn task_status_for_update(
     .await
     .map_err(PipelineTaskError::Lifecycle)?;
 
-    Ok(steps.status(outcome))
+    let awaiting_upload = sqlx::query_scalar::<_, bool>(
+        "SELECT source_upload_content_type IS NOT NULL AND source_upload_confirmed_at IS NULL \
+         FROM pipeline_tasks WHERE task_id = $1",
+    )
+    .bind(task_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(PipelineTaskError::Lifecycle)?;
+
+    Ok(steps.status(outcome, awaiting_upload))
+}
+
+async fn insert_pipeline_steps(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    task_id: i32,
+) -> Result<(), PipelineTaskError> {
+    sqlx::query(
+        r#"
+            WITH audio_processing AS (
+                INSERT INTO audio_processing_tasks (task_id)
+                VALUES ($1)
+                RETURNING task_id
+            ), transcription AS (
+                INSERT INTO transcription_tasks (task_id)
+                VALUES ($1)
+                RETURNING task_id
+            )
+            INSERT INTO moderation_tasks (task_id)
+            VALUES ($1)
+        "#,
+    )
+    .bind(task_id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(PipelineTaskError::CreateOrGet)?;
+    Ok(())
+}
+
+async fn insert_pipeline_inputs(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    task_id: i32,
+    audio_s3_uris: &[String],
+) -> Result<(), PipelineTaskError> {
+    sqlx::query(
+        r#"
+            INSERT INTO pipeline_task_inputs (task_id, sequence, audio_s3_uri)
+            SELECT $1, (ordinality - 1)::INTEGER, audio_s3_uri
+            FROM UNNEST($2::TEXT[]) WITH ORDINALITY AS input(audio_s3_uri, ordinality)
+        "#,
+    )
+    .bind(task_id)
+    .bind(audio_s3_uris)
+    .execute(&mut **transaction)
+    .await
+    .map_err(PipelineTaskError::CreateOrGet)?;
+    Ok(())
+}
+
+async fn pipeline_inputs(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    task_id: i32,
+) -> Result<Vec<String>, PipelineTaskError> {
+    sqlx::query_scalar(
+        r#"
+            SELECT audio_s3_uri
+            FROM pipeline_task_inputs
+            WHERE task_id = $1
+            ORDER BY sequence
+        "#,
+    )
+    .bind(task_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(PipelineTaskError::CreateOrGet)
 }

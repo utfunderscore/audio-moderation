@@ -5,6 +5,8 @@ use std::io::Error as IoError;
 
 use aws_sdk_ssm::Client as SsmClient;
 
+pub mod evaluation_dispatch;
+
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 /// Loads a decrypted SSM parameter named by an environment variable.

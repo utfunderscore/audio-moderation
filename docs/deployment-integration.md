@@ -33,7 +33,8 @@ SubmitReview -> presigned S3 upload -> confirm-upload -> PENDING_PROCESSING
 ```
 
 ```text
-StartEvaluation -> Step Functions -> audio conversion -> transcription -> moderation -> callbacks
+StartEvaluation -> presigned evaluation upload -> confirm-upload -> Step Functions
+  -> audio conversion -> transcription -> moderation -> callbacks
 ```
 
 There is no review-to-evaluation integration. Do not describe `review-confirmation` as starting an evaluation, and do not construct a test that assumes it does.

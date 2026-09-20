@@ -24,6 +24,8 @@ CREATE TABLE pipeline_tasks (
     caller_reference TEXT,
     outcome        pipeline_task_outcome,
     execution_arn  TEXT,
+    source_upload_content_type TEXT,
+    source_upload_confirmed_at TIMESTAMPTZ,
     dispatch_started_at TIMESTAMPTZ,
     attempt_count  INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     completed_at   TIMESTAMPTZ,

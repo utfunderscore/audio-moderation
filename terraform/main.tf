@@ -58,6 +58,18 @@ resource "aws_s3_bucket_lifecycle_configuration" "uploads" {
   }
 }
 
+resource "aws_s3_bucket_cors_configuration" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+
+  cors_rule {
+    allowed_methods = ["PUT"]
+    allowed_origins = var.frontend_allowed_origins
+    allowed_headers = ["*"]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 300
+  }
+}
+
 resource "aws_s3_bucket" "artifacts" {
   bucket = "${local.name_prefix}-artifacts-${random_id.artifacts_bucket_suffix.hex}"
 }
@@ -102,6 +114,13 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
 resource "aws_apigatewayv2_api" "public" {
   name          = "${local.name_prefix}-api"
   protocol_type = "HTTP"
+
+  cors_configuration {
+    allow_origins = var.frontend_allowed_origins
+    allow_methods = ["POST", "OPTIONS"]
+    allow_headers = ["content-type", "connect-protocol-version", "idempotency-key"]
+    max_age       = 300
+  }
 }
 
 resource "aws_apigatewayv2_stage" "default" {

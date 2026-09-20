@@ -10,8 +10,8 @@ pub use pipeline_task_event_store::{
 };
 
 pub use pipeline_task_store::{
-    CallbackAttempt, ModerationResult, NewPipelineTask, PipelineCallbackStep, PipelineTask,
-    PipelineTaskError, PipelineTaskOutcome, PipelineTaskStatus, PipelineTaskStore,
+    CallbackAttempt, ModerationResult, NewPipelineTask, NewPipelineUpload, PipelineCallbackStep,
+    PipelineTask, PipelineTaskError, PipelineTaskOutcome, PipelineTaskStatus, PipelineTaskStore,
 };
 
 pub use pipeline_task_websocket_connection_store::{

@@ -81,6 +81,19 @@ resource "aws_iam_role_policy" "start_evaluation_database_parameter" {
   })
 }
 
+resource "aws_iam_role_policy" "start_evaluation_upload" {
+  name = "${local.name_prefix}-start-evaluation-upload"
+  role = aws_iam_role.start_evaluation.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "s3:PutObject"
+      Resource = "${aws_s3_bucket.uploads.arn}/evaluations/*"
+    }]
+  })
+}
+
 resource "aws_iam_role_policy" "start_evaluation_state_machine" {
   name = "${local.name_prefix}-start-evaluation-state-machine"
   role = aws_iam_role.start_evaluation.id
@@ -117,11 +130,12 @@ resource "aws_lambda_function" "start_evaluation" {
 
   environment {
     variables = {
-      ARTIFACTS_BUCKET_NAME           = aws_s3_bucket.artifacts.bucket
       DATABASE_URL_PARAMETER          = var.database_parameter_name
+      UPLOADS_BUCKET_NAME             = aws_s3_bucket.uploads.bucket
+      ARTIFACTS_BUCKET_NAME           = aws_s3_bucket.artifacts.bucket
       STATE_MACHINE_ARN               = aws_sfn_state_machine.audio_processing.arn
-      TENANT_ID                       = var.tenant_id
       TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
+      TENANT_ID                       = var.tenant_id
       RUST_LOG                        = "info"
     }
   }
@@ -130,6 +144,7 @@ resource "aws_lambda_function" "start_evaluation" {
     aws_ecr_repository_policy.start_evaluation_lambda_pull,
     aws_iam_role_policy_attachment.start_evaluation_logs,
     aws_iam_role_policy.start_evaluation_database_parameter,
+    aws_iam_role_policy.start_evaluation_upload,
     aws_iam_role_policy.start_evaluation_state_machine,
     aws_iam_role_policy.task_event_emission,
     aws_cloudwatch_log_group.start_evaluation,

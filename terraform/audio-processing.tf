@@ -71,7 +71,10 @@ resource "aws_iam_role_policy" "audio_processing_objects" {
         Effect = "Allow"
         Action = "s3:GetObject"
         Resource = concat(
-          ["${aws_s3_bucket.uploads.arn}/reviews/*"],
+          [
+            "${aws_s3_bucket.uploads.arn}/reviews/*",
+            "${aws_s3_bucket.uploads.arn}/evaluations/*",
+          ],
           [for bucket_arn in var.audio_source_bucket_arns : "${trimsuffix(bucket_arn, "/")}/*"],
         )
       },

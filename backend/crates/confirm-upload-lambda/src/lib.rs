@@ -2,13 +2,16 @@ use std::borrow::Cow;
 
 use aws_lambda_events::event::s3::S3Event;
 use aws_sdk_s3::Client as S3Client;
-use database::ReviewJobStore;
+use common::evaluation_dispatch::EvaluationDispatcher;
+use database::{PipelineTaskStore, ReviewJobStore};
 use lambda_runtime::{Error, LambdaEvent};
 use tracing::info;
 
 #[derive(Clone)]
 pub struct ConfirmUploadHandler {
-    store: ReviewJobStore,
+    review_store: ReviewJobStore,
+    pipeline_store: PipelineTaskStore,
+    dispatcher: EvaluationDispatcher,
     s3_client: S3Client,
     uploads_bucket: String,
     tenant_id: String,
@@ -16,13 +19,17 @@ pub struct ConfirmUploadHandler {
 
 impl ConfirmUploadHandler {
     pub fn new(
-        store: ReviewJobStore,
+        review_store: ReviewJobStore,
+        pipeline_store: PipelineTaskStore,
+        dispatcher: EvaluationDispatcher,
         s3_client: S3Client,
         uploads_bucket: String,
         tenant_id: String,
     ) -> Self {
         Self {
-            store,
+            review_store,
+            pipeline_store,
+            dispatcher,
             s3_client,
             uploads_bucket,
             tenant_id,
@@ -41,12 +48,31 @@ impl ConfirmUploadHandler {
                 .send()
                 .await?;
 
+            let source_uri = format!("s3://{}/{}", object.bucket, object.key);
+            if let Some(task_id) = self
+                .pipeline_store
+                .confirm_upload(&self.tenant_id, &source_uri)
+                .await?
+            {
+                self.dispatcher.dispatch(task_id).await?;
+                info!(
+                    requestId = request_id,
+                    evaluationId = task_id,
+                    tenantId = self.tenant_id,
+                    bucket = object.bucket,
+                    objectKey = object.key,
+                    outcome = "evaluation_dispatched",
+                    "confirmed evaluation source upload"
+                );
+                continue;
+            }
+
             let job = self
-                .store
+                .review_store
                 .mark_upload_complete(&object.key, &self.tenant_id)
                 .await?;
             let Some(job) = job else {
-                return Err(ConfirmUploadError::UnknownObject(object.key).into());
+                return Err(ConfirmUploadError::UnknownObject(source_uri).into());
             };
 
             info!(
@@ -57,7 +83,7 @@ impl ConfirmUploadHandler {
                 objectKey = object.key,
                 status = ?job.status,
                 outcome = "upload_confirmed",
-                "confirmed source audio upload"
+                "confirmed review source audio upload"
             );
         }
 

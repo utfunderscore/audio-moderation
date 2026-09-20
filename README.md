@@ -51,5 +51,16 @@ contract:
 - `models/` returns terminal results to the backend's task-callback Lambda,
   which resumes the Step Functions workflow.
 
+## Browser evaluation upload
+
+`StartEvaluation` creates a durable evaluation in `AWAITING_UPLOAD` and returns
+a presigned S3 `PUT` URL for one browser audio upload. The upload's S3 event is
+handled by `confirm-upload`, which confirms the expected object and dispatches
+the evaluation workflow. The Connect response's `evaluationId` is therefore
+available before upload so clients can subscribe to its task-events WebSocket.
+
+Trusted non-browser callers may continue to provide pre-uploaded S3 objects to
+`StartEvaluation`; that compatibility mode dispatches immediately.
+
 There is no code-level linkage between the two; keep the JSON contracts in sync
 when either side changes.

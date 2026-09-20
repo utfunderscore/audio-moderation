@@ -17,6 +17,12 @@ fixtures. Set `AUDIO_MODERATION_API_ENDPOINT`,
 `AUDIO_MODERATION_TENANT_ID`, or `DATABASE_URL` explicitly to override this
 automatic resolution.
 
+`StartEvaluation` supports two ingress modes: browser callers provide an audio
+`contentType`, receive an `AWAITING_UPLOAD` evaluation plus a presigned S3 PUT
+URL, and dispatch automatically through `confirm-upload`; trusted callers may
+provide existing S3 object references and dispatch immediately. The deployed
+tests exercise the latter compatibility mode.
+
 For `evaluation-e2e`, the runner also resolves
 `pipeline_task_events_websocket_endpoint` as
 `AUDIO_MODERATION_TASK_EVENTS_ENDPOINT` and validates that it is a `wss://` URL.

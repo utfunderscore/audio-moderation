@@ -1064,7 +1064,13 @@ dependencies = [
 name = "common"
 version = "0.1.0"
 dependencies = [
+ "aws-sdk-sfn",
  "aws-sdk-ssm",
+ "database",
+ "serde",
+ "serde_json",
+ "task-event-emitter",
+ "thiserror",
 ]
 
 [[package]]
@@ -1073,6 +1079,7 @@ version = "0.1.0"
 dependencies = [
  "aws-config",
  "aws-sdk-s3",
+ "aws-sdk-sfn",
  "aws-sdk-ssm",
  "aws_lambda_events",
  "common",
@@ -1080,6 +1087,7 @@ dependencies = [
  "lambda_runtime",
  "serde_json",
  "sqlx",
+ "task-event-emitter",
  "thiserror",
  "tokio",
  "tracing",
@@ -4119,6 +4127,7 @@ name = "start-evaluation-lambda"
 version = "0.1.0"
 dependencies = [
  "aws-config",
+ "aws-sdk-s3",
  "aws-sdk-sfn",
  "aws-sdk-ssm",
  "buffa",

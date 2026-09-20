@@ -7,8 +7,12 @@ service AudioModerationService {
 }
 
 message StartEvaluationRequest {
+  // Deprecated direct-ingress mode for trusted non-browser callers. Browser
+  // clients omit this and use the presigned upload returned by this RPC.
   repeated AudioObjectReference audio_objects = 1;
   string caller_reference = 2;
+  // The media type to require on the browser's presigned PUT request.
+  string content_type = 3;
 }
 
 message AudioObjectReference {
@@ -18,6 +22,8 @@ message AudioObjectReference {
 message StartEvaluationResponse {
   string evaluation_id = 1;
   PipelineTaskStatus status = 2;
+  string upload_url = 3;
+  map<string, string> upload_headers = 4;
 }
 
 enum PipelineTaskStatus {
@@ -33,4 +39,5 @@ enum PipelineTaskStatus {
   PIPELINE_TASK_STATUS_FAILED = 9;
   PIPELINE_TASK_STATUS_TIMED_OUT = 10;
   PIPELINE_TASK_STATUS_CANCELLED = 11;
+  PIPELINE_TASK_STATUS_AWAITING_UPLOAD = 12;
 }
