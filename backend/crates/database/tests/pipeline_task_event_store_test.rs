@@ -12,7 +12,6 @@ async fn records_and_replays_events_in_creation_order() {
     let task = task_store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
-            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
@@ -55,7 +54,6 @@ async fn lists_only_the_requested_tasks_events() {
     let first = task_store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
-            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/first.wav".to_owned()],
@@ -65,7 +63,6 @@ async fn lists_only_the_requested_tasks_events() {
     let second = task_store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
-            review_job_id: None,
             idempotency_key: "request-2",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/second.wav".to_owned()],
@@ -103,7 +100,6 @@ async fn records_a_lifecycle_event_only_once() {
     let task = task_store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
-            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],

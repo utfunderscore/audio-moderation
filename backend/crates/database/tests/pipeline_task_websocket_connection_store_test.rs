@@ -93,7 +93,6 @@ async fn create_task(store: &PipelineTaskStore, idempotency_key: &str) -> databa
     store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
-            review_job_id: None,
             idempotency_key,
             caller_reference: None,
             audio_s3_uris: &[format!("s3://uploads/{idempotency_key}.wav")],

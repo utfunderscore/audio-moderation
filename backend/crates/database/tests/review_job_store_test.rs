@@ -1,8 +1,9 @@
 mod common;
 
 use database::{
-    NewPipelineTask, NewReviewJob, NewReviewPipelineTask, PipelineTaskEventStore,
-    PipelineTaskEventTicketStore, PipelineTaskStore, ReviewJobStatus, ReviewJobStore,
+    NewPipelineTask, NewReviewJob, NewReviewPipelineTask, PipelineTaskError,
+    PipelineTaskEventStore, PipelineTaskEventTicketStore, PipelineTaskStore, ReviewJobStatus,
+    ReviewJobStore,
 };
 
 use common::TestDatabase;
@@ -103,34 +104,60 @@ async fn retrieves_the_pipeline_evaluation_linked_by_review_job_foreign_key() {
     let database = TestDatabase::start().await;
     let reviews = ReviewJobStore::new(database.pool.clone());
     let tasks = PipelineTaskStore::new(database.pool.clone());
-    let review = reviews
-        .create_or_get(NewReviewJob {
+    let review = tasks
+        .create_or_get_review(NewReviewPipelineTask {
             tenant_id: "tenant-a",
-            idempotency_key: Some("request-1"),
+            idempotency_key: "request-1",
             access_token_hash: TOKEN_HASH,
-        })
-        .await
-        .unwrap();
-    let task = tasks
-        .create_or_get(NewPipelineTask {
-            tenant_id: "tenant-a",
-            review_job_id: Some(review.job_id),
-            idempotency_key: "review-upload:1",
-            caller_reference: Some("review-job:1"),
-            audio_s3_uris: &["s3://uploads/reviews/1/source".to_owned()],
+            uploads_bucket: "uploads",
         })
         .await
         .unwrap();
 
     let details = reviews
-        .get_details(review.job_id, "tenant-a")
+        .get_details(review.job.job_id, "tenant-a")
         .await
         .unwrap()
         .unwrap();
 
     assert_eq!(
         details.evaluation_id.unwrap().to_string(),
-        task.evaluation_id
+        review.task.evaluation_id
+    );
+}
+
+#[tokio::test]
+async fn direct_tasks_cannot_attach_to_reviews() {
+    let database = TestDatabase::start().await;
+    let reviews = ReviewJobStore::new(database.pool.clone());
+    let tasks = PipelineTaskStore::new(database.pool.clone());
+    let review = reviews
+        .create_or_get(NewReviewJob {
+            tenant_id: "tenant-a",
+            idempotency_key: Some("review-request-direct-task"),
+            access_token_hash: TOKEN_HASH,
+        })
+        .await
+        .unwrap();
+    let reference = format!("review-job:{}", review.job_id);
+
+    let direct = tasks
+        .create_or_get(NewPipelineTask {
+            tenant_id: "tenant-a",
+            idempotency_key: "direct-request",
+            caller_reference: Some(&reference),
+            audio_s3_uris: &["s3://uploads/direct.wav".to_owned()],
+        })
+        .await
+        .unwrap();
+
+    assert!(direct.review_job_id.is_none());
+    assert!(
+        tasks
+            .get_by_review_job(review.job_id, "tenant-a")
+            .await
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -207,4 +234,44 @@ async fn atomically_creates_and_replays_a_review_pipeline_with_initial_event() {
             .task_id,
         created.task.task_id
     );
+}
+
+#[tokio::test]
+async fn rejects_a_corrupt_existing_review_task_mapping_with_a_typed_error() {
+    let database = TestDatabase::start().await;
+    let reviews = ReviewJobStore::new(database.pool.clone());
+    let tasks = PipelineTaskStore::new(database.pool.clone());
+    let review = reviews
+        .create_or_get(NewReviewJob {
+            tenant_id: "tenant-a",
+            idempotency_key: Some("request-corrupt"),
+            access_token_hash: TOKEN_HASH,
+        })
+        .await
+        .unwrap();
+
+    // Simulate a pre-existing bad mapping from before review links were kept
+    // behind create_or_get_review.
+    sqlx::query(
+        "INSERT INTO pipeline_tasks (tenant_id, review_job_id, idempotency_key, caller_reference) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind("tenant-a")
+    .bind(review.job_id)
+    .bind("legacy-review-task")
+    .bind("legacy-reference")
+    .execute(&database.pool)
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        tasks
+            .create_or_get_review(NewReviewPipelineTask {
+                tenant_id: "tenant-a",
+                idempotency_key: "request-corrupt",
+                uploads_bucket: "uploads",
+            })
+            .await,
+        Err(PipelineTaskError::ReviewTaskConflict { review_job_id }) if review_job_id == review.job_id
+    ));
 }

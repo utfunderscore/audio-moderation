@@ -13,7 +13,6 @@ async fn consumes_a_valid_ticket_only_once() {
     let task = PipelineTaskStore::new(database.pool.clone())
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
-            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
@@ -43,7 +42,6 @@ async fn rejects_expired_and_unknown_tickets() {
     let task = PipelineTaskStore::new(database.pool.clone())
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
-            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],

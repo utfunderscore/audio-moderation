@@ -828,7 +828,6 @@ async fn seed_task(
     Ok(store
         .create_or_get(NewPipelineTask {
             tenant_id: &environment.tenant_id,
-            review_job_id: None,
             idempotency_key: key,
             caller_reference: Some(caller_reference),
             audio_s3_uris: &environment.audio_s3_uris,

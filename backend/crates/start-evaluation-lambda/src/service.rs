@@ -196,7 +196,6 @@ impl AudioModerationService for StartEvaluationService {
             .store
             .create_or_get(NewPipelineTask {
                 tenant_id: &self.tenant_id,
-                review_job_id: None,
                 idempotency_key: &idempotency_key,
                 caller_reference,
                 audio_s3_uris: &audio_s3_uris,
