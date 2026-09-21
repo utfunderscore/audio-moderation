@@ -269,6 +269,7 @@ async fn rejects_a_corrupt_existing_review_task_mapping_with_a_typed_error() {
             .create_or_get_review(NewReviewPipelineTask {
                 tenant_id: "tenant-a",
                 idempotency_key: "request-corrupt",
+                access_token_hash: TOKEN_HASH,
                 uploads_bucket: "uploads",
             })
             .await,
