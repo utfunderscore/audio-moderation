@@ -67,8 +67,11 @@ The deployed handshake is to authorize an evaluation access token to the
 `CreateTaskEventsTicket` HTTP RPC, receive a one-time ticket, then send
 `{"action":"subscribe","ticket":<ticket>}`. Frames are raw UTF-8 event names
 with replay-then-live, at-least-once delivery. Updating the adapter and wiring it
-up require an API endpoint, authorization/token exchange, and CORS configuration;
-all remain deliberately out of scope for this UI-only phase.
+up require an API endpoint and authorization/token exchange. Terraform now
+manages matching API Gateway and presigned-upload S3 CORS rules for local Vite,
+local preview, and HTTPS-hosted frontends (including Tailscale Funnel). Add any
+more restrictive production origins through `browser_allowed_origins`. The
+real transport wiring remains deliberately out of scope for this UI-only phase.
 
 ## Icons and components
 

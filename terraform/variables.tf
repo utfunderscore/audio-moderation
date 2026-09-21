@@ -98,6 +98,28 @@ variable "upload_retention_days" {
   default = 7
 }
 
+variable "browser_allowed_origins" {
+  description = "Browser origins allowed to call the public HTTP API and upload through presigned S3 URLs"
+  type        = set(string)
+  default = [
+    "http://127.0.0.1:4173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://localhost:5173",
+    # API Gateway supports protocol wildcards. This covers HTTPS-hosted demos,
+    # including Tailscale Funnel, without allowing arbitrary insecure origins.
+    "https://*",
+  ]
+
+  validation {
+    condition = length(var.browser_allowed_origins) > 0 && alltrue([
+      for origin in var.browser_allowed_origins :
+      can(regex("^https?://[^/]+$", origin))
+    ])
+    error_message = "browser_allowed_origins must contain origins such as https://app.example.com, without paths or trailing slashes."
+  }
+}
+
 variable "audio_source_bucket_arns" {
   description = "Additional S3 bucket ARNs from which the audio-processing Lambda may read audio objects"
   type        = set(string)

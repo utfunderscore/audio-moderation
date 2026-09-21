@@ -39,6 +39,18 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "uploads" {
   }
 }
 
+resource "aws_s3_bucket_cors_configuration" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["PUT"]
+    allowed_origins = var.browser_allowed_origins
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3600
+  }
+}
+
 resource "aws_s3_bucket_lifecycle_configuration" "uploads" {
   bucket = aws_s3_bucket.uploads.id
 
@@ -112,7 +124,7 @@ resource "aws_apigatewayv2_api" "public" {
       "idempotency-key",
     ]
     allow_methods = ["OPTIONS", "POST"]
-    allow_origins = ["*"]
+    allow_origins = var.browser_allowed_origins
     max_age       = 3600
   }
 }
