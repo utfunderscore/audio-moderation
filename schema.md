@@ -103,6 +103,36 @@ review_jobs
 A review can have at most one pipeline task. A task created directly through
 `StartEvaluation` does not have a review, so its `review_job_id` is empty.
 
+### Keeping direct tasks and review tasks separate
+
+There are two ways to create a pipeline task, and they deliberately have
+different responsibilities:
+
+| Creation route | What it creates | Can it link a review? |
+|---|---|---|
+| Direct evaluation (`StartEvaluation`) | An ordinary task with caller-supplied audio object URIs. | No. It always saves an empty (`NULL`) `review_job_id`. |
+| Review submission (`SubmitReview`) | A review and its one expected task in the same database transaction. | Yes. This is the only application path that creates the review-to-task link. |
+
+The ordinary database API is `NewPipelineTask` with
+`PipelineTaskStore::create_or_get`. `NewPipelineTask` intentionally does not
+contain a `review_job_id` field, so callers cannot accidentally turn a direct
+task into a review task. A `caller_reference` that happens to look like
+`review-job:42` is only text for tracking; it does not create a relationship.
+
+The review-specific API is `NewReviewPipelineTask` with
+`PipelineTaskStore::create_or_get_review`. It creates or replays the review and
+its task atomically. On a replay, it checks that the established task still has
+the expected review ID, tenant, derived idempotency key, caller reference, and
+S3 input URI. If those values do not match, the store returns a typed
+`ReviewTaskConflict` error instead of exposing a raw database unique-constraint
+error. This makes a broken or legacy mapping visible to application code without
+silently attaching the wrong task.
+
+This separation is important even though the database also has foreign-key and
+unique rules. The application API prevents ordinary callers from requesting an
+invalid link in the first place, while the review-specific transaction owns the
+one-to-one link and verifies it when reused.
+
 ## Migration 1: review jobs
 
 File: `migrations/1_create_review_jobs.sql`
@@ -181,9 +211,9 @@ An empty outcome means the task has not finished yet.
 | `task_id` | The internal database ID for a pipeline task. Step rows, events, tickets, and WebSocket subscriptions use this ID. |
 | `evaluation_id` | The public UUID returned for an evaluation. A UUID is a long random-looking ID that is safe to expose. |
 | `tenant_id` | The customer or workspace that owns the task. It must match the linked review's tenant. |
-| `review_job_id` | The review that created this task. It is empty for direct evaluations. `UNIQUE` means one review cannot have two tasks. |
-| `idempotency_key` | The key that prevents duplicate tasks. Review tasks use a stable value such as `review-upload:<review-id>`. |
-| `caller_reference` | Optional text supplied for tracking. Reviews use a value such as `review-job:<review-id>`. This is only a label; code should use `review_job_id` for the real relationship. |
+| `review_job_id` | The review that created this task. It is empty for direct evaluations. Only the review-specific creation path may set it. `UNIQUE` means one review cannot have two tasks. |
+| `idempotency_key` | The key that prevents duplicate tasks. Direct callers provide their own key. The review-specific path derives a stable key such as `review-upload:<review-id>`. |
+| `caller_reference` | Optional text supplied for tracking. Reviews use a derived value such as `review-job:<review-id>`. This is only a label; code should use `review_job_id` for the real relationship. |
 | `outcome` | The final result. It is empty until the task finishes. |
 | `execution_arn` | The AWS Step Functions execution ID after dispatch. Saving it helps prevent starting the same workflow twice. |
 | `dispatch_started_at` | When the current dispatch attempt claimed the task. Other requests use this as a temporary lock so they do not dispatch the task at the same time. |
