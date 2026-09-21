@@ -61,7 +61,7 @@ Without a suite, `preflight` validates the complete deployment. Without a suite,
 | Suite | Coverage | Fixture | Status |
 |---|---|---|---|
 | `review-submit` | SubmitReview response and presigned upload details | None | Supported |
-| `review-confirmation` | SubmitReview, real S3 upload, persisted pipeline task, and Step Functions dispatch/input; second PUT observes no duplicate persisted dispatch effects | Generated WAV | Supported; does not establish delivery of the second S3 notification or wait for model completion |
+| `review-confirmation` | SubmitReview, immediate pre-upload WebSocket subscription/replay, real S3 upload and live upload event, persisted pipeline task, and Step Functions dispatch/input; second PUT observes no duplicate persisted dispatch effects | Generated WAV | Supported; does not establish delivery of the second S3 notification or wait for model completion |
 | `evaluation-ingress` | Validation, active leases, terminal retry behavior, and idempotency conflicts | Synthetic non-dispatched S3 URIs | Supported |
 | `evaluation-dispatch` | Seeded dispatch and retry through the production workflow | `--audio-file` | Supported; does not wait for completion |
 | `audio-conversion` | Direct synchronous audio-processing Lambda invocation and artifact creation | `--audio-file` | Supported |

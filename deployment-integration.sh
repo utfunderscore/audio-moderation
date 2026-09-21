@@ -298,6 +298,7 @@ preflight() {
         review-confirmation)
             require_command cargo
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
+            validate_task_events_endpoint "${allow_missing_deployed_endpoint}"
             printf 'Database schema prerequisite: the current review-job, pipeline-task, task-event, and WebSocket schemas must already be applied.\n'
             ;;
         evaluation-ingress)
@@ -577,6 +578,7 @@ run_suite() {
         review-confirmation)
             preflight review-confirmation
             load_review_confirmation_environment
+            load_task_events_endpoint
             cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package submit-audio-lambda --test deployed starts_uploaded_review_evaluation_against_aws -- --ignored --nocapture
             ;;
         evaluation-ingress)

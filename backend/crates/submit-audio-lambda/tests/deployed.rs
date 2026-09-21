@@ -11,10 +11,18 @@ use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use uuid::Uuid;
 
+#[path = "../../../tests/support/task_events_websocket.rs"]
+mod task_events_websocket;
+
+use task_events_websocket::TaskEventsWebSocket;
+
 const SUBMIT_REVIEW_PATH: &str = "/audio.review.v1.AudioReviewService/SubmitReview";
 const GET_REVIEW_PATH: &str = "/audio.review.v1.AudioReviewService/GetReview";
+const CREATE_REVIEW_EVENTS_TICKET_PATH: &str =
+    "/audio.review.v1.AudioReviewService/CreateReviewEventsTicket";
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(60);
 const DUPLICATE_NOTIFICATION_WINDOW: Duration = Duration::from_secs(45);
+const WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, sqlx::FromRow)]
 struct StoredPipelineTask {
@@ -76,6 +84,7 @@ async fn starts_uploaded_review_evaluation_against_aws() -> Result<(), Box<dyn s
     let uploads_bucket = required_env("AUDIO_MODERATION_UPLOADS_BUCKET")?;
     let artifacts_bucket = required_env("AUDIO_MODERATION_ARTIFACTS_BUCKET")?;
     let state_machine_arn = required_env("AUDIO_MODERATION_STATE_MACHINE_ARN")?;
+    let task_events_endpoint = required_env("AUDIO_MODERATION_TASK_EVENTS_ENDPOINT")?;
     let database_url = required_env("DATABASE_URL")?;
     let pool = PgPoolOptions::new()
         .max_connections(1)
@@ -103,7 +112,43 @@ async fn starts_uploaded_review_evaluation_against_aws() -> Result<(), Box<dyn s
         serde_json::from_value(submitted["uploadHeaders"].clone())?;
     let audio = minimal_wav();
 
+    // Subscribe before upload to prove the review's task stream exists as soon
+    // as SubmitReview returns. The acceptance event must be replayed, and the
+    // upload event must then arrive live on the same review-scoped socket.
+    let ticket = create_review_events_ticket(
+        &client,
+        &endpoint,
+        submitted["reviewId"].as_str().unwrap(),
+        &access_token,
+    )
+    .await?;
+    let mut socket = TaskEventsWebSocket::connect_and_subscribe(
+        &task_events_endpoint,
+        &ticket,
+        WEBSOCKET_TIMEOUT,
+    )
+    .await
+    .map_err(|error| IoError::other(error.to_string()))?;
+    assert_eq!(
+        socket
+            .next_event(WEBSOCKET_TIMEOUT)
+            .await
+            .map_err(|error| IoError::other(error.to_string()))?,
+        "EVALUATION_ACCEPTED"
+    );
+
     put_presigned(&client, upload_url, &upload_headers, audio.clone()).await?;
+    assert_eq!(
+        socket
+            .next_event(DISPATCH_TIMEOUT)
+            .await
+            .map_err(|error| IoError::other(error.to_string()))?,
+        "UPLOAD_RECEIVED"
+    );
+    socket
+        .close_cleanly()
+        .await
+        .map_err(|error| IoError::other(error.to_string()))?;
 
     let pipeline_key = format!("review-upload:{task_id}");
     let expected_caller_reference = format!("review-job:{task_id}");
@@ -156,6 +201,38 @@ async fn starts_uploaded_review_evaluation_against_aws() -> Result<(), Box<dyn s
     .await?;
 
     Ok(())
+}
+
+async fn create_review_events_ticket(
+    client: &reqwest::Client,
+    endpoint: &str,
+    review_id: &str,
+    access_token: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let response = client
+        .post(format!(
+            "{}{}",
+            endpoint.trim_end_matches('/'),
+            CREATE_REVIEW_EVENTS_TICKET_PATH
+        ))
+        .header("content-type", "application/json")
+        .header("connect-protocol-version", "1")
+        .bearer_auth(access_token)
+        .json(&json!({ "reviewId": review_id }))
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    assert!(
+        status.is_success(),
+        "CreateReviewEventsTicket failed with {status}: {body}"
+    );
+    let response: Value = serde_json::from_str(&body)?;
+    response["ticket"]
+        .as_str()
+        .filter(|ticket| !ticket.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| IoError::other("ticket response did not contain a ticket").into())
 }
 
 async fn put_presigned(
