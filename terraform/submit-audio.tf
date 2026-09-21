@@ -140,8 +140,10 @@ resource "aws_apigatewayv2_integration" "submit_audio" {
 }
 
 resource "aws_apigatewayv2_route" "submit_audio_connect_rpc" {
-  api_id    = aws_apigatewayv2_api.public.id
-  route_key = "ANY /{proxy+}"
+  api_id = aws_apigatewayv2_api.public.id
+  # Keep OPTIONS unmatched so API Gateway's HTTP API CORS handler answers
+  # browser preflights instead of forwarding them to the Connect RPC Lambda.
+  route_key = "POST /{proxy+}"
   target    = "integrations/${aws_apigatewayv2_integration.submit_audio.id}"
 }
 
