@@ -1,7 +1,7 @@
 use aws_sdk_sfn::Client as SfnClient;
 use buffa_types::google::protobuf::Timestamp;
 use chrono::{DateTime, Duration, Utc};
-use common::EvaluationAccess;
+use common::{EvaluationAccess, review_token_hash, review_token_hash_matches};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest};
 use database::{
     ModerationResult as DatabaseModerationResult, NewPipelineTask,
@@ -90,31 +90,29 @@ impl StartEvaluationService {
             ));
         }
 
-        // Preserve `eval_v1` direct-evaluation capabilities. Review callers use
-        // domain-separated `review_v1` capabilities, which are resolved through
-        // the explicit review_job_id foreign-key relationship.
+        // Preserve `eval_v1` direct-evaluation capabilities. Opaque review
+        // tokens are resolved through the explicit review_job_id foreign-key.
         if self.access.verify(&evaluation_id.to_string(), token) {
             return Ok(());
         }
-        let Some(review_id) =
-            self.access
-                .authenticated_review(&self.tenant_id, token, std::time::SystemTime::now())
-        else {
+        let Some(token_hash) = review_token_hash(token) else {
             return Err(ConnectError::unauthenticated(
                 "invalid evaluation access token",
             ));
         };
         let linked = self
             .reviews
-            .get_details(review_id, &self.tenant_id)
+            .get_by_evaluation_id(evaluation_id, &self.tenant_id)
             .await
             .map_err(|error| {
-                error!(reviewId = review_id, error = ?error, "failed to authorize review evaluation");
+                error!(evaluationId = %evaluation_id, error = ?error, "failed to authorize review evaluation");
                 ConnectError::internal("failed to authorize evaluation")
             })?;
-        if linked.and_then(|review| review.evaluation_id).as_ref() != Some(evaluation_id) {
-            return Err(ConnectError::permission_denied(
-                "access token is not scoped to this evaluation",
+        if linked
+            .is_none_or(|review| !review_token_hash_matches(&review.access_token_hash, &token_hash))
+        {
+            return Err(ConnectError::unauthenticated(
+                "invalid evaluation access token",
             ));
         }
         Ok(())

@@ -73,9 +73,12 @@ still required before the workflow can start.
 
 ### Why there are both access tokens and tickets
 
-The `review_v1` access token proves which review the caller may access. The
-same token is used for the review, its linked evaluation, and creating an event
-ticket.
+The client generates a `review_v1` access token before calling `SubmitReview`:
+`review_v1.` followed by base64url (without padding) for 32 cryptographically
+random bytes. It sends that token in `Authorization: Bearer ...`, retains it as
+a sensitive bearer credential, and uses the same token for the review, its
+linked evaluation, and creating an event ticket. The service never returns or
+reissues it.
 
 The WebSocket ticket has a smaller job. It is random, expires quickly, and can
 only be used once. This avoids sending the longer-lived review token through
@@ -120,10 +123,11 @@ File: `migrations/1_create_review_jobs.sql`
 |---|---|
 | `job_id` | The database ID for the review. PostgreSQL assigns the next number automatically. The API currently returns this as `review_id`. |
 | `tenant_id` | The customer or workspace that owns the review. Every review lookup must also check this field. |
-| `idempotency_key` | A caller-provided key used to recognize a repeated submission. The same tenant and key return the existing review. It may be empty for internal uses. |
+| `idempotency_key` | A UUID supplied only for retry/deduplication. The same tenant and key returns an existing review only when the caller also presents its matching review token. |
+| `access_token_hash` | SHA-256 hex digest of the client-generated review token. The raw token is never stored. |
 | `status` | The current review status. New reviews start as `AWAITING_UPLOAD`. |
 | `input_file_path` | The expected S3 object key. PostgreSQL creates it automatically as `reviews/<job_id>/source`; application code cannot choose a different value. |
-| `created_at` | When the review was created. The current review-token expiry is calculated from this time, so retrying a request does not extend the token lifetime. |
+| `created_at` | When the review was created. Opaque review access lasts while this review exists. |
 | `updated_at` | When the review status was last changed. |
 
 ### Rules and lookup helpers
@@ -135,9 +139,9 @@ File: `migrations/1_create_review_jobs.sql`
 | `review_jobs_job_tenant_unique` | Lets the task link to both the review ID and its tenant. This prevents a task from linking to another tenant's review. |
 | `idx_review_jobs_tenant_created` | Makes it faster to list one tenant's newest reviews first. |
 
-The `review_v1` token is **not** saved in this table. It is signed by the
-server. This lets the server detect whether the token is genuine and read which
-tenant, review, permissions, and expiry it contains.
+The raw `review_v1` token is **not** saved in this table. Only its SHA-256
+digest is stored, so an idempotency key alone cannot retrieve a review or issue
+an upload URL.
 
 ## Migration 2: pipeline work
 
@@ -341,12 +345,13 @@ These values have different jobs and should not be treated as interchangeable:
 | Review ID | Identifies the upload-first review from submission through completion. |
 | Evaluation ID | Public ID for the linked processing pipeline. |
 | Task ID | Internal database ID used to connect pipeline tables. It is not a secret. |
-| `review_v1` token | Proves access to one review and its linked evaluation. It is signed but not stored in the database. |
+| `review_v1` token | Client-generated opaque bearer credential for one review and its linked evaluation. Only its SHA-256 digest is stored. |
 | `eval_v1` token | Proves access to an evaluation created directly through `StartEvaluation`. It is signed but not stored in the database. |
 | `wst_v1` ticket | Short-lived, one-use WebSocket subscription ticket. Only its fingerprint is stored. |
 | AWS callback token | Secret used by an external processing job to resume Step Functions. Only its fingerprint is stored. |
 
 For the implemented review flow, the same `review_v1` token authorizes `GetReview`,
-the linked `GetEvaluation`, and `CreateReviewEventsTicket`. The client can
+the linked `GetEvaluation`, `CreateReviewEventsTicket`, and linked
+`CreateTaskEventsTicket`. The client can
 create a ticket and subscribe as soon as `SubmitReview` returns; it does not
 need to poll for an evaluation ID.

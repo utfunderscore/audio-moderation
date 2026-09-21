@@ -1082,6 +1082,7 @@ dependencies = [
  "base64 0.22.1",
  "hmac 0.12.1",
  "sha2 0.10.9",
+ "subtle",
 ]
 
 [[package]]
@@ -4219,6 +4220,7 @@ dependencies = [
  "aws-sdk-s3",
  "aws-sdk-sfn",
  "aws-sdk-ssm",
+ "base64 0.22.1",
  "buffa",
  "buffa-types",
  "chrono",

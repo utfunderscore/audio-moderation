@@ -5,6 +5,8 @@ package audio.review.v1;
 import "google/protobuf/timestamp.proto";
 
 service AudioReviewService {
+  // Requires a UUID in the idempotency-key HTTP request header and a client-generated
+  // Authorization: Bearer review_v1.<base64url-encoded 32 random bytes> header.
   rpc SubmitReview(SubmitReviewRequest) returns (SubmitReviewResponse);
   rpc GetReview(GetReviewRequest) returns (GetReviewResponse);
   rpc CreateReviewEventsTicket(CreateReviewEventsTicketRequest) returns (CreateReviewEventsTicketResponse);
@@ -20,8 +22,10 @@ message SubmitReviewResponse {
   string upload_url = 2;
   map<string, string> upload_headers = 3;
   ReviewJobStatus status = 4;
-  string access_token = 5;
-  google.protobuf.Timestamp access_expires_at = 6;
+  // Deprecated: clients generate and retain the review bearer token before submission.
+  string access_token = 5 [deprecated = true];
+  // Deprecated: opaque review tokens remain valid while their review exists.
+  google.protobuf.Timestamp access_expires_at = 6 [deprecated = true];
   string review_id = 7;
   // The evaluation is created with the review, before its source is uploaded.
   string evaluation_id = 8;

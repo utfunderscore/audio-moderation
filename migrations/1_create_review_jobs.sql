@@ -10,6 +10,8 @@ CREATE TABLE review_jobs (
     job_id          SERIAL PRIMARY KEY,
     tenant_id       TEXT NOT NULL,
     idempotency_key TEXT,
+    -- The raw client-supplied review bearer token is never persisted.
+    access_token_hash CHAR(64) NOT NULL,
     status          review_job_status NOT NULL DEFAULT 'AWAITING_UPLOAD',
     input_file_path TEXT GENERATED ALWAYS AS ('reviews/' || job_id || '/source') STORED NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),

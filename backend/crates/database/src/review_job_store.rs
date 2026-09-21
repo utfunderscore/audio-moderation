@@ -24,6 +24,7 @@ pub struct ReviewJob {
     pub job_id: i32,
     pub tenant_id: String,
     pub idempotency_key: Option<String>,
+    pub access_token_hash: String,
     pub status: ReviewJobStatus,
     pub input_file_path: String,
     pub created_at: DateTime<Utc>,
@@ -43,6 +44,7 @@ pub struct ReviewJobDetails {
 pub struct NewReviewJob<'a> {
     pub tenant_id: &'a str,
     pub idempotency_key: Option<&'a str>,
+    pub access_token_hash: &'a str,
 }
 
 /// Workflow states persisted in `review_jobs.status`.
@@ -82,20 +84,20 @@ impl ReviewJobStore {
 
     /// Creates a job, or returns the existing job for the same tenant and idempotency key.
     pub async fn create_or_get(&self, job: NewReviewJob<'_>) -> Result<ReviewJob, DatabaseError> {
-        sqlx::query_as!(
-            ReviewJob,
+        sqlx::query_as::<_, ReviewJob>(
             r#"
-                INSERT INTO review_jobs (tenant_id, idempotency_key)
-                VALUES ($1, $2)
+                INSERT INTO review_jobs (tenant_id, idempotency_key, access_token_hash)
+                VALUES ($1, $2, $3)
                 ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
                     SET tenant_id = review_jobs.tenant_id
                 RETURNING job_id, tenant_id, idempotency_key,
-                    status AS "status: ReviewJobStatus", input_file_path AS "input_file_path!", created_at, updated_at,
-                    (xmax = 0) AS "created!"
+                    access_token_hash, status, input_file_path, created_at, updated_at,
+                    (xmax = 0) AS created
             "#,
-            job.tenant_id,
-            job.idempotency_key,
         )
+        .bind(job.tenant_id)
+        .bind(job.idempotency_key)
+        .bind(job.access_token_hash)
         .fetch_one(&self.pool)
         .await
         .map_err(DatabaseError::CreateOrGet)
@@ -107,18 +109,17 @@ impl ReviewJobStore {
         job_id: i32,
         tenant_id: &str,
     ) -> Result<Option<ReviewJob>, DatabaseError> {
-        sqlx::query_as!(
-            ReviewJob,
+        sqlx::query_as::<_, ReviewJob>(
             r#"
                 SELECT job_id, tenant_id, idempotency_key,
-                    status AS "status: ReviewJobStatus", input_file_path AS "input_file_path!", created_at, updated_at,
-                    TRUE AS "created!"
+                    access_token_hash, status, input_file_path, created_at, updated_at,
+                    TRUE AS created
                 FROM review_jobs
                 WHERE job_id = $1 AND tenant_id = $2
             "#,
-            job_id,
-            tenant_id,
         )
+        .bind(job_id)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(DatabaseError::Get)
@@ -132,7 +133,7 @@ impl ReviewJobStore {
     ) -> Result<Option<ReviewJob>, DatabaseError> {
         sqlx::query_as::<_, ReviewJob>(
             r#"
-                SELECT job_id, tenant_id, idempotency_key,
+                SELECT job_id, tenant_id, idempotency_key, access_token_hash,
                     status, input_file_path, created_at, updated_at, TRUE AS created
                 FROM review_jobs
                 WHERE input_file_path = $1 AND tenant_id = $2
@@ -156,6 +157,7 @@ impl ReviewJobStore {
             job_id: i32,
             tenant_id: String,
             idempotency_key: Option<String>,
+            access_token_hash: String,
             status: ReviewJobStatus,
             input_file_path: String,
             created_at: DateTime<Utc>,
@@ -165,7 +167,7 @@ impl ReviewJobStore {
 
         let row = sqlx::query_as::<_, Row>(
             r#"
-                SELECT review.job_id, review.tenant_id, review.idempotency_key,
+                SELECT review.job_id, review.tenant_id, review.idempotency_key, review.access_token_hash,
                     CASE
                         WHEN pipeline.outcome = 'SUCCEEDED' THEN 'COMPLETED'::review_job_status
                         WHEN pipeline.outcome IS NOT NULL THEN 'ERROR'::review_job_status
@@ -190,6 +192,7 @@ impl ReviewJobStore {
                 job_id: row.job_id,
                 tenant_id: row.tenant_id,
                 idempotency_key: row.idempotency_key,
+                access_token_hash: row.access_token_hash,
                 status: row.status,
                 input_file_path: row.input_file_path,
                 created_at: row.created_at,
@@ -207,20 +210,19 @@ impl ReviewJobStore {
         tenant_id: &str,
         status: ReviewJobStatus,
     ) -> Result<Option<ReviewJob>, DatabaseError> {
-        sqlx::query_as!(
-            ReviewJob,
+        sqlx::query_as::<_, ReviewJob>(
             r#"
                 UPDATE review_jobs
                 SET status = $3::text::review_job_status, updated_at = NOW()
                 WHERE job_id = $1 AND tenant_id = $2
                 RETURNING job_id, tenant_id, idempotency_key,
-                    status AS "status: ReviewJobStatus", input_file_path AS "input_file_path!", created_at, updated_at,
-                    TRUE AS "created!"
+                    access_token_hash, status, input_file_path, created_at, updated_at,
+                    TRUE AS created
             "#,
-            job_id,
-            tenant_id,
-            status.as_str(),
         )
+        .bind(job_id)
+        .bind(tenant_id)
+        .bind(status.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(DatabaseError::UpdateStatus)
@@ -235,8 +237,7 @@ impl ReviewJobStore {
         input_file_path: &str,
         tenant_id: &str,
     ) -> Result<Option<ReviewJob>, DatabaseError> {
-        sqlx::query_as!(
-            ReviewJob,
+        sqlx::query_as::<_, ReviewJob>(
             r#"
                 UPDATE review_jobs
                 SET
@@ -250,14 +251,39 @@ impl ReviewJobStore {
                     END
                 WHERE input_file_path = $1 AND tenant_id = $2
                 RETURNING job_id, tenant_id, idempotency_key,
-                    status AS "status: ReviewJobStatus", input_file_path AS "input_file_path!", created_at, updated_at,
-                    TRUE AS "created!"
+                    access_token_hash, status, input_file_path, created_at, updated_at,
+                    TRUE AS created
             "#,
-            input_file_path,
-            tenant_id,
         )
+        .bind(input_file_path)
+        .bind(tenant_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(DatabaseError::MarkUploadComplete)
+    }
+
+    /// Finds the review explicitly linked to an evaluation within one tenant.
+    /// The caller compares its stored token digest before exposing any result.
+    pub async fn get_by_evaluation_id(
+        &self,
+        evaluation_id: &Uuid,
+        tenant_id: &str,
+    ) -> Result<Option<ReviewJob>, DatabaseError> {
+        sqlx::query_as::<_, ReviewJob>(
+            r#"
+                SELECT review.job_id, review.tenant_id, review.idempotency_key,
+                    review.access_token_hash, review.status, review.input_file_path,
+                    review.created_at, review.updated_at, TRUE AS created
+                FROM review_jobs review
+                INNER JOIN pipeline_tasks pipeline ON pipeline.review_job_id = review.job_id
+                    AND pipeline.tenant_id = review.tenant_id
+                WHERE pipeline.evaluation_id = $1 AND review.tenant_id = $2
+            "#,
+        )
+        .bind(evaluation_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DatabaseError::Get)
     }
 }

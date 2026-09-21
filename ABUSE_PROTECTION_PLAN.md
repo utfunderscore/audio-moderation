@@ -38,11 +38,15 @@ Lambda, Step Functions, transcription, moderation, or database costs.
 - Rotating the global evaluation access secret is the current revocation mechanism:
   it invalidates all previously issued evaluation tokens. Individual-token
   revocation is not implemented.
-- Review-triggered evaluations do not expose an evaluation access token through the
-  review API before upload. `SubmitReview` returns an expiring `review_v1.`
-  capability scoped to its review job, plus the review/upload details. The review
-  capability is signed with the existing evaluation-access secret but uses a
-  domain-separated HMAC context; it cannot validate as an `eval_v1.` token.
+- Before `SubmitReview`, clients generate and securely retain a `review_v1.`
+  bearer token containing exactly 32 cryptographically random bytes encoded as
+  unpadded base64url. They send it in `Authorization: Bearer ...`; it is never
+  returned, reissued, logged, or included in URLs. The service stores only its
+  SHA-256 digest. An idempotency key is a UUID retry/deduplication key, not an
+  access credential, and a replay requires the same review token.
+- Opaque review tokens remain valid while the review exists. They are scoped by
+  the stored review-to-task relationship and cannot validate as `eval_v1.`
+  tokens.
 - `SubmitReview` creates the linked evaluation before upload, so `GetReview`
   always exposes that stable ID. The same capability can authorize
   `GetEvaluation` only for the pipeline task explicitly linked to that review

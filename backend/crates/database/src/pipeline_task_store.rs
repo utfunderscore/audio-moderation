@@ -223,6 +223,7 @@ pub struct NewPipelineTask<'a> {
 pub struct NewReviewPipelineTask<'a> {
     pub tenant_id: &'a str,
     pub idempotency_key: &'a str,
+    pub access_token_hash: &'a str,
     pub uploads_bucket: &'a str,
 }
 
@@ -257,6 +258,7 @@ struct PersistedReviewPipelineTask {
     job_id: i32,
     review_tenant_id: String,
     review_idempotency_key: Option<String>,
+    review_access_token_hash: String,
     review_status: ReviewJobStatus,
     input_file_path: String,
     review_created_at: DateTime<Utc>,
@@ -702,11 +704,11 @@ impl PipelineTaskStore {
         let persisted = sqlx::query_as::<_, PersistedReviewPipelineTask>(
             r#"
                 WITH review AS (
-                    INSERT INTO review_jobs (tenant_id, idempotency_key)
-                    VALUES ($1, $2)
+                    INSERT INTO review_jobs (tenant_id, idempotency_key, access_token_hash)
+                    VALUES ($1, $2, $3)
                     ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
                         SET tenant_id = review_jobs.tenant_id
-                    RETURNING job_id, tenant_id, idempotency_key,
+                    RETURNING job_id, tenant_id, idempotency_key, access_token_hash,
                         status AS review_status, input_file_path, created_at, updated_at,
                         (xmax = 0) AS review_created
                 ), task AS (
@@ -735,7 +737,7 @@ impl PipelineTaskStore {
                     ON CONFLICT (task_id) DO NOTHING
                 ), input AS (
                     INSERT INTO pipeline_task_inputs (task_id, sequence, audio_s3_uri)
-                    SELECT task.task_id, 0, 's3://' || $3 || '/' || review.input_file_path
+                    SELECT task.task_id, 0, 's3://' || $4 || '/' || review.input_file_path
                     FROM task CROSS JOIN review WHERE task.task_created
                     ON CONFLICT (task_id, sequence) DO NOTHING
                 ), accepted AS (
@@ -744,7 +746,8 @@ impl PipelineTaskStore {
                     ON CONFLICT (task_id, event_name) DO NOTHING
                 )
                 SELECT review.job_id, review.tenant_id AS review_tenant_id,
-                    review.idempotency_key AS review_idempotency_key, review.review_status,
+                    review.idempotency_key AS review_idempotency_key,
+                    review.access_token_hash AS review_access_token_hash, review.review_status,
                     review.input_file_path, review.created_at AS review_created_at,
                     review.updated_at AS review_updated_at, review.review_created,
                     task.task_id, task.evaluation_id, task.tenant_id AS task_tenant_id,
@@ -757,6 +760,7 @@ impl PipelineTaskStore {
         )
         .bind(review.tenant_id)
         .bind(review.idempotency_key)
+        .bind(review.access_token_hash)
         .bind(review.uploads_bucket)
         .fetch_one(&mut *transaction)
         .await
@@ -795,6 +799,7 @@ impl PipelineTaskStore {
                 job_id: persisted.job_id,
                 tenant_id: persisted.review_tenant_id,
                 idempotency_key: persisted.review_idempotency_key,
+                access_token_hash: persisted.review_access_token_hash,
                 status: persisted.review_status,
                 input_file_path: persisted.input_file_path,
                 created_at: persisted.review_created_at,

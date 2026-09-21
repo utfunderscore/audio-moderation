@@ -3,7 +3,7 @@ use std::env;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_ssm::Client as SsmClient;
-use common::{EvaluationAccess, load_database_url, load_secure_parameter};
+use common::load_database_url;
 use connectrpc::ConnectRpcService;
 use database::{PipelineTaskEventTicketStore, PipelineTaskStore, ReviewJobStore};
 use http_body_util::Full;
@@ -32,9 +32,6 @@ async fn main() -> Result<(), Error> {
     let ssm_client = SsmClient::new(&sdk_config);
 
     let database_url = load_database_url(&ssm_client).await?;
-    let access = EvaluationAccess::new(
-        load_secure_parameter(&ssm_client, "EVALUATION_ACCESS_SECRET_PARAMETER").await?,
-    )?;
     let pool = PgPoolOptions::new()
         .max_connections(3)
         .connect_lazy(&database_url)?;
@@ -48,7 +45,6 @@ async fn main() -> Result<(), Error> {
         s3_client,
         uploads_bucket,
         tenant_id,
-        access,
     );
     let connect_service = ConnectRpcService::new(AudioReviewServiceServer::new(service));
 

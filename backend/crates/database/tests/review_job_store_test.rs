@@ -7,6 +7,9 @@ use database::{
 
 use common::TestDatabase;
 
+const TOKEN_HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const OTHER_TOKEN_HASH: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
 #[tokio::test]
 async fn creates_serial_job_and_replays_by_tenant_idempotency_key() {
     let database = TestDatabase::start().await;
@@ -16,6 +19,7 @@ async fn creates_serial_job_and_replays_by_tenant_idempotency_key() {
         .create_or_get(NewReviewJob {
             tenant_id: "tenant-a",
             idempotency_key: Some("request-1"),
+            access_token_hash: TOKEN_HASH,
         })
         .await
         .unwrap();
@@ -23,6 +27,7 @@ async fn creates_serial_job_and_replays_by_tenant_idempotency_key() {
         .create_or_get(NewReviewJob {
             tenant_id: "tenant-a",
             idempotency_key: Some("request-1"),
+            access_token_hash: TOKEN_HASH,
         })
         .await
         .unwrap();
@@ -30,6 +35,7 @@ async fn creates_serial_job_and_replays_by_tenant_idempotency_key() {
         .create_or_get(NewReviewJob {
             tenant_id: "tenant-b",
             idempotency_key: Some("request-1"),
+            access_token_hash: TOKEN_HASH,
         })
         .await
         .unwrap();
@@ -37,6 +43,7 @@ async fn creates_serial_job_and_replays_by_tenant_idempotency_key() {
     assert!(created.created);
     assert_eq!(created.job_id, 1);
     assert_eq!(created.input_file_path, "reviews/1/source");
+    assert_eq!(created.access_token_hash, TOKEN_HASH);
     assert!(!replayed.created);
     assert_eq!(replayed.job_id, created.job_id);
     assert_ne!(other_tenant.job_id, created.job_id);
@@ -57,6 +64,7 @@ async fn upload_completion_is_idempotent_and_does_not_move_status_backwards() {
         .create_or_get(NewReviewJob {
             tenant_id: "tenant-a",
             idempotency_key: Some("request-1"),
+            access_token_hash: TOKEN_HASH,
         })
         .await
         .unwrap();
@@ -99,6 +107,7 @@ async fn retrieves_the_pipeline_evaluation_linked_by_review_job_foreign_key() {
         .create_or_get(NewReviewJob {
             tenant_id: "tenant-a",
             idempotency_key: Some("request-1"),
+            access_token_hash: TOKEN_HASH,
         })
         .await
         .unwrap();
@@ -136,6 +145,7 @@ async fn atomically_creates_and_replays_a_review_pipeline_with_initial_event() {
         .create_or_get_review(NewReviewPipelineTask {
             tenant_id: "tenant-a",
             idempotency_key: "review-request-1",
+            access_token_hash: TOKEN_HASH,
             uploads_bucket: "uploads",
         })
         .await
@@ -144,6 +154,7 @@ async fn atomically_creates_and_replays_a_review_pipeline_with_initial_event() {
         .create_or_get_review(NewReviewPipelineTask {
             tenant_id: "tenant-a",
             idempotency_key: "review-request-1",
+            access_token_hash: OTHER_TOKEN_HASH,
             uploads_bucket: "uploads",
         })
         .await
@@ -152,8 +163,19 @@ async fn atomically_creates_and_replays_a_review_pipeline_with_initial_event() {
     assert!(created.job.created);
     assert!(created.task.created);
     assert_eq!(created.job.job_id, replayed.job.job_id);
+    assert_eq!(created.job.access_token_hash, TOKEN_HASH);
+    assert_eq!(replayed.job.access_token_hash, TOKEN_HASH);
     assert_eq!(created.task.task_id, replayed.task.task_id);
     assert_eq!(created.task.evaluation_id, replayed.task.evaluation_id);
+    assert_eq!(
+        ReviewJobStore::new(database.pool.clone())
+            .get_by_evaluation_id(&created.task.evaluation_id.parse().unwrap(), "tenant-a",)
+            .await
+            .unwrap()
+            .unwrap()
+            .access_token_hash,
+        TOKEN_HASH
+    );
     assert_eq!(
         created.task.audio_s3_uris,
         vec![format!("s3://uploads/{}", created.job.input_file_path)]

@@ -1,9 +1,9 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::presigning::PresigningConfig;
 use buffa_types::google::protobuf::Timestamp;
-use common::EvaluationAccess;
+use common::{review_token_hash, review_token_hash_matches};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest};
 use database::{
     NewReviewPipelineTask, PipelineTaskEventTicketStore, PipelineTaskStore,
@@ -19,7 +19,6 @@ use crate::proto::audio::review::v1::{
 
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 const UPLOAD_URL_TTL: Duration = Duration::from_secs(15 * 60);
-const REVIEW_ACCESS_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const AUTHORIZATION_HEADER: &str = "authorization";
 const TASK_EVENTS_TICKET_LIFETIME: chrono::Duration = chrono::Duration::minutes(2);
 
@@ -31,7 +30,6 @@ pub(crate) struct SubmitReviewService {
     s3_client: S3Client,
     uploads_bucket: String,
     tenant_id: String,
-    access: EvaluationAccess,
 }
 
 impl SubmitReviewService {
@@ -42,7 +40,6 @@ impl SubmitReviewService {
         s3_client: S3Client,
         uploads_bucket: String,
         tenant_id: String,
-        access: EvaluationAccess,
     ) -> Self {
         Self {
             store,
@@ -51,51 +48,22 @@ impl SubmitReviewService {
             s3_client,
             uploads_bucket,
             tenant_id,
-            access,
         }
     }
 
-    fn capability(
-        &self,
-        job_id: i32,
-        created_at: chrono::DateTime<chrono::Utc>,
-    ) -> (String, Timestamp) {
-        // Anchor expiry to creation, so an idempotent replay cannot extend the
-        // capability's lifetime.
-        let expires_at = SystemTime::from(created_at) + REVIEW_ACCESS_TTL;
-        let expires_at = UNIX_EPOCH
-            + Duration::from_secs(
-                expires_at
-                    .duration_since(UNIX_EPOCH)
-                    .expect("review creation is after Unix epoch")
-                    .as_secs(),
-            );
-        (
-            self.access
-                .review_token(&self.tenant_id, job_id, expires_at),
-            system_timestamp(expires_at),
-        )
-    }
-
-    fn authorize(&self, ctx: &RequestContext, review_id: i32) -> Result<(), ConnectError> {
-        let value = ctx
-            .header(AUTHORIZATION_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .ok_or_else(|| ConnectError::unauthenticated("review access token is required"))?;
-        let (scheme, token) = value
-            .trim()
-            .split_once(' ')
-            .ok_or_else(|| ConnectError::unauthenticated("invalid review access token"))?;
-        if !scheme.eq_ignore_ascii_case("Bearer")
-            || token.is_empty()
-            || self
-                .access
-                .authenticated_review(&self.tenant_id, token, SystemTime::now())
-                != Some(review_id)
-        {
-            return Err(ConnectError::unauthenticated("invalid review access token"));
-        }
-        Ok(())
+    async fn authorize(&self, ctx: &RequestContext, review_id: i32) -> Result<(), ConnectError> {
+        let token_hash = review_token_hash_from_authorization(ctx)?;
+        let review = self.store.get(review_id, &self.tenant_id).await.map_err(
+            |database_error| {
+                error!(reviewId = review_id, error = ?database_error, "failed to authorize review");
+                ConnectError::internal("failed to authorize review")
+            },
+        )?;
+        review
+            .as_ref()
+            .map(|review| ensure_review_token_matches(&review.access_token_hash, &token_hash))
+            .transpose()?
+            .ok_or_else(|| ConnectError::unauthenticated("invalid review access token"))
     }
 }
 
@@ -124,12 +92,15 @@ impl AudioReviewService for SubmitReviewService {
             );
             error
         })?;
+        validate_idempotency_key(&idempotency_key)?;
+        let access_token_hash = review_token_hash_from_authorization(&ctx)?;
 
         let review = self
             .pipeline_store
             .create_or_get_review(NewReviewPipelineTask {
                 tenant_id: &self.tenant_id,
                 idempotency_key: &idempotency_key,
+                access_token_hash: &access_token_hash,
                 uploads_bucket: &self.uploads_bucket,
             })
             .await
@@ -145,6 +116,8 @@ impl AudioReviewService for SubmitReviewService {
         let job = review.job;
         let task = review.task;
         let replayed = !job.created;
+        // Do not reveal whether the idempotency key or review exists.
+        ensure_review_token_matches(&job.access_token_hash, &access_token_hash)?;
         if job.status != DatabaseReviewJobStatus::AwaitingUpload {
             info!(
                 jobId = %job.job_id,
@@ -153,7 +126,7 @@ impl AudioReviewService for SubmitReviewService {
                 outcome = "idempotent_replay",
                 "returned existing audio submission"
             );
-            return Response::ok(self.response_for_existing_job(&job, &task.evaluation_id));
+            return Response::ok(Self::response_for_existing_job(&job, &task.evaluation_id));
         }
 
         if replayed {
@@ -195,7 +168,7 @@ impl AudioReviewService for SubmitReviewService {
                     outcome = "source_already_uploaded",
                     "returned existing audio submission"
                 );
-                return Response::ok(self.response_for_existing_job(&job, &task.evaluation_id));
+                return Response::ok(Self::response_for_existing_job(&job, &task.evaluation_id));
             }
         }
 
@@ -231,7 +204,6 @@ impl AudioReviewService for SubmitReviewService {
             "accepted audio submission"
         );
 
-        let (access_token, access_expires_at) = self.capability(job.job_id, job.created_at);
         Response::ok(SubmitReviewResponse {
             task_id: job.job_id.to_string(),
             review_id: job.job_id.to_string(),
@@ -239,8 +211,6 @@ impl AudioReviewService for SubmitReviewService {
             upload_url: upload.uri().to_owned(),
             upload_headers,
             status: ReviewJobStatus::AwaitingUpload.into(),
-            access_token,
-            access_expires_at: access_expires_at.into(),
             ..Default::default()
         })
     }
@@ -252,7 +222,7 @@ impl AudioReviewService for SubmitReviewService {
     ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<GetReviewResponse> + Send + use<'a>>
     {
         let review_id = parse_review_id(request.review_id)?;
-        self.authorize(&ctx, review_id)?;
+        self.authorize(&ctx, review_id).await?;
         let details = self
             .store
             .get_details(review_id, &self.tenant_id)
@@ -288,7 +258,7 @@ impl AudioReviewService for SubmitReviewService {
         impl connectrpc::Encodable<CreateReviewEventsTicketResponse> + Send + use<'a>,
     > {
         let review_id = parse_review_id(request.review_id)?;
-        self.authorize(&ctx, review_id)?;
+        self.authorize(&ctx, review_id).await?;
         let task = self
             .pipeline_store
             .get_by_review_job(review_id, &self.tenant_id)
@@ -322,18 +292,14 @@ impl AudioReviewService for SubmitReviewService {
 
 impl SubmitReviewService {
     fn response_for_existing_job(
-        &self,
         job: &database::ReviewJob,
         evaluation_id: &str,
     ) -> SubmitReviewResponse {
-        let (access_token, access_expires_at) = self.capability(job.job_id, job.created_at);
         SubmitReviewResponse {
             task_id: job.job_id.to_string(),
             review_id: job.job_id.to_string(),
             evaluation_id: evaluation_id.to_owned(),
             status: ReviewJobStatus::from(job.status).into(),
-            access_token,
-            access_expires_at: access_expires_at.into(),
             ..Default::default()
         }
     }
@@ -352,17 +318,6 @@ fn timestamp(value: chrono::DateTime<chrono::Utc>) -> Timestamp {
     Timestamp {
         seconds: value.timestamp(),
         nanos: value.timestamp_subsec_nanos() as i32,
-        ..Default::default()
-    }
-}
-
-fn system_timestamp(value: SystemTime) -> Timestamp {
-    let value = value
-        .duration_since(UNIX_EPOCH)
-        .expect("expiry is after Unix epoch");
-    Timestamp {
-        seconds: value.as_secs() as i64,
-        nanos: value.subsec_nanos() as i32,
         ..Default::default()
     }
 }
@@ -425,6 +380,34 @@ fn required_header(ctx: &RequestContext, name: &'static str) -> Result<String, C
         )));
     }
     Ok(value.to_owned())
+}
+
+fn review_token_hash_from_authorization(ctx: &RequestContext) -> Result<String, ConnectError> {
+    let value = ctx
+        .header(AUTHORIZATION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ConnectError::unauthenticated("invalid review access token"))?;
+    let (scheme, token) = value
+        .trim()
+        .split_once(' ')
+        .ok_or_else(|| ConnectError::unauthenticated("invalid review access token"))?;
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return Err(ConnectError::unauthenticated("invalid review access token"));
+    }
+    review_token_hash(token)
+        .ok_or_else(|| ConnectError::unauthenticated("invalid review access token"))
+}
+
+fn validate_idempotency_key(value: &str) -> Result<(), ConnectError> {
+    uuid::Uuid::parse_str(value)
+        .map(|_| ())
+        .map_err(|_| ConnectError::invalid_argument("idempotency-key must be a UUID"))
+}
+
+fn ensure_review_token_matches(expected: &str, supplied: &str) -> Result<(), ConnectError> {
+    review_token_hash_matches(expected, supplied)
+        .then_some(())
+        .ok_or_else(|| ConnectError::unauthenticated("invalid review access token"))
 }
 
 #[cfg(test)]
@@ -494,40 +477,55 @@ mod tests {
             required_header(&RequestContext::new(headers), IDEMPOTENCY_KEY_HEADER),
             "idempotency-key is not valid ASCII",
         );
+        assert_invalid_argument(
+            validate_idempotency_key("not-a-uuid"),
+            "idempotency-key must be a UUID",
+        );
     }
 
-    #[tokio::test]
-    async fn replay_after_upload_returns_existing_job_without_upload_instructions() {
+    #[test]
+    fn requires_a_strict_opaque_review_bearer_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION_HEADER,
+            HeaderValue::from_static(
+                "Bearer review_v1.BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+            ),
+        );
+        assert!(review_token_hash_from_authorization(&RequestContext::new(headers)).is_ok());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            AUTHORIZATION_HEADER,
+            HeaderValue::from_static("Bearer review_v1.short"),
+        );
+        let error =
+            review_token_hash_from_authorization(&RequestContext::new(headers)).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unauthenticated);
+        assert_eq!(
+            error.message.as_deref(),
+            Some("invalid review access token")
+        );
+    }
+
+    #[test]
+    fn mismatched_review_token_has_a_generic_non_disclosing_error() {
+        let error = ensure_review_token_matches(&"a".repeat(64), &"b".repeat(64)).unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unauthenticated);
+        assert_eq!(
+            error.message.as_deref(),
+            Some("invalid review access token")
+        );
+    }
+
+    #[test]
+    fn replay_after_upload_returns_existing_job_without_upload_instructions_or_token() {
         let job_id = 42;
-        let service = SubmitReviewService {
-            store: ReviewJobStore::new(
-                sqlx::postgres::PgPoolOptions::new()
-                    .connect_lazy("postgres://localhost/test")
-                    .unwrap(),
-            ),
-            pipeline_store: PipelineTaskStore::new(
-                sqlx::postgres::PgPoolOptions::new()
-                    .connect_lazy("postgres://localhost/test")
-                    .unwrap(),
-            ),
-            tickets: PipelineTaskEventTicketStore::new(
-                sqlx::postgres::PgPoolOptions::new()
-                    .connect_lazy("postgres://localhost/test")
-                    .unwrap(),
-            ),
-            s3_client: S3Client::from_conf(
-                aws_sdk_s3::Config::builder()
-                    .behavior_version_latest()
-                    .build(),
-            ),
-            uploads_bucket: "unused".into(),
-            tenant_id: "tenant-a".into(),
-            access: EvaluationAccess::new("a sufficiently long test secret value".into()).unwrap(),
-        };
         let job = database::ReviewJob {
             job_id,
             tenant_id: "tenant-a".into(),
             idempotency_key: Some("request-1".into()),
+            access_token_hash: "a".repeat(64),
             status: DatabaseReviewJobStatus::Completed,
             input_file_path: "reviews/42/source".into(),
             created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
@@ -535,13 +533,13 @@ mod tests {
             created: false,
         };
 
-        let response = service.response_for_existing_job(&job, "evaluation-id");
+        let response = SubmitReviewService::response_for_existing_job(&job, "evaluation-id");
 
         assert_eq!(response.task_id, job_id.to_string());
         assert_eq!(response.review_id, job_id.to_string());
         assert_eq!(response.evaluation_id, "evaluation-id");
         assert_eq!(response.status, ReviewJobStatus::Completed);
-        assert!(response.access_token.starts_with("review_v1."));
+        assert!(response.access_token.is_empty());
         assert!(response.upload_url.is_empty());
         assert!(response.upload_headers.is_empty());
     }

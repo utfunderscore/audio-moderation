@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use aws_config::BehaviorVersion;
 use aws_sdk_sfn::Client as SfnClient;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
@@ -31,10 +32,11 @@ struct StoredPipelineTask {
 async fn submits_review_against_aws() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = env::var("AUDIO_MODERATION_API_ENDPOINT")?;
     let submit_url = format!("{}{}", endpoint.trim_end_matches('/'), SUBMIT_REVIEW_PATH);
-    let idempotency_key = format!("deployed-test-{}", Uuid::new_v4());
+    let idempotency_key = Uuid::new_v4().to_string();
+    let access_token = review_token();
     let client = reqwest::Client::new();
 
-    let submitted = submit(&client, &submit_url, &idempotency_key).await?;
+    let submitted = submit(&client, &submit_url, &idempotency_key, &access_token).await?;
     assert_eq!(
         submitted["status"],
         Value::String("REVIEW_JOB_STATUS_AWAITING_UPLOAD".to_owned())
@@ -52,16 +54,12 @@ async fn submits_review_against_aws() -> Result<(), Box<dyn std::error::Error>> 
     );
     assert!(submitted["uploadHeaders"].is_object());
     assert_eq!(submitted["reviewId"], submitted["taskId"]);
-    assert!(
-        submitted["accessToken"]
-            .as_str()
-            .is_some_and(|token| token.starts_with("review_v1."))
-    );
+    assert!(submitted["accessToken"].is_null());
     let review = get_review(
         &client,
         &endpoint,
         submitted["reviewId"].as_str().unwrap(),
-        submitted["accessToken"].as_str().unwrap(),
+        &access_token,
     )
     .await?;
     assert_eq!(review["status"], "REVIEW_JOB_STATUS_AWAITING_UPLOAD");
@@ -84,10 +82,11 @@ async fn starts_uploaded_review_evaluation_against_aws() -> Result<(), Box<dyn s
         .connect(&database_url)
         .await?;
     let submit_url = format!("{}{}", endpoint.trim_end_matches('/'), SUBMIT_REVIEW_PATH);
-    let idempotency_key = format!("deployed-test-{}", Uuid::new_v4());
+    let idempotency_key = Uuid::new_v4().to_string();
+    let access_token = review_token();
     let client = reqwest::Client::new();
 
-    let submitted = submit(&client, &submit_url, &idempotency_key).await?;
+    let submitted = submit(&client, &submit_url, &idempotency_key, &access_token).await?;
     let task_id = submitted["taskId"]
         .as_str()
         .expect("submit response must contain taskId")
@@ -400,12 +399,14 @@ async fn submit(
     client: &reqwest::Client,
     url: &str,
     idempotency_key: &str,
+    access_token: &str,
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let response = client
         .post(url)
         .header("content-type", "application/json")
         .header("connect-protocol-version", "1")
         .header("idempotency-key", idempotency_key)
+        .bearer_auth(access_token)
         .json(&json!({ "contentType": "audio/wav" }))
         .send()
         .await?;
@@ -413,6 +414,13 @@ async fn submit(
     let body = response.text().await?;
     assert!(status.is_success(), "submit failed with {status}: {body}");
     Ok(serde_json::from_str(&body)?)
+}
+
+fn review_token() -> String {
+    let mut random = [0_u8; 32];
+    random[..16].copy_from_slice(Uuid::new_v4().as_bytes());
+    random[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    format!("review_v1.{}", URL_SAFE_NO_PAD.encode(random))
 }
 
 fn minimal_wav() -> Vec<u8> {
