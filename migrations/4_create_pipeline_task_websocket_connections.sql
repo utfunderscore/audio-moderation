@@ -3,7 +3,11 @@ CREATE TABLE pipeline_task_websocket_connections (
     connection_id  TEXT NOT NULL CHECK (connection_id <> ''),
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
-    PRIMARY KEY (task_id, connection_id)
+    PRIMARY KEY (task_id, connection_id),
+    -- A connection is deliberately limited to one task stream. A client that
+    -- needs a second review stream must establish a second WebSocket.
+    CONSTRAINT pipeline_task_websocket_connections_connection_unique
+        UNIQUE (connection_id)
 );
 
 CREATE INDEX idx_pipeline_task_websocket_connections_connection_id

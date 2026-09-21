@@ -21,6 +21,7 @@ CREATE TABLE pipeline_tasks (
     task_id        SERIAL PRIMARY KEY,
     evaluation_id  UUID NOT NULL DEFAULT gen_random_uuid(),
     tenant_id      TEXT NOT NULL,
+    review_job_id  INTEGER UNIQUE,
     idempotency_key TEXT NOT NULL,
     caller_reference TEXT,
     outcome        pipeline_task_outcome,
@@ -36,7 +37,11 @@ CREATE TABLE pipeline_tasks (
     CONSTRAINT pipeline_tasks_evaluation_id_unique
         UNIQUE (evaluation_id),
     CONSTRAINT pipeline_tasks_idempotency_unique
-        UNIQUE (tenant_id, idempotency_key)
+        UNIQUE (tenant_id, idempotency_key),
+    CONSTRAINT pipeline_tasks_review_job_tenant_fk
+        FOREIGN KEY (review_job_id, tenant_id)
+        REFERENCES review_jobs (job_id, tenant_id)
+        ON DELETE RESTRICT
 );
 
 CREATE INDEX idx_pipeline_tasks_outcome

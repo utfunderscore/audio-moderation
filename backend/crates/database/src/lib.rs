@@ -15,10 +15,10 @@ pub use pipeline_task_event_ticket_store::{
 
 pub use pipeline_task_store::{
     AudioProcessingTaskDetails, CallbackAttempt, DEFAULT_DISPATCH_LEASE, ModerationResult,
-    ModerationTaskDetails, NewPipelineTask, PipelineCallbackStep, PipelineStepErrorDetails,
-    PipelineStepStatus, PipelineTask, PipelineTaskDetails, PipelineTaskError,
-    PipelineTaskEventDetails, PipelineTaskOutcome, PipelineTaskStatus, PipelineTaskStore,
-    RecordExecutionResult, TranscriptionTaskDetails,
+    ModerationTaskDetails, NewPipelineTask, NewReviewPipelineTask, PipelineCallbackStep,
+    PipelineStepErrorDetails, PipelineStepStatus, PipelineTask, PipelineTaskDetails,
+    PipelineTaskError, PipelineTaskEventDetails, PipelineTaskOutcome, PipelineTaskStatus,
+    PipelineTaskStore, RecordExecutionResult, ReviewPipelineTask, TranscriptionTaskDetails,
 };
 
 pub use pipeline_task_websocket_connection_store::{
@@ -27,5 +27,5 @@ pub use pipeline_task_websocket_connection_store::{
 };
 
 pub use review_job_store::{
-    DatabaseError, NewReviewJob, ReviewJob, ReviewJobStatus, ReviewJobStore,
+    DatabaseError, NewReviewJob, ReviewJob, ReviewJobDetails, ReviewJobStatus, ReviewJobStore,
 };

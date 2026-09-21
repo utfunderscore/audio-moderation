@@ -3,9 +3,9 @@ use std::env;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_ssm::Client as SsmClient;
-use common::load_database_url;
+use common::{EvaluationAccess, load_database_url, load_secure_parameter};
 use connectrpc::ConnectRpcService;
-use database::ReviewJobStore;
+use database::{PipelineTaskEventTicketStore, PipelineTaskStore, ReviewJobStore};
 use http_body_util::Full;
 use lambda_http::{Error, Request as LambdaRequest, run, service_fn};
 use sqlx::postgres::PgPoolOptions;
@@ -32,6 +32,9 @@ async fn main() -> Result<(), Error> {
     let ssm_client = SsmClient::new(&sdk_config);
 
     let database_url = load_database_url(&ssm_client).await?;
+    let access = EvaluationAccess::new(
+        load_secure_parameter(&ssm_client, "EVALUATION_ACCESS_SECRET_PARAMETER").await?,
+    )?;
     let pool = PgPoolOptions::new()
         .max_connections(3)
         .connect_lazy(&database_url)?;
@@ -39,10 +42,13 @@ async fn main() -> Result<(), Error> {
     let tenant_id = env::var("TENANT_ID").expect("TENANT_ID must be set");
 
     let service = SubmitReviewService::new(
-        ReviewJobStore::new(pool),
+        ReviewJobStore::new(pool.clone()),
+        PipelineTaskStore::new(pool.clone()),
+        PipelineTaskEventTicketStore::new(pool),
         s3_client,
         uploads_bucket,
         tenant_id,
+        access,
     );
     let connect_service = ConnectRpcService::new(AudioReviewServiceServer::new(service));
 

@@ -3,9 +3,7 @@ use std::borrow::Cow;
 use aws_lambda_events::event::s3::S3Event;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_sfn::Client as SfnClient;
-use database::{
-    NewPipelineTask, PipelineTaskStatus, PipelineTaskStore, ReviewJobStatus, ReviewJobStore,
-};
+use database::{PipelineTaskStatus, PipelineTaskStore, ReviewJobStatus, ReviewJobStore};
 use lambda_runtime::{Error, LambdaEvent};
 use serde::Serialize;
 use task_event_emitter::TaskEventEmitter;
@@ -63,7 +61,7 @@ impl ConfirmUploadHandler {
 
             let job = self
                 .store
-                .mark_upload_complete(&object.key, &self.tenant_id)
+                .get_by_input_file_path(&object.key, &self.tenant_id)
                 .await?;
             let Some(job) = job else {
                 return Err(ConfirmUploadError::UnknownObject(object.key).into());
@@ -74,23 +72,22 @@ impl ConfirmUploadHandler {
             let caller_reference = format!("review-job:{}", job.job_id);
             let task = self
                 .pipeline_store
-                .create_or_get(NewPipelineTask {
-                    tenant_id: &self.tenant_id,
-                    idempotency_key: &idempotency_key,
-                    caller_reference: Some(&caller_reference),
-                    audio_s3_uris: &audio_s3_uris,
-                })
-                .await?;
+                .get_by_review_job(job.job_id, &self.tenant_id)
+                .await?
+                .ok_or(ConfirmUploadError::PipelineTaskMissing(job.job_id))?;
 
-            if task.audio_s3_uris != audio_s3_uris
+            if task.review_job_id != Some(job.job_id)
+                || task.audio_s3_uris != audio_s3_uris
+                || task.idempotency_key != idempotency_key
                 || task.caller_reference.as_deref() != Some(caller_reference.as_str())
             {
                 return Err(ConfirmUploadError::PipelineTaskConflict(job.job_id).into());
             }
 
-            self.events
-                .emit(task.task_id, "EVALUATION_ACCEPTED")
+            self.store
+                .mark_upload_complete(&object.key, &self.tenant_id)
                 .await?;
+            self.events.emit(task.task_id, "UPLOAD_RECEIVED").await?;
 
             if matches!(
                 task.status,
@@ -194,6 +191,8 @@ enum ConfirmUploadError {
     UnknownObject(String),
     #[error("review job {0} is associated with conflicting pipeline inputs")]
     PipelineTaskConflict(i32),
+    #[error("review job {0} is missing its pre-created pipeline task")]
+    PipelineTaskMissing(i32),
     #[error("evaluation dispatch for review job {0} is not ready")]
     DispatchNotReady(i32),
     #[error("failed to dispatch evaluation: {0}")]

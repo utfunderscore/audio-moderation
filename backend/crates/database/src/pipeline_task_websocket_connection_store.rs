@@ -12,6 +12,9 @@ pub enum PipelineTaskWebSocketConnectionError {
 
     #[error("failed to remove pipeline task WebSocket connections")]
     Remove(#[source] sqlx::Error),
+
+    #[error("WebSocket connection is already subscribed to pipeline task {task_id}")]
+    AlreadySubscribed { task_id: i32 },
 }
 
 /// A WebSocket connection subscribed to a pipeline task's event stream.
@@ -48,20 +51,39 @@ impl PipelineTaskWebSocketConnectionStore {
         &self,
         connection: NewPipelineTaskWebSocketConnection<'_>,
     ) -> Result<PipelineTaskWebSocketConnection, PipelineTaskWebSocketConnectionError> {
-        sqlx::query_as::<_, PipelineTaskWebSocketConnection>(
+        let created = sqlx::query_as::<_, PipelineTaskWebSocketConnection>(
             r#"
                 INSERT INTO pipeline_task_websocket_connections (task_id, connection_id)
                 VALUES ($1, $2)
-                ON CONFLICT (task_id, connection_id) DO UPDATE
-                    SET connection_id = pipeline_task_websocket_connections.connection_id
-                RETURNING task_id, connection_id, created_at, (xmax = 0) AS created
+                ON CONFLICT (connection_id) DO NOTHING
+                RETURNING task_id, connection_id, created_at, TRUE AS created
             "#,
         )
         .bind(connection.task_id)
         .bind(connection.connection_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(PipelineTaskWebSocketConnectionError::CreateOrGet)?;
+        if let Some(created) = created {
+            return Ok(created);
+        }
+        let existing = sqlx::query_as::<_, PipelineTaskWebSocketConnection>(
+            r#"
+                SELECT task_id, connection_id, created_at, FALSE AS created
+                FROM pipeline_task_websocket_connections WHERE connection_id = $1
+            "#,
+        )
+        .bind(connection.connection_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(PipelineTaskWebSocketConnectionError::CreateOrGet)
+        .map_err(PipelineTaskWebSocketConnectionError::CreateOrGet)?;
+        if existing.task_id == connection.task_id {
+            Ok(existing)
+        } else {
+            Err(PipelineTaskWebSocketConnectionError::AlreadySubscribed {
+                task_id: existing.task_id,
+            })
+        }
     }
 
     /// Returns every connection subscribed to a task.

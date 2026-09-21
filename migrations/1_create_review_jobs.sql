@@ -16,7 +16,9 @@ CREATE TABLE review_jobs (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     CONSTRAINT review_jobs_idempotency_unique
-        UNIQUE (tenant_id, idempotency_key)
+        UNIQUE (tenant_id, idempotency_key),
+    CONSTRAINT review_jobs_job_tenant_unique
+        UNIQUE (job_id, tenant_id)
 );
 
 CREATE INDEX idx_review_jobs_tenant_created

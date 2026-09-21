@@ -7,7 +7,7 @@ use common::{EvaluationAccess, load_database_url, load_secure_parameter};
 use connectrpc::ConnectRpcService;
 use database::{
     PipelineTaskEventStore, PipelineTaskEventTicketStore, PipelineTaskStore,
-    PipelineTaskWebSocketConnectionStore,
+    PipelineTaskWebSocketConnectionStore, ReviewJobStore,
 };
 use http_body_util::Full;
 use lambda_http::{Error, Request as LambdaRequest, run, service_fn};
@@ -54,7 +54,8 @@ async fn main() -> Result<(), Error> {
     );
     let service = StartEvaluationService::new(
         PipelineTaskStore::new(pool.clone()),
-        PipelineTaskEventTicketStore::new(pool),
+        PipelineTaskEventTicketStore::new(pool.clone()),
+        ReviewJobStore::new(pool.clone()),
         evaluation_access,
         SfnClient::new(&sdk_config),
         state_machine_arn,

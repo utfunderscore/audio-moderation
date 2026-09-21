@@ -21,6 +21,7 @@ async fn creates_ordered_inputs_and_replays_by_tenant_idempotency_key() {
     let created = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
+            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: Some("review-42"),
             audio_s3_uris: &inputs,
@@ -30,6 +31,7 @@ async fn creates_ordered_inputs_and_replays_by_tenant_idempotency_key() {
     let replayed = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
+            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: Some("review-42"),
             audio_s3_uris: &["s3://uploads/different.wav".to_owned()],
@@ -87,6 +89,7 @@ async fn records_an_asr_task_id_once_and_allows_identical_retries() {
     let task = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
+            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
@@ -109,6 +112,7 @@ async fn records_an_asr_task_id_once_and_allows_identical_retries() {
     let replayed = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
+            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
@@ -125,6 +129,7 @@ async fn rejects_replacing_an_asr_task_id() {
     let task = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
+            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
@@ -147,6 +152,7 @@ async fn only_one_concurrent_dispatch_claim_succeeds() {
     let task = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
+            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
@@ -171,6 +177,7 @@ async fn dispatch_failures_are_bounded_and_become_terminal() {
     let task = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
+            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
@@ -210,6 +217,7 @@ async fn recording_execution_releases_claim() {
     let task = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-a",
+            review_job_id: None,
             idempotency_key: "request-1",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
@@ -280,6 +288,7 @@ async fn records_the_same_execution_idempotently_and_rejects_conflicts() {
     let terminal = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-lifecycle",
+            review_job_id: None,
             idempotency_key: "request-terminal-execution",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/terminal.wav".to_owned()],
@@ -468,6 +477,7 @@ async fn callback_tokens_are_bound_to_their_task_and_allow_fast_identical_retrie
     let second = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-lifecycle",
+            review_job_id: None,
             idempotency_key: "request-lifecycle-second",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/second.wav".to_owned()],
@@ -876,6 +886,7 @@ async fn terminal_outcomes_are_idempotent_and_preserve_timeout_and_failure_diagn
     let failed = store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-lifecycle",
+            review_job_id: None,
             idempotency_key: "request-failure-callback",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/failure.wav".to_owned()],
@@ -928,6 +939,7 @@ async fn new_task(store: &PipelineTaskStore) -> database::PipelineTask {
     store
         .create_or_get(NewPipelineTask {
             tenant_id: "tenant-lifecycle",
+            review_job_id: None,
             idempotency_key: "request-lifecycle",
             caller_reference: None,
             audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],

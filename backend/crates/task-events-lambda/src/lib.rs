@@ -194,9 +194,17 @@ impl<S: TaskConnectionStore, T: TaskEventTicketStore> TaskEventsHandler<S, T> {
             Err(PipelineTaskEventTicketError::Invalid) => return Ok(unauthorized_response()),
             Err(error) => return Err(error.into()),
         };
-        self.connections
+        match self
+            .connections
             .subscribe(task_id, event.connection_id.0.clone())
-            .await?;
+            .await
+        {
+            Ok(()) => {}
+            Err(PipelineTaskWebSocketConnectionError::AlreadySubscribed { .. }) => {
+                return Ok(subscription_conflict_response());
+            }
+            Err(error) => return Err(error.into()),
+        }
         if let Some(events) = &self.events {
             let replay = events.replay(task_id, &event.connection_id.0).await?;
             info!(
@@ -240,6 +248,13 @@ fn unauthorized_response() -> WebSocketResponse {
     }
 }
 
+fn subscription_conflict_response() -> WebSocketResponse {
+    WebSocketResponse {
+        status_code: 409,
+        body: Some("a WebSocket connection may subscribe to only one task stream".into()),
+    }
+}
+
 fn invalid_input(message: &'static str) -> Error {
     std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into()
 }
@@ -264,10 +279,10 @@ mod tests {
     impl TaskEventTicketStore for RecordingTicketStore {
         async fn consume(&self, ticket: String) -> Result<i32, PipelineTaskEventTicketError> {
             self.consumed.lock().unwrap().push(ticket.clone());
-            if ticket == "ticket-secret" {
-                Ok(42)
-            } else {
-                Err(PipelineTaskEventTicketError::Invalid)
+            match ticket.as_str() {
+                "ticket-secret" => Ok(42),
+                "other-ticket-secret" => Ok(43),
+                _ => Err(PipelineTaskEventTicketError::Invalid),
             }
         }
     }
@@ -278,10 +293,18 @@ mod tests {
             task_id: i32,
             connection_id: String,
         ) -> Result<(), PipelineTaskWebSocketConnectionError> {
-            self.subscriptions
-                .lock()
-                .unwrap()
-                .push((task_id, connection_id));
+            let mut subscriptions = self.subscriptions.lock().unwrap();
+            if let Some((existing_task_id, _)) = subscriptions
+                .iter()
+                .find(|(_, existing_connection_id)| *existing_connection_id == connection_id)
+            {
+                if *existing_task_id != task_id {
+                    return Err(PipelineTaskWebSocketConnectionError::AlreadySubscribed {
+                        task_id: *existing_task_id,
+                    });
+                }
+            }
+            subscriptions.push((task_id, connection_id));
             Ok(())
         }
 
@@ -403,5 +426,35 @@ mod tests {
 
         assert_eq!(response, unauthorized_response());
         assert!(connections.subscriptions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn requires_a_new_socket_for_a_second_task_stream() {
+        let connections = RecordingConnectionStore::default();
+        let handler = TaskEventsHandler::new(connections.clone(), RecordingTicketStore::default());
+        assert_eq!(
+            handler
+                .subscribe(SubscribeEvent {
+                    connection_id: ConnectionId("connection-123".into()),
+                    request: SubscribeRequest {
+                        ticket: "ticket-secret".into()
+                    },
+                })
+                .await
+                .unwrap(),
+            success_response()
+        );
+        assert_eq!(
+            handler
+                .subscribe(SubscribeEvent {
+                    connection_id: ConnectionId("connection-123".into()),
+                    request: SubscribeRequest {
+                        ticket: "other-ticket-secret".into()
+                    },
+                })
+                .await
+                .unwrap(),
+            subscription_conflict_response()
+        );
     }
 }

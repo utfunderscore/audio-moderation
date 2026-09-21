@@ -36,7 +36,14 @@ SubmitReview -> presigned S3 upload -> confirm-upload -> Step Functions evaluati
 StartEvaluation -> Step Functions -> audio conversion -> transcription -> moderation -> callbacks
 ```
 
-The upload notification creates an idempotent pipeline task and starts the evaluation. The review reaches `PROCESSING` after the Step Functions execution is recorded. Pipeline terminal outcomes are not synchronized back to `review_jobs` by the workflow; a later upload notification can observe an already-terminal task and update the review then. `review-confirmation` covers only the dispatch boundary (including the persisted task and execution input), not model completion or a terminal review-job status.
+`SubmitReview` atomically creates the idempotent pipeline task and its durable
+acceptance event. The upload notification validates that existing task and
+starts the evaluation. The review reaches `PROCESSING` after the Step Functions
+execution is recorded. Pipeline terminal outcomes are not synchronized back to
+`review_jobs` by the workflow; a later upload notification can observe an
+already-terminal task and update the review then. `review-confirmation` covers
+only the dispatch boundary (including the pre-created task and execution input),
+not model completion or a terminal review-job status.
 
 ## Commands
 
@@ -70,7 +77,7 @@ The unsupported `transcription-caller`, `moderation-caller`, and `task-callback`
 `pipeline_task_events_websocket_endpoint` output into
 `AUDIO_MODERATION_TASK_EVENTS_ENDPOINT`. It must be a `wss://` URL. Task-event
 frames are plain UTF-8 event names for one task per socket. A client first
-exchanges an authorized evaluation access token for a one-time ticket, then sends
+exchanges an authorized direct-evaluation or linked-review access token for a one-time ticket, then sends
 `{"action":"subscribe","ticket":<ticket>}` on the socket. Delivery is
 at-least-once: tests require every expected lifecycle name but tolerate duplicate
 frames at the replay/live subscription boundary.

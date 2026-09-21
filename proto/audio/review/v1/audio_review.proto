@@ -2,8 +2,12 @@ syntax = "proto3";
 
 package audio.review.v1;
 
+import "google/protobuf/timestamp.proto";
+
 service AudioReviewService {
   rpc SubmitReview(SubmitReviewRequest) returns (SubmitReviewResponse);
+  rpc GetReview(GetReviewRequest) returns (GetReviewResponse);
+  rpc CreateReviewEventsTicket(CreateReviewEventsTicketRequest) returns (CreateReviewEventsTicketResponse);
 }
 
 message SubmitReviewRequest {
@@ -11,10 +15,41 @@ message SubmitReviewRequest {
 }
 
 message SubmitReviewResponse {
+  // Deprecated naming retained for wire compatibility; this is the review job ID.
   string task_id = 1;
   string upload_url = 2;
   map<string, string> upload_headers = 3;
   ReviewJobStatus status = 4;
+  string access_token = 5;
+  google.protobuf.Timestamp access_expires_at = 6;
+  string review_id = 7;
+  // The evaluation is created with the review, before its source is uploaded.
+  string evaluation_id = 8;
+}
+
+message GetReviewRequest {
+  string review_id = 1;
+}
+
+message GetReviewResponse {
+  Review review = 1;
+}
+
+message Review {
+  string review_id = 1;
+  ReviewJobStatus status = 2;
+  string evaluation_id = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+}
+
+message CreateReviewEventsTicketRequest {
+  string review_id = 1;
+}
+
+message CreateReviewEventsTicketResponse {
+  string ticket = 1;
+  google.protobuf.Timestamp expires_at = 2;
 }
 
 enum ReviewJobStatus {

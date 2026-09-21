@@ -1,39 +1,101 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::presigning::PresigningConfig;
+use buffa_types::google::protobuf::Timestamp;
+use common::EvaluationAccess;
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest};
-use database::{NewReviewJob, ReviewJobStatus as DatabaseReviewJobStatus, ReviewJobStore};
+use database::{
+    NewReviewPipelineTask, PipelineTaskEventTicketStore, PipelineTaskStore,
+    ReviewJobStatus as DatabaseReviewJobStatus, ReviewJobStore,
+};
 use tracing::{error, info, warn};
 
 use crate::proto::audio::review::v1::{
-    AudioReviewService, ReviewJobStatus, SubmitReviewRequest, SubmitReviewResponse,
+    AudioReviewService, CreateReviewEventsTicketRequest, CreateReviewEventsTicketResponse,
+    GetReviewRequest, GetReviewResponse, Review, ReviewJobStatus, SubmitReviewRequest,
+    SubmitReviewResponse,
 };
 
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 const UPLOAD_URL_TTL: Duration = Duration::from_secs(15 * 60);
+const REVIEW_ACCESS_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const AUTHORIZATION_HEADER: &str = "authorization";
+const TASK_EVENTS_TICKET_LIFETIME: chrono::Duration = chrono::Duration::minutes(2);
 
 #[derive(Clone)]
 pub(crate) struct SubmitReviewService {
     store: ReviewJobStore,
+    pipeline_store: PipelineTaskStore,
+    tickets: PipelineTaskEventTicketStore,
     s3_client: S3Client,
     uploads_bucket: String,
     tenant_id: String,
+    access: EvaluationAccess,
 }
 
 impl SubmitReviewService {
     pub(crate) fn new(
         store: ReviewJobStore,
+        pipeline_store: PipelineTaskStore,
+        tickets: PipelineTaskEventTicketStore,
         s3_client: S3Client,
         uploads_bucket: String,
         tenant_id: String,
+        access: EvaluationAccess,
     ) -> Self {
         Self {
             store,
+            pipeline_store,
+            tickets,
             s3_client,
             uploads_bucket,
             tenant_id,
+            access,
         }
+    }
+
+    fn capability(
+        &self,
+        job_id: i32,
+        created_at: chrono::DateTime<chrono::Utc>,
+    ) -> (String, Timestamp) {
+        // Anchor expiry to creation, so an idempotent replay cannot extend the
+        // capability's lifetime.
+        let expires_at = SystemTime::from(created_at) + REVIEW_ACCESS_TTL;
+        let expires_at = UNIX_EPOCH
+            + Duration::from_secs(
+                expires_at
+                    .duration_since(UNIX_EPOCH)
+                    .expect("review creation is after Unix epoch")
+                    .as_secs(),
+            );
+        (
+            self.access
+                .review_token(&self.tenant_id, job_id, expires_at),
+            system_timestamp(expires_at),
+        )
+    }
+
+    fn authorize(&self, ctx: &RequestContext, review_id: i32) -> Result<(), ConnectError> {
+        let value = ctx
+            .header(AUTHORIZATION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| ConnectError::unauthenticated("review access token is required"))?;
+        let (scheme, token) = value
+            .trim()
+            .split_once(' ')
+            .ok_or_else(|| ConnectError::unauthenticated("invalid review access token"))?;
+        if !scheme.eq_ignore_ascii_case("Bearer")
+            || token.is_empty()
+            || self
+                .access
+                .authenticated_review(&self.tenant_id, token, SystemTime::now())
+                != Some(review_id)
+        {
+            return Err(ConnectError::unauthenticated("invalid review access token"));
+        }
+        Ok(())
     }
 }
 
@@ -63,11 +125,12 @@ impl AudioReviewService for SubmitReviewService {
             error
         })?;
 
-        let job = self
-            .store
-            .create_or_get(NewReviewJob {
+        let review = self
+            .pipeline_store
+            .create_or_get_review(NewReviewPipelineTask {
                 tenant_id: &self.tenant_id,
-                idempotency_key: Some(&idempotency_key),
+                idempotency_key: &idempotency_key,
+                uploads_bucket: &self.uploads_bucket,
             })
             .await
             .map_err(|database_error| {
@@ -77,8 +140,10 @@ impl AudioReviewService for SubmitReviewService {
                     error = ?database_error,
                     "failed to persist audio submission"
                 );
-                ConnectError::internal("failed to create review job")
+                ConnectError::internal("failed to create review")
             })?;
+        let job = review.job;
+        let task = review.task;
         let replayed = !job.created;
         if job.status != DatabaseReviewJobStatus::AwaitingUpload {
             info!(
@@ -88,7 +153,7 @@ impl AudioReviewService for SubmitReviewService {
                 outcome = "idempotent_replay",
                 "returned existing audio submission"
             );
-            return Response::ok(response_for_existing_job(job.job_id, job.status));
+            return Response::ok(self.response_for_existing_job(&job, &task.evaluation_id));
         }
 
         if replayed {
@@ -130,7 +195,7 @@ impl AudioReviewService for SubmitReviewService {
                     outcome = "source_already_uploaded",
                     "returned existing audio submission"
                 );
-                return Response::ok(response_for_existing_job(job.job_id, job.status));
+                return Response::ok(self.response_for_existing_job(&job, &task.evaluation_id));
             }
         }
 
@@ -166,20 +231,138 @@ impl AudioReviewService for SubmitReviewService {
             "accepted audio submission"
         );
 
+        let (access_token, access_expires_at) = self.capability(job.job_id, job.created_at);
         Response::ok(SubmitReviewResponse {
             task_id: job.job_id.to_string(),
+            review_id: job.job_id.to_string(),
+            evaluation_id: task.evaluation_id,
             upload_url: upload.uri().to_owned(),
             upload_headers,
             status: ReviewJobStatus::AwaitingUpload.into(),
+            access_token,
+            access_expires_at: access_expires_at.into(),
+            ..Default::default()
+        })
+    }
+
+    async fn get_review<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetReviewRequest>,
+    ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<GetReviewResponse> + Send + use<'a>>
+    {
+        let review_id = parse_review_id(request.review_id)?;
+        self.authorize(&ctx, review_id)?;
+        let details = self
+            .store
+            .get_details(review_id, &self.tenant_id)
+            .await
+            .map_err(|database_error| {
+                error!(reviewId = review_id, error = ?database_error, "failed to retrieve review");
+                ConnectError::internal("failed to retrieve review")
+            })?
+            .ok_or_else(|| ConnectError::not_found("review not found"))?;
+
+        Response::ok(GetReviewResponse {
+            review: Review {
+                review_id: details.job.job_id.to_string(),
+                status: ReviewJobStatus::from(details.job.status).into(),
+                evaluation_id: details
+                    .evaluation_id
+                    .map(|id| id.to_string())
+                    .unwrap_or_default(),
+                created_at: timestamp(details.job.created_at).into(),
+                updated_at: timestamp(details.job.updated_at).into(),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        })
+    }
+
+    async fn create_review_events_ticket<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, CreateReviewEventsTicketRequest>,
+    ) -> connectrpc::ServiceResult<
+        impl connectrpc::Encodable<CreateReviewEventsTicketResponse> + Send + use<'a>,
+    > {
+        let review_id = parse_review_id(request.review_id)?;
+        self.authorize(&ctx, review_id)?;
+        let task = self
+            .pipeline_store
+            .get_by_review_job(review_id, &self.tenant_id)
+            .await
+            .map_err(|database_error| {
+                error!(reviewId = review_id, error = ?database_error, "failed to resolve review pipeline task");
+                ConnectError::internal("failed to create review events ticket")
+            })?
+            .ok_or_else(|| ConnectError::internal("review is missing its pipeline task"))?;
+        if task.review_job_id != Some(review_id) {
+            return Err(ConnectError::internal(
+                "review has invalid pipeline task linkage",
+            ));
+        }
+        let ticket = format!("wst_v1.{}", uuid::Uuid::new_v4().simple());
+        let persisted = self
+            .tickets
+            .create(task.task_id, &ticket, TASK_EVENTS_TICKET_LIFETIME)
+            .await
+            .map_err(|database_error| {
+                error!(reviewId = review_id, error = ?database_error, "failed to create review events ticket");
+                ConnectError::internal("failed to create review events ticket")
+            })?;
+        Response::ok(CreateReviewEventsTicketResponse {
+            ticket,
+            expires_at: timestamp(persisted.expires_at).into(),
             ..Default::default()
         })
     }
 }
 
-fn response_for_existing_job(job_id: i32, status: DatabaseReviewJobStatus) -> SubmitReviewResponse {
-    SubmitReviewResponse {
-        task_id: job_id.to_string(),
-        status: ReviewJobStatus::from(status).into(),
+impl SubmitReviewService {
+    fn response_for_existing_job(
+        &self,
+        job: &database::ReviewJob,
+        evaluation_id: &str,
+    ) -> SubmitReviewResponse {
+        let (access_token, access_expires_at) = self.capability(job.job_id, job.created_at);
+        SubmitReviewResponse {
+            task_id: job.job_id.to_string(),
+            review_id: job.job_id.to_string(),
+            evaluation_id: evaluation_id.to_owned(),
+            status: ReviewJobStatus::from(job.status).into(),
+            access_token,
+            access_expires_at: access_expires_at.into(),
+            ..Default::default()
+        }
+    }
+}
+
+fn parse_review_id(value: &str) -> Result<i32, ConnectError> {
+    value
+        .trim()
+        .parse()
+        .ok()
+        .filter(|id| *id > 0)
+        .ok_or_else(|| ConnectError::invalid_argument("review_id must be a positive integer"))
+}
+
+fn timestamp(value: chrono::DateTime<chrono::Utc>) -> Timestamp {
+    Timestamp {
+        seconds: value.timestamp(),
+        nanos: value.timestamp_subsec_nanos() as i32,
+        ..Default::default()
+    }
+}
+
+fn system_timestamp(value: SystemTime) -> Timestamp {
+    let value = value
+        .duration_since(UNIX_EPOCH)
+        .expect("expiry is after Unix epoch");
+    Timestamp {
+        seconds: value.as_secs() as i64,
+        nanos: value.subsec_nanos() as i32,
         ..Default::default()
     }
 }
@@ -313,14 +496,52 @@ mod tests {
         );
     }
 
-    #[test]
-    fn replay_after_upload_returns_existing_job_without_upload_instructions() {
+    #[tokio::test]
+    async fn replay_after_upload_returns_existing_job_without_upload_instructions() {
         let job_id = 42;
+        let service = SubmitReviewService {
+            store: ReviewJobStore::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgres://localhost/test")
+                    .unwrap(),
+            ),
+            pipeline_store: PipelineTaskStore::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgres://localhost/test")
+                    .unwrap(),
+            ),
+            tickets: PipelineTaskEventTicketStore::new(
+                sqlx::postgres::PgPoolOptions::new()
+                    .connect_lazy("postgres://localhost/test")
+                    .unwrap(),
+            ),
+            s3_client: S3Client::from_conf(
+                aws_sdk_s3::Config::builder()
+                    .behavior_version_latest()
+                    .build(),
+            ),
+            uploads_bucket: "unused".into(),
+            tenant_id: "tenant-a".into(),
+            access: EvaluationAccess::new("a sufficiently long test secret value".into()).unwrap(),
+        };
+        let job = database::ReviewJob {
+            job_id,
+            tenant_id: "tenant-a".into(),
+            idempotency_key: Some("request-1".into()),
+            status: DatabaseReviewJobStatus::Completed,
+            input_file_path: "reviews/42/source".into(),
+            created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            updated_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            created: false,
+        };
 
-        let response = response_for_existing_job(job_id, DatabaseReviewJobStatus::Completed);
+        let response = service.response_for_existing_job(&job, "evaluation-id");
 
         assert_eq!(response.task_id, job_id.to_string());
+        assert_eq!(response.review_id, job_id.to_string());
+        assert_eq!(response.evaluation_id, "evaluation-id");
         assert_eq!(response.status, ReviewJobStatus::Completed);
+        assert!(response.access_token.starts_with("review_v1."));
         assert!(response.upload_url.is_empty());
         assert!(response.upload_headers.is_empty());
     }

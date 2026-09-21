@@ -39,13 +39,19 @@ Lambda, Step Functions, transcription, moderation, or database costs.
   it invalidates all previously issued evaluation tokens. Individual-token
   revocation is not implemented.
 - Review-triggered evaluations do not expose an evaluation access token through the
-  review API. `SubmitReview` returns review/upload details only, not an evaluation
-  ID or access token.
+  review API before upload. `SubmitReview` returns an expiring `review_v1.`
+  capability scoped to its review job, plus the review/upload details. The review
+  capability is signed with the existing evaluation-access secret but uses a
+  domain-separated HMAC context; it cannot validate as an `eval_v1.` token.
+- `SubmitReview` creates the linked evaluation before upload, so `GetReview`
+  always exposes that stable ID. The same capability can authorize
+  `GetEvaluation` only for the pipeline task explicitly linked to that review
+  job, and `CreateReviewEventsTicket` mints a ticket for that same task stream.
 - Do not place access tokens in URLs, logs, events, analytics, or WebSocket frames.
-- `CreateTaskEventsTicket` mints a random, task-scoped ticket after capability
-  authorization. The server stores only its SHA-256 hash, expires it after two
-  minutes, and consumes it once. Clients send the ticket in the WebSocket
-  subscription body instead of placing the long-lived token in the WebSocket URL.
+- Event-ticket RPCs mint random, task-scoped tickets after capability
+  authorization. The server stores only their SHA-256 hashes, expires them after
+  two minutes, and consumes them once. Clients send tickets in the WebSocket
+  subscription body instead of placing a long-lived token in the WebSocket URL.
 
 ## Deferred controls
 

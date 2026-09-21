@@ -39,6 +39,7 @@ async fn replays_live_delivers_and_cleans_up_task_events()
     let task = PipelineTaskStore::new(environment.pool.clone())
         .create_or_get(NewPipelineTask {
             tenant_id: &environment.tenant_id,
+            review_job_id: None,
             idempotency_key: &format!("deployed-task-events-{}", Uuid::new_v4()),
             caller_reference: None,
             audio_s3_uris: &["s3://integration-test-inputs/task-events.wav".to_owned()],

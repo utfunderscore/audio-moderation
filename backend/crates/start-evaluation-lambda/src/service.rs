@@ -9,7 +9,7 @@ use database::{
     PipelineStepStatus as DatabasePipelineStepStatus,
     PipelineTaskDetails as DatabasePipelineTaskDetails, PipelineTaskEventTicketStore,
     PipelineTaskOutcome as DatabasePipelineTaskOutcome,
-    PipelineTaskStatus as DatabasePipelineTaskStatus, PipelineTaskStore,
+    PipelineTaskStatus as DatabasePipelineTaskStatus, PipelineTaskStore, ReviewJobStore,
 };
 use serde::Serialize;
 use task_event_emitter::TaskEventEmitter;
@@ -33,6 +33,7 @@ const TASK_EVENTS_TICKET_LIFETIME: Duration = Duration::minutes(2);
 pub(crate) struct StartEvaluationService {
     store: PipelineTaskStore,
     tickets: PipelineTaskEventTicketStore,
+    reviews: ReviewJobStore,
     access: EvaluationAccess,
     sfn_client: SfnClient,
     state_machine_arn: String,
@@ -45,6 +46,7 @@ impl StartEvaluationService {
     pub(crate) fn new(
         store: PipelineTaskStore,
         tickets: PipelineTaskEventTicketStore,
+        reviews: ReviewJobStore,
         access: EvaluationAccess,
         sfn_client: SfnClient,
         state_machine_arn: String,
@@ -54,6 +56,7 @@ impl StartEvaluationService {
         Self {
             store,
             tickets,
+            reviews,
             access,
             sfn_client,
             state_machine_arn,
@@ -68,7 +71,11 @@ impl StartEvaluationService {
         self
     }
 
-    fn authorize(&self, ctx: &RequestContext, evaluation_id: &Uuid) -> Result<(), ConnectError> {
+    async fn authorize(
+        &self,
+        ctx: &RequestContext,
+        evaluation_id: &Uuid,
+    ) -> Result<(), ConnectError> {
         let value = ctx
             .header(AUTHORIZATION_HEADER)
             .and_then(|value| value.to_str().ok())
@@ -77,12 +84,37 @@ impl StartEvaluationService {
             .trim()
             .split_once(' ')
             .ok_or_else(|| ConnectError::unauthenticated("invalid evaluation access token"))?;
-        if !scheme.eq_ignore_ascii_case("Bearer")
-            || token.is_empty()
-            || !self.access.verify(&evaluation_id.to_string(), token)
-        {
+        if !scheme.eq_ignore_ascii_case("Bearer") || token.is_empty() {
             return Err(ConnectError::unauthenticated(
                 "invalid evaluation access token",
+            ));
+        }
+
+        // Preserve `eval_v1` direct-evaluation capabilities. Review callers use
+        // domain-separated `review_v1` capabilities, which are resolved through
+        // the explicit review_job_id foreign-key relationship.
+        if self.access.verify(&evaluation_id.to_string(), token) {
+            return Ok(());
+        }
+        let Some(review_id) =
+            self.access
+                .authenticated_review(&self.tenant_id, token, std::time::SystemTime::now())
+        else {
+            return Err(ConnectError::unauthenticated(
+                "invalid evaluation access token",
+            ));
+        };
+        let linked = self
+            .reviews
+            .get_details(review_id, &self.tenant_id)
+            .await
+            .map_err(|error| {
+                error!(reviewId = review_id, error = ?error, "failed to authorize review evaluation");
+                ConnectError::internal("failed to authorize evaluation")
+            })?;
+        if linked.and_then(|review| review.evaluation_id).as_ref() != Some(evaluation_id) {
+            return Err(ConnectError::permission_denied(
+                "access token is not scoped to this evaluation",
             ));
         }
         Ok(())
@@ -97,7 +129,7 @@ impl AudioModerationService for StartEvaluationService {
     ) -> connectrpc::ServiceResult<impl connectrpc::Encodable<GetEvaluationResponse> + Send + use<'a>>
     {
         let evaluation_id = parse_evaluation_id(request.evaluation_id)?;
-        self.authorize(&ctx, &evaluation_id)?;
+        self.authorize(&ctx, &evaluation_id).await?;
         let details = self
             .store
             .get_details(evaluation_id, &self.tenant_id)
@@ -118,7 +150,7 @@ impl AudioModerationService for StartEvaluationService {
         impl connectrpc::Encodable<CreateTaskEventsTicketResponse> + Send + use<'a>,
     > {
         let evaluation_id = parse_evaluation_id(request.evaluation_id)?;
-        self.authorize(&ctx, &evaluation_id)?;
+        self.authorize(&ctx, &evaluation_id).await?;
         let details = self
             .store
             .get_details(evaluation_id, &self.tenant_id)
@@ -166,6 +198,7 @@ impl AudioModerationService for StartEvaluationService {
             .store
             .create_or_get(NewPipelineTask {
                 tenant_id: &self.tenant_id,
+                review_job_id: None,
                 idempotency_key: &idempotency_key,
                 caller_reference,
                 audio_s3_uris: &audio_s3_uris,

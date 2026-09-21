@@ -84,9 +84,12 @@ resource "aws_iam_role_policy" "submit_audio_database_parameter" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = "ssm:GetParameter"
-        Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.database_parameter_name}"
+        Effect = "Allow"
+        Action = "ssm:GetParameter"
+        Resource = [
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.database_parameter_name}",
+          "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.evaluation_access_secret_parameter_name}",
+        ]
       },
       {
         Effect   = "Allow"
@@ -113,10 +116,11 @@ resource "aws_lambda_function" "submit_audio" {
 
   environment {
     variables = {
-      DATABASE_URL_PARAMETER = var.database_parameter_name
-      UPLOADS_BUCKET_NAME    = aws_s3_bucket.uploads.bucket
-      TENANT_ID              = var.tenant_id
-      RUST_LOG               = "info"
+      DATABASE_URL_PARAMETER             = var.database_parameter_name
+      EVALUATION_ACCESS_SECRET_PARAMETER = var.evaluation_access_secret_parameter_name
+      UPLOADS_BUCKET_NAME                = aws_s3_bucket.uploads.bucket
+      TENANT_ID                          = var.tenant_id
+      RUST_LOG                           = "info"
     }
   }
 

@@ -1,5 +1,6 @@
 # The public API accepts WebSocket connections without authentication because
-# clients receive event names only.
+# clients receive event names only. The subscribe route consumes a one-use,
+# task-scoped ticket; its database invariant permits one task stream per socket.
 resource "aws_ecr_repository" "task_events" {
   name                 = "${local.name_prefix}-task-events"
   image_tag_mutability = "IMMUTABLE"

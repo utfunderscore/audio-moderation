@@ -4,6 +4,8 @@ use sqlx::PgPool;
 use std::time::Duration;
 use uuid::Uuid;
 
+use crate::{ReviewJob, ReviewJobStatus};
+
 /// A Lambda invocation has ten seconds to dispatch an execution. Keep the
 /// lease short enough that Lambda's asynchronous retry can reclaim a task when
 /// an invocation exits before persisting its Step Functions response.
@@ -80,6 +82,12 @@ pub enum PipelineTaskError {
 
     #[error("pipeline task was not found")]
     NotFound,
+
+    #[error("failed to create review and its pipeline task")]
+    CreateReview(#[source] sqlx::Error),
+
+    #[error("review {review_job_id} is not linked to its expected pipeline task")]
+    ReviewTaskConflict { review_job_id: i32 },
 }
 
 /// Scores produced by the moderation pipeline step.
@@ -116,6 +124,8 @@ pub struct PipelineTask {
     pub task_id: i32,
     pub evaluation_id: String,
     pub tenant_id: String,
+    /// The review that created this task, when this is an upload-triggered evaluation.
+    pub review_job_id: Option<i32>,
     pub idempotency_key: String,
     pub caller_reference: Option<String>,
     pub status: PipelineTaskStatus,
@@ -202,9 +212,24 @@ pub struct PipelineTaskEventDetails {
 /// Values required to create an idempotent pipeline task.
 pub struct NewPipelineTask<'a> {
     pub tenant_id: &'a str,
+    pub review_job_id: Option<i32>,
     pub idempotency_key: &'a str,
     pub caller_reference: Option<&'a str>,
     pub audio_s3_uris: &'a [String],
+}
+
+/// Values required to create a review and its one linked, initially pending
+/// pipeline task. The whole operation is committed atomically.
+pub struct NewReviewPipelineTask<'a> {
+    pub tenant_id: &'a str,
+    pub idempotency_key: &'a str,
+    pub uploads_bucket: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewPipelineTask {
+    pub job: ReviewJob,
+    pub task: PipelineTask,
 }
 
 #[derive(sqlx::FromRow)]
@@ -212,6 +237,7 @@ struct PersistedPipelineTask {
     task_id: i32,
     evaluation_id: String,
     tenant_id: String,
+    review_job_id: Option<i32>,
     idempotency_key: String,
     caller_reference: Option<String>,
     execution_arn: Option<String>,
@@ -224,6 +250,29 @@ struct PersistedPipelineTask {
 #[derive(sqlx::FromRow)]
 struct PersistedExecution {
     execution_arn: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct PersistedReviewPipelineTask {
+    job_id: i32,
+    review_tenant_id: String,
+    review_idempotency_key: Option<String>,
+    review_status: ReviewJobStatus,
+    input_file_path: String,
+    review_created_at: DateTime<Utc>,
+    review_updated_at: DateTime<Utc>,
+    review_created: bool,
+    task_id: i32,
+    evaluation_id: String,
+    task_tenant_id: String,
+    review_job_id: Option<i32>,
+    task_idempotency_key: String,
+    caller_reference: Option<String>,
+    execution_arn: Option<String>,
+    asr_task_id: Option<String>,
+    task_created_at: DateTime<Utc>,
+    task_updated_at: DateTime<Utc>,
+    task_created: bool,
 }
 
 /// Workflow state derived from the pipeline outcome and individual step rows.
@@ -540,11 +589,11 @@ impl PipelineTaskStore {
         // inserted and previously persisted tasks.
         let persisted = sqlx::query_as::<_, PersistedPipelineTask>(
             r#"
-                INSERT INTO pipeline_tasks (tenant_id, idempotency_key, caller_reference)
-                VALUES ($1, $2, $3)
+                INSERT INTO pipeline_tasks (tenant_id, review_job_id, idempotency_key, caller_reference)
+                VALUES ($1, $2, $3, $4)
                 ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
                     SET tenant_id = pipeline_tasks.tenant_id
-                RETURNING task_id, evaluation_id::TEXT AS evaluation_id, tenant_id,
+                RETURNING task_id, evaluation_id::TEXT AS evaluation_id, tenant_id, review_job_id,
                     idempotency_key, caller_reference,
                     execution_arn,
                     (
@@ -557,6 +606,7 @@ impl PipelineTaskStore {
             "#,
         )
         .bind(task.tenant_id)
+        .bind(task.review_job_id)
         .bind(task.idempotency_key)
         .bind(task.caller_reference)
         .fetch_one(&mut *transaction)
@@ -624,6 +674,7 @@ impl PipelineTaskStore {
             task_id: persisted.task_id,
             evaluation_id: persisted.evaluation_id,
             tenant_id: persisted.tenant_id,
+            review_job_id: persisted.review_job_id,
             idempotency_key: persisted.idempotency_key,
             caller_reference: persisted.caller_reference,
             status,
@@ -634,6 +685,191 @@ impl PipelineTaskStore {
             audio_s3_uris,
             created: persisted.created,
         })
+    }
+
+    /// Atomically creates (or replays) a review and the task it exclusively
+    /// owns. In particular, a committed review can never be observed without
+    /// its inputs, step rows, and initial durable acceptance event.
+    pub async fn create_or_get_review(
+        &self,
+        review: NewReviewPipelineTask<'_>,
+    ) -> Result<ReviewPipelineTask, PipelineTaskError> {
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(PipelineTaskError::CreateReview)?;
+        let persisted = sqlx::query_as::<_, PersistedReviewPipelineTask>(
+            r#"
+                WITH review AS (
+                    INSERT INTO review_jobs (tenant_id, idempotency_key)
+                    VALUES ($1, $2)
+                    ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
+                        SET tenant_id = review_jobs.tenant_id
+                    RETURNING job_id, tenant_id, idempotency_key,
+                        status AS review_status, input_file_path, created_at, updated_at,
+                        (xmax = 0) AS review_created
+                ), task AS (
+                    INSERT INTO pipeline_tasks (tenant_id, review_job_id, idempotency_key, caller_reference)
+                    SELECT $1, review.job_id, 'review-upload:' || review.job_id,
+                        'review-job:' || review.job_id
+                    FROM review
+                    ON CONFLICT (tenant_id, idempotency_key) DO UPDATE
+                        SET tenant_id = pipeline_tasks.tenant_id
+                    RETURNING task_id, evaluation_id::TEXT AS evaluation_id, tenant_id,
+                        review_job_id, idempotency_key, caller_reference, execution_arn,
+                        (SELECT external_task_id FROM transcription_tasks
+                         WHERE transcription_tasks.task_id = pipeline_tasks.task_id) AS asr_task_id,
+                        created_at, updated_at, (xmax = 0) AS task_created
+                ), steps AS (
+                    INSERT INTO audio_processing_tasks (task_id)
+                    SELECT task_id FROM task WHERE task_created
+                    ON CONFLICT (task_id) DO NOTHING
+                ), transcription AS (
+                    INSERT INTO transcription_tasks (task_id)
+                    SELECT task_id FROM task WHERE task_created
+                    ON CONFLICT (task_id) DO NOTHING
+                ), moderation AS (
+                    INSERT INTO moderation_tasks (task_id)
+                    SELECT task_id FROM task WHERE task_created
+                    ON CONFLICT (task_id) DO NOTHING
+                ), input AS (
+                    INSERT INTO pipeline_task_inputs (task_id, sequence, audio_s3_uri)
+                    SELECT task.task_id, 0, 's3://' || $3 || '/' || review.input_file_path
+                    FROM task CROSS JOIN review WHERE task.task_created
+                    ON CONFLICT (task_id, sequence) DO NOTHING
+                ), accepted AS (
+                    INSERT INTO pipeline_task_events (task_id, event_name)
+                    SELECT task_id, 'EVALUATION_ACCEPTED' FROM task
+                    ON CONFLICT (task_id, event_name) DO NOTHING
+                )
+                SELECT review.job_id, review.tenant_id AS review_tenant_id,
+                    review.idempotency_key AS review_idempotency_key, review.review_status,
+                    review.input_file_path, review.created_at AS review_created_at,
+                    review.updated_at AS review_updated_at, review.review_created,
+                    task.task_id, task.evaluation_id, task.tenant_id AS task_tenant_id,
+                    task.review_job_id, task.idempotency_key AS task_idempotency_key,
+                    task.caller_reference, task.execution_arn, task.asr_task_id,
+                    task.created_at AS task_created_at, task.updated_at AS task_updated_at,
+                    task.task_created
+                FROM review CROSS JOIN task
+            "#,
+        )
+        .bind(review.tenant_id)
+        .bind(review.idempotency_key)
+        .bind(review.uploads_bucket)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(PipelineTaskError::CreateReview)?;
+
+        let expected_uri = format!(
+            "s3://{}/{}",
+            review.uploads_bucket, persisted.input_file_path
+        );
+        let audio_s3_uris = sqlx::query_scalar::<_, String>(
+            "SELECT audio_s3_uri FROM pipeline_task_inputs WHERE task_id = $1 ORDER BY sequence",
+        )
+        .bind(persisted.task_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(PipelineTaskError::CreateReview)?;
+        let expected_key = format!("review-upload:{}", persisted.job_id);
+        let expected_reference = format!("review-job:{}", persisted.job_id);
+        if persisted.review_job_id != Some(persisted.job_id)
+            || persisted.task_idempotency_key != expected_key
+            || persisted.caller_reference.as_deref() != Some(expected_reference.as_str())
+            || audio_s3_uris != [expected_uri]
+        {
+            return Err(PipelineTaskError::ReviewTaskConflict {
+                review_job_id: persisted.job_id,
+            });
+        }
+        let status = task_status_for_update(&mut transaction, persisted.task_id).await?;
+        transaction
+            .commit()
+            .await
+            .map_err(PipelineTaskError::CreateReview)?;
+
+        Ok(ReviewPipelineTask {
+            job: ReviewJob {
+                job_id: persisted.job_id,
+                tenant_id: persisted.review_tenant_id,
+                idempotency_key: persisted.review_idempotency_key,
+                status: persisted.review_status,
+                input_file_path: persisted.input_file_path,
+                created_at: persisted.review_created_at,
+                updated_at: persisted.review_updated_at,
+                created: persisted.review_created,
+            },
+            task: PipelineTask {
+                task_id: persisted.task_id,
+                evaluation_id: persisted.evaluation_id,
+                tenant_id: persisted.task_tenant_id,
+                review_job_id: persisted.review_job_id,
+                idempotency_key: persisted.task_idempotency_key,
+                caller_reference: persisted.caller_reference,
+                status,
+                execution_arn: persisted.execution_arn,
+                asr_task_id: persisted.asr_task_id,
+                created_at: persisted.task_created_at,
+                updated_at: persisted.task_updated_at,
+                audio_s3_uris,
+                created: persisted.task_created,
+            },
+        })
+    }
+
+    /// Returns the sole pipeline task explicitly linked to a tenant's review.
+    pub async fn get_by_review_job(
+        &self,
+        review_job_id: i32,
+        tenant_id: &str,
+    ) -> Result<Option<PipelineTask>, PipelineTaskError> {
+        let mut transaction = self.pool.begin().await.map_err(PipelineTaskError::Get)?;
+        let persisted = sqlx::query_as::<_, PersistedPipelineTask>(
+            r#"
+                SELECT task_id, evaluation_id::TEXT AS evaluation_id, tenant_id, review_job_id,
+                    idempotency_key, caller_reference, execution_arn,
+                    (SELECT external_task_id FROM transcription_tasks
+                     WHERE transcription_tasks.task_id = pipeline_tasks.task_id) AS asr_task_id,
+                    created_at, updated_at, FALSE AS created
+                FROM pipeline_tasks
+                WHERE review_job_id = $1 AND tenant_id = $2
+            "#,
+        )
+        .bind(review_job_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(PipelineTaskError::Get)?;
+        let Some(persisted) = persisted else {
+            transaction.commit().await.map_err(PipelineTaskError::Get)?;
+            return Ok(None);
+        };
+        let audio_s3_uris = sqlx::query_scalar::<_, String>(
+            "SELECT audio_s3_uri FROM pipeline_task_inputs WHERE task_id = $1 ORDER BY sequence",
+        )
+        .bind(persisted.task_id)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(PipelineTaskError::Get)?;
+        let status = task_status_for_update(&mut transaction, persisted.task_id).await?;
+        transaction.commit().await.map_err(PipelineTaskError::Get)?;
+        Ok(Some(PipelineTask {
+            task_id: persisted.task_id,
+            evaluation_id: persisted.evaluation_id,
+            tenant_id: persisted.tenant_id,
+            review_job_id: persisted.review_job_id,
+            idempotency_key: persisted.idempotency_key,
+            caller_reference: persisted.caller_reference,
+            status,
+            execution_arn: persisted.execution_arn,
+            asr_task_id: persisted.asr_task_id,
+            created_at: persisted.created_at,
+            updated_at: persisted.updated_at,
+            audio_s3_uris,
+            created: false,
+        }))
     }
 
     /// Records a successful Step Functions start and releases the dispatch lease.

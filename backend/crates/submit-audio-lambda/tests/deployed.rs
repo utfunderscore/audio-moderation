@@ -11,6 +11,7 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use uuid::Uuid;
 
 const SUBMIT_REVIEW_PATH: &str = "/audio.review.v1.AudioReviewService/SubmitReview";
+const GET_REVIEW_PATH: &str = "/audio.review.v1.AudioReviewService/GetReview";
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(60);
 const DUPLICATE_NOTIFICATION_WINDOW: Duration = Duration::from_secs(45);
 
@@ -18,6 +19,7 @@ const DUPLICATE_NOTIFICATION_WINDOW: Duration = Duration::from_secs(45);
 struct StoredPipelineTask {
     task_id: i32,
     evaluation_id: String,
+    review_job_id: Option<i32>,
     caller_reference: Option<String>,
     execution_arn: Option<String>,
     attempt_count: i32,
@@ -49,6 +51,21 @@ async fn submits_review_against_aws() -> Result<(), Box<dyn std::error::Error>> 
             .is_some_and(|upload_url| !upload_url.is_empty())
     );
     assert!(submitted["uploadHeaders"].is_object());
+    assert_eq!(submitted["reviewId"], submitted["taskId"]);
+    assert!(
+        submitted["accessToken"]
+            .as_str()
+            .is_some_and(|token| token.starts_with("review_v1."))
+    );
+    let review = get_review(
+        &client,
+        &endpoint,
+        submitted["reviewId"].as_str().unwrap(),
+        submitted["accessToken"].as_str().unwrap(),
+    )
+    .await?;
+    assert_eq!(review["status"], "REVIEW_JOB_STATUS_AWAITING_UPLOAD");
+    assert_eq!(review["evaluationId"], submitted["evaluationId"]);
 
     Ok(())
 }
@@ -75,6 +92,11 @@ async fn starts_uploaded_review_evaluation_against_aws() -> Result<(), Box<dyn s
         .as_str()
         .expect("submit response must contain taskId")
         .to_owned();
+    assert!(
+        submitted["evaluationId"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
     let upload_url = submitted["uploadUrl"]
         .as_str()
         .expect("submit response must contain uploadUrl");
@@ -95,6 +117,7 @@ async fn starts_uploaded_review_evaluation_against_aws() -> Result<(), Box<dyn s
         task.caller_reference.as_deref(),
         Some(expected_caller_reference.as_str())
     );
+    assert_eq!(task.review_job_id, Some(task_id.parse()?));
     assert_eq!(inputs, vec![uploaded_uri.clone()]);
     assert_eq!(
         task.attempt_count, 1,
@@ -160,6 +183,33 @@ async fn put_presigned(
     Ok(())
 }
 
+async fn get_review(
+    client: &reqwest::Client,
+    endpoint: &str,
+    review_id: &str,
+    access_token: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let response = client
+        .post(format!(
+            "{}{}",
+            endpoint.trim_end_matches('/'),
+            GET_REVIEW_PATH
+        ))
+        .header("content-type", "application/json")
+        .header("connect-protocol-version", "1")
+        .bearer_auth(access_token)
+        .json(&json!({ "reviewId": review_id }))
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    assert!(
+        status.is_success(),
+        "GetReview failed with {status}: {body}"
+    );
+    Ok(serde_json::from_str::<Value>(&body)?["review"].clone())
+}
+
 async fn wait_for_dispatched_task(
     pool: &PgPool,
     tenant_id: &str,
@@ -177,6 +227,7 @@ async fn wait_for_dispatched_task(
                     return Ok(StoredPipelineTask {
                         task_id: task.task_id,
                         evaluation_id: task.evaluation_id.clone(),
+                        review_job_id: task.review_job_id,
                         caller_reference: task.caller_reference.clone(),
                         execution_arn: task.execution_arn.clone(),
                         attempt_count: task.attempt_count,
@@ -256,7 +307,7 @@ async fn matching_tasks(
 ) -> Result<Vec<StoredPipelineTask>, sqlx::Error> {
     sqlx::query_as(
         r#"
-            SELECT task_id, evaluation_id::TEXT AS evaluation_id, caller_reference,
+            SELECT task_id, evaluation_id::TEXT AS evaluation_id, review_job_id, caller_reference,
                 execution_arn, attempt_count, dispatch_started_at IS NOT NULL AS active_lease
             FROM pipeline_tasks
             WHERE tenant_id = $1 AND idempotency_key = $2
