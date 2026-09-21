@@ -18,7 +18,7 @@ FROM rust:1.96-bookworm AS builder
 
 RUN rustup target add x86_64-unknown-linux-musl \
     && apt-get update \
-    && apt-get install --yes --no-install-recommends musl-tools protobuf-compiler \
+    && apt-get install --yes --no-install-recommends musl-tools protobuf-compiler libprotobuf-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
