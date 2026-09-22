@@ -9,6 +9,11 @@ glyph. It supersedes the "hand-rolled CSS" note in the plan.
 > outcome. Each stage page shows the artifact it produced. The event log, the
 > Result page, and the side-by-side layout described below are parked; see
 > `DEMO_PLAN.md` §0.
+>
+> Revision: the simulation-only run controls (scenario select, speed toggle,
+> late-subscribe switch, restart) have been removed. The UI depends on the
+> `Backend` interface in `src/api/backend.ts`; scenario/speed rows below are
+> historical.
 
 ## 1. Direction
 

@@ -8,16 +8,14 @@ export interface InitialAudioInput {
 }
 
 /**
- * Owns the local audio file and source URL. Playback subscriptions live with
- * the player so media time updates do not invalidate the application tree.
- * The file never leaves the browser in simulation mode.
+ * Owns the local audio file and its object URL. Playback subscriptions live
+ * with the player so media-time updates do not invalidate the application
+ * tree. Uploading the file to the backend is the caller's responsibility.
  */
 export function useAudioInput(initialAudio?: InitialAudioInput) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const [file, setFile] = useState<File | null>(initialAudio?.file ?? null)
   const [url, setUrl] = useState<string | null>(initialAudio?.url ?? null)
-  const [loadingSample, setLoadingSample] = useState(false)
-  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     if (url === null) return undefined
@@ -29,7 +27,6 @@ export function useAudioInput(initialAudio?: InitialAudioInput) {
   const selectFile = useCallback((next: File) => {
     audioRef.current?.pause()
     setFile(next)
-    setError(null)
     setUrl(URL.createObjectURL(next))
   }, [])
 
@@ -37,47 +34,13 @@ export function useAudioInput(initialAudio?: InitialAudioInput) {
     audioRef.current?.pause()
     setFile(null)
     setUrl(null)
-    setError(null)
   }, [])
-
-  const loadSample = useCallback(async () => {
-    setLoadingSample(true)
-    setError(null)
-    try {
-      const response = await fetch(
-        `${import.meta.env.BASE_URL}audio/sample_071.mp3`
-      )
-      if (!response.ok) {
-        throw new Error(`sample audio unavailable (${response.status})`)
-      }
-      const blob = await response.blob()
-      selectFile(
-        new File([blob], "sample_071.mp3", {
-          type: blob.type || "audio/mpeg",
-        })
-      )
-      return true
-    } catch (sampleError) {
-      setError(
-        sampleError instanceof Error
-          ? sampleError.message
-          : "failed to load the sample"
-      )
-      return false
-    } finally {
-      setLoadingSample(false)
-    }
-  }, [selectFile])
 
   return {
     audioRef,
     file,
     url,
-    loadingSample,
-    error,
     selectFile,
-    loadSample,
     clear,
-    canRun: file !== null,
   }
 }

@@ -9,8 +9,7 @@ import type { AudioInputController } from "@/hooks/useAudioInput"
 interface AudioPickerProps {
   audio: AudioInputController
   disabled?: boolean
-  onSelected?: () => void
-  onSampleSelected?: (scenarioId: string) => void
+  onSelected?: (file: File) => void
   title?: string
   description?: string
 }
@@ -18,33 +17,23 @@ interface AudioPickerProps {
 const AUDIO_TYPES =
   "audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac,audio/ogg,audio/webm"
 
-const SAMPLE_SCENARIOS = [
-  { id: "moderation-safe", label: "Safe conversation" },
-  { id: "happy", label: "Personal info request" },
-  { id: "moderation-harassment", label: "Harassment" },
-] as const
-
 export function AudioPicker({
   audio,
   disabled = false,
   onSelected,
-  onSampleSelected,
   title = "Drop or paste audio here",
   description = "MP3, WAV, M4A, AAC, OGG, WebM • 1 audio file",
 }: AudioPickerProps) {
   const [dragging, setDragging] = useState(false)
   const [clipboardError, setClipboardError] = useState<string | null>(null)
-  const [loadingScenarioId, setLoadingScenarioId] = useState<string | null>(
-    null
-  )
   const inputRef = useRef<HTMLInputElement>(null)
-  const selectionDisabled = disabled || audio.loadingSample
+  const selectionDisabled = disabled
 
   const selectFile = (file: File) => {
     if (selectionDisabled) return
     setClipboardError(null)
     audio.selectFile(file)
-    onSelected?.()
+    onSelected?.(file)
   }
 
   const handleDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -131,34 +120,6 @@ export function AudioPicker({
             </span>
           </Button>
         </div>
-        <div className="absolute inset-x-4 bottom-4 text-center text-xs text-muted-foreground">
-          <span>Or try an example: </span>
-          {SAMPLE_SCENARIOS.map((scenario, index) => (
-            <span key={scenario.id}>
-              <button
-                type="button"
-                disabled={selectionDisabled}
-                className="cursor-pointer border-b border-dotted border-current text-foreground outline-none hover:border-solid hover:text-primary focus-visible:border-solid focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-                onClick={() => {
-                  setLoadingScenarioId(scenario.id)
-                  void audio.loadSample().then((loaded) => {
-                    setLoadingScenarioId(null)
-                    if (!loaded) return
-                    if (onSampleSelected !== undefined) {
-                      onSampleSelected(scenario.id)
-                    } else {
-                      onSelected?.()
-                    }
-                  })
-                }}
-              >
-                {scenario.label}
-                {loadingScenarioId === scenario.id ? "…" : ""}
-              </button>
-              {index < SAMPLE_SCENARIOS.length - 1 ? ", " : ""}
-            </span>
-          ))}
-        </div>
         <input
           ref={inputRef}
           type="file"
@@ -174,9 +135,6 @@ export function AudioPicker({
       </div>
       {clipboardError !== null ? (
         <p className="text-center text-xs text-destructive">{clipboardError}</p>
-      ) : null}
-      {audio.error !== null ? (
-        <p className="text-center text-xs text-destructive">{audio.error}</p>
       ) : null}
     </div>
   )

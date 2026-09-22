@@ -6,7 +6,7 @@ import "google/protobuf/timestamp.proto";
 
 service AudioModerationService {
   // Requires a UUID in the idempotency-key HTTP request header.
-  rpc StartEvaluation(StartEvaluationRequest) returns (StartEvaluationResponse);
+
   rpc GetEvaluation(GetEvaluationRequest) returns (GetEvaluationResponse);
   rpc CreateTaskEventsTicket(CreateTaskEventsTicketRequest) returns (CreateTaskEventsTicketResponse);
 }

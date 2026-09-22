@@ -3,6 +3,7 @@
 import { Microphone01, MusicNote01, ShieldTick } from "@untitledui/icons"
 import { useEffect, useState } from "react"
 
+import type { Backend } from "@/api/backend"
 import { PipelineTimeline } from "@/components/demo/PipelineTimeline"
 import { StagePage } from "@/components/demo/StagePage"
 import { AudioPlayer } from "@/components/demo/stages/AudioPlayer"
@@ -11,9 +12,16 @@ import { TranscriptionStage } from "@/components/demo/stages/TranscriptionStage"
 import { Button } from "@/components/ui/button"
 import type { AudioProcessingJob } from "@/domain/jobs"
 import { useAudioInput } from "@/hooks/useAudioInput"
-import { preloadDemoAudioArtifact } from "@/transport/audioArtifacts"
 
-function HistoricalAudio({ fileName }: { fileName: string }) {
+function HistoricalAudio({
+  backend,
+  jobId,
+  fileName,
+}: {
+  backend: Backend
+  jobId: string
+  fileName: string
+}) {
   const audio = useAudioInput()
   const { selectFile } = audio
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading")
@@ -23,7 +31,8 @@ function HistoricalAudio({ fileName }: { fileName: string }) {
   useEffect(() => {
     let cancelled = false
 
-    void preloadDemoAudioArtifact()
+    void backend
+      .getJobAudio(jobId)
       .then((blob) => {
         if (cancelled) return
         selectFile(
@@ -38,7 +47,7 @@ function HistoricalAudio({ fileName }: { fileName: string }) {
     return () => {
       cancelled = true
     }
-  }, [attempt, fileName, selectFile])
+  }, [attempt, backend, fileName, jobId, selectFile])
 
   return (
     <>
@@ -76,20 +85,36 @@ function HistoricalAudio({ fileName }: { fileName: string }) {
   )
 }
 
-export function HistoricalJobDetails({ job }: { job: AudioProcessingJob }) {
+export function HistoricalJobDetails({
+  backend,
+  job,
+}: {
+  backend: Backend
+  job: AudioProcessingJob
+}) {
   const complete = job.status === "complete"
+  const processing = job.status === "processing"
 
   return (
     <PipelineTimeline>
       <StagePage
         title="Audio"
         icon={<MusicNote01 aria-hidden />}
-        status={complete ? "complete" : "failed"}
+        status={complete ? "complete" : processing ? "processing" : "failed"}
         elapsed={complete ? 2_200 : null}
         isLast={!complete}
       >
         {complete ? (
-          <HistoricalAudio key={job.fileName} fileName={job.fileName} />
+          <HistoricalAudio
+            key={job.fileName}
+            backend={backend}
+            jobId={job.id}
+            fileName={job.fileName}
+          />
+        ) : processing ? (
+          <p className="rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+            This evaluation is still processing.
+          </p>
         ) : (
           <p className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             Processing stopped before the audio was ready.
