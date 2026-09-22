@@ -112,8 +112,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
 }
 
 resource "aws_apigatewayv2_api" "public" {
-  name          = "${local.name_prefix}-api"
-  protocol_type = "HTTP"
+  name                         = "${local.name_prefix}-api"
+  protocol_type                = "HTTP"
+  disable_execute_api_endpoint = var.enable_cloudflare_proxy
 
   cors_configuration {
     allow_headers = [
