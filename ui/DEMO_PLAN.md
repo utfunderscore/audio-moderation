@@ -1,10 +1,14 @@
 # Audio Moderation Demo Page — UI Plan
 
 Status: draft
-Scope: **UI only.** No backend, Terraform, or AWS changes. All pipeline activity is
-simulated locally by a mock transport that emits the exact event names the deployed
-system emits. The real WebSocket client is stubbed behind an interface so it can be
-dropped in later without touching the UI.
+Scope: **UI only.** No backend, Terraform, or AWS changes.
+
+> Revision: the local simulation (mock transport, scenario fixtures, in-memory
+> job store, bundled sample audio, and the scenario/speed/late-subscribe run
+> controls) has been removed. The UI now depends on a single `Backend` interface
+> in `src/api/backend.ts` and the composition root in `src/main.tsx`. Sections
+> below that describe scenarios, the mock client, or debug controls are
+> historical; see `ui/README.md` for the current seam.
 
 ## 0. Revision — artifact timeline
 

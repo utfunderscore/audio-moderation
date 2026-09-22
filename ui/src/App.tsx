@@ -5,6 +5,7 @@
 import { Microphone01, MusicNote01, ShieldTick } from "@untitledui/icons"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
+import type { Backend } from "@/api/backend"
 import { ElapsedDuration } from "@/components/demo/ElapsedDuration"
 import { Header } from "@/components/demo/Header"
 import { HistoricalJobDetails } from "@/components/demo/HistoricalJobDetails"
@@ -24,10 +25,9 @@ import { type AudioProcessingJob, DEMO_USER_ID } from "@/domain/jobs"
 import type { PipelineState } from "@/domain/reducer"
 import type { StageId, StageState } from "@/domain/stages"
 import { useAudioInput } from "@/hooks/useAudioInput"
+import { useEvaluation } from "@/hooks/useEvaluation"
 import { useJobHistory } from "@/hooks/useJobHistory"
 import { useMediaQuery } from "@/hooks/useMediaQuery"
-import { usePipelineRun } from "@/hooks/usePipelineRun"
-import { preloadDemoAudioArtifact } from "@/transport/audioArtifacts"
 
 type PageId = "audio" | "transcription" | "moderation"
 
@@ -56,18 +56,17 @@ function audioPageState(state: PipelineState): StageState {
   return state.stages.conversion
 }
 
-export function App() {
+export function App({ backend }: { backend: Backend }) {
   const audio = useAudioInput()
-  const run = usePipelineRun()
+  const evaluation = useEvaluation(backend)
   const isMobileViewport = !useMediaQuery(DESKTOP_VIEWPORT_QUERY)
   const {
     jobs: previousJobs,
     loading: jobsLoading,
     error: jobsError,
-    saveJob,
-  } = useJobHistory(DEMO_USER_ID)
+    refresh: refreshJobs,
+  } = useJobHistory(backend, DEMO_USER_ID)
   const lastOutcome = useRef<TerminalEvent | null>(null)
-  const savedJobId = useRef<string | null>(null)
   const [currentJobSelected, setCurrentJobSelected] = useState(false)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [detailsSelectionKey, setDetailsSelectionKey] = useState(0)
@@ -86,15 +85,12 @@ export function App() {
       })
   }, [currentAudioRef])
 
-  useEffect(() => {
-    void preloadDemoAudioArtifact().catch(() => {
-      // Selection reports a visible error if the cached artifact is unavailable.
-    })
-  }, [])
-
-  const { state } = run
-  const { evaluationId, outcome, startedAt } = state
-  const scenario = run.scenario
+  const { state } = evaluation
+  const { evaluationId, outcome } = state
+  const historyVersion =
+    evaluationId === null
+      ? null
+      : `${evaluationId}:${outcome ?? "processing"}:${evaluation.result === null ? "no-result" : "result"}`
 
   useEffect(() => {
     if (outcome === null) {
@@ -112,42 +108,20 @@ export function App() {
     }
   }, [outcome])
 
+  // The browser-local backend index changes when a run starts and settles.
   useEffect(() => {
-    if (
-      evaluationId === null ||
-      outcome === null ||
-      startedAt === null ||
-      audio.file === null ||
-      savedJobId.current === evaluationId
-    ) {
-      return
-    }
-
-    savedJobId.current = evaluationId
-    void saveJob({
-      id: evaluationId,
-      userId: DEMO_USER_ID,
-      fileName: audio.file.name,
-      submittedAt: startedAt,
-      durationMs: Date.now() - startedAt,
-      status: outcome === "SUCCEEDED" ? "complete" : "failed",
-      transcript: scenario.transcript,
-      scores: scenario.scores,
-    })
-  }, [
-    audio.file,
-    evaluationId,
-    outcome,
-    saveJob,
-    scenario.scores,
-    scenario.transcript,
-    startedAt,
-  ])
+    if (historyVersion === null) return
+    void refreshJobs()
+  }, [historyVersion, refreshJobs])
 
   const transcript =
-    state.stages.transcription === "complete" ? scenario.transcript : undefined
+    state.stages.transcription === "complete"
+      ? evaluation.result?.transcript
+      : undefined
   const scores =
-    state.stages.moderation === "complete" ? scenario.scores : undefined
+    state.stages.moderation === "complete"
+      ? evaluation.result?.scores
+      : undefined
 
   const isReached = (stage: StageId) => {
     const value = state.stages[stage]
@@ -164,8 +138,8 @@ export function App() {
     .map((page) => page.id)
   const isLast = (id: PageId) => visiblePages[visiblePages.length - 1] === id
 
-  /** Uploading (or re-running) starts the pipeline immediately. */
-  const startRun = (scenarioId?: string) => {
+  /** Choosing audio starts the evaluation immediately. */
+  const startRun = (file: File) => {
     pausePlayback()
     const activeElement = document.activeElement
     if (activeElement instanceof HTMLElement) {
@@ -174,24 +148,25 @@ export function App() {
     setCurrentJobSelected(true)
     setSelectedJobId(null)
     setDetailsSelectionKey((key) => key + 1)
-    run.run(scenarioId)
+    evaluation.start({ userId: DEMO_USER_ID, audio: file })
   }
 
   const handleRemoveAudio = () => {
-    run.reset()
+    evaluation.reset()
     audio.clear()
   }
 
   const audioStatus = audioPageState(state)
-  const currentJobStatus: "processing" | "complete" | "failed" = run.running
-    ? "processing"
-    : state.outcome === "SUCCEEDED"
-      ? "complete"
-      : state.outcome === null
-        ? "processing"
-        : "failed"
+  const currentJobStatus: "processing" | "complete" | "failed" =
+    evaluation.running
+      ? "processing"
+      : state.outcome === "SUCCEEDED"
+        ? "complete"
+        : state.outcome === null
+          ? "processing"
+          : "failed"
   const currentJob =
-    audio.file !== null && run.hasRun && state.startedAt !== null
+    audio.file !== null && evaluation.hasRun && state.startedAt !== null
       ? {
           id: state.evaluationId ?? "—",
           fileName: audio.file.name,
@@ -353,16 +328,15 @@ export function App() {
               <section aria-label="Upload audio" className="mb-10">
                 <AudioPicker
                   audio={audio}
-                  disabled={run.running}
+                  disabled={evaluation.running}
                   onSelected={startRun}
-                  onSampleSelected={startRun}
                   title={
-                    run.running
+                    evaluation.running
                       ? "A job is currently processing"
                       : "Drop or paste audio here"
                   }
                   description={
-                    run.running
+                    evaluation.running
                       ? "Wait for it to finish before starting another"
                       : "MP3, WAV, M4A, AAC, OGG, WebM • 1 audio file"
                   }
@@ -392,7 +366,11 @@ export function App() {
               onClose={closeSidebar}
             >
               {selectedJob !== null ? (
-                <HistoricalJobDetails key={selectedJob.id} job={selectedJob} />
+                <HistoricalJobDetails
+                  key={selectedJob.id}
+                  backend={backend}
+                  job={selectedJob}
+                />
               ) : (
                 <PipelineTimeline>
                   <StagePage
@@ -421,7 +399,7 @@ export function App() {
                     ) : audioStatus === "complete" ? (
                       <AudioPlayer
                         audio={audio}
-                        disabled={run.running}
+                        disabled={evaluation.running}
                         onRemove={handleRemoveAudio}
                       />
                     ) : audioStatus === "failed" ? (

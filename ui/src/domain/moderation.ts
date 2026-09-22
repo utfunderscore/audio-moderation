@@ -2,9 +2,9 @@
  * Moderation output contract.
  *
  * The real WebSocket never carries these values — it only delivers event names.
- * A live integration would read them from the workflow's persisted results
- * (`moderation_tasks` / `transcription_tasks`); here they are demo fixtures
- * attached to each scenario.
+ * The UI reads them from the workflow's persisted results
+ * (`moderation_tasks` / `transcription_tasks`) through
+ * `Backend.getEvaluationResult`.
  */
 export interface ModerationScores {
   sexual: number

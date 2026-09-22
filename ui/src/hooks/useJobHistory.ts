@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react"
 
+import type { Backend } from "@/api/backend"
 import type { AudioProcessingJob } from "@/domain/jobs"
-import { inMemoryAudioJobStore } from "@/transport/inMemoryJobStore"
 
-export function useJobHistory(userId: string) {
+/** Lists a user's previous jobs through the injected `Backend`. */
+export function useJobHistory(backend: Backend, userId: string) {
   const [jobs, setJobs] = useState<AudioProcessingJob[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -12,7 +13,7 @@ export function useJobHistory(userId: string) {
     setLoading(true)
     setError(null)
     try {
-      setJobs(await inMemoryAudioJobStore.listJobs(userId))
+      setJobs(await backend.listJobs(userId))
     } catch (fetchError) {
       setError(
         fetchError instanceof Error ? fetchError.message : "Unable to load jobs"
@@ -20,12 +21,12 @@ export function useJobHistory(userId: string) {
     } finally {
       setLoading(false)
     }
-  }, [userId])
+  }, [backend, userId])
 
   useEffect(() => {
     let cancelled = false
 
-    void inMemoryAudioJobStore
+    void backend
       .listJobs(userId)
       .then((fetchedJobs) => {
         if (cancelled) return
@@ -47,22 +48,7 @@ export function useJobHistory(userId: string) {
     return () => {
       cancelled = true
     }
-  }, [userId])
+  }, [backend, userId])
 
-  const saveJob = useCallback(
-    async (job: AudioProcessingJob) => {
-      setError(null)
-      try {
-        await inMemoryAudioJobStore.upsertJob(job)
-        await refresh()
-      } catch (saveError) {
-        setError(
-          saveError instanceof Error ? saveError.message : "Unable to save job"
-        )
-      }
-    },
-    [refresh]
-  )
-
-  return { jobs, loading, error, refresh, saveJob }
+  return { jobs, loading, error, refresh }
 }

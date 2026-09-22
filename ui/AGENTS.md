@@ -11,22 +11,27 @@ Run from `ui/`:
 - `npm run build` runs `tsc -b` then Vite. Use it for TypeScript verification;
   `npm run typecheck` runs `tsc --noEmit` against an empty root files list,
   rather than building the referenced app/node projects.
-- Public Funnel/HMR uses `npm run dev:funnel`; follow `TAILSCALE_FUNNEL.md`.
-  Ordinary dev mode does not configure the public WSS HMR port.
+- Public Funnel/HMR uses `npm run dev:funnel`.
 
-## Demo and protocol boundaries
+## Backend seam and protocol boundaries
 
-- This is a browser-only simulation. `src/hooks/usePipelineRun.ts` constructs
-  `MockTaskEventsClient`; selecting a file does not upload it or start AWS work.
-  Transcripts and moderation scores come from `src/transport/scenarios.ts`.
-- `src/transport/client.ts` defines the transport interface.
-  The deployed protocol first exchanges an authorized evaluation access token for
+- The UI contains no backend interaction code. `src/api/backend.ts` declares the
+  single `Backend` interface for every operation the UI needs (`listJobs`,
+  `startEvaluation`, `subscribeTaskEvents`, `getEvaluationResult`,
+  `getJobAudio`). Components and hooks depend only on it; do not add transport
+  calls (fetch, WebSocket, uploads, auth) to `components/`, `hooks/`, or
+  `domain/`.
+- `src/main.tsx` is the composition root and currently passes a placeholder
+  `Backend` that throws for every operation. Wire the real implementation there.
+  The app builds and renders without one but performs no backend work.
+- The deployed protocol first exchanges an authorized evaluation access token for
   a one-time task-events ticket, then subscribes with
   `{"action":"subscribe","ticket":<ticket>}`. Incoming frames are raw UTF-8
-  event names, not JSON results; replay/live delivery can duplicate events.
-  `webSocketClient.ts` is unwired and stale: it still sends `taskId`, cannot mint a
-  ticket, and therefore cannot subscribe to the deployed server. It also cannot
-  distinguish replay from live frames.
+  event names, not JSON results. Replay/live delivery can duplicate events, so
+  `subscribeTaskEvents` implementations must tolerate duplicates; the stream
+  cannot distinguish replay from live frames.
+- Transcripts and moderation scores are not delivered on the stream. They come
+  from `getEvaluationResult` after the workflow settles.
 - Keep lifecycle transitions in `src/domain/reducer.ts`: it seeds from the
   StartEvaluation status and handles duplicate/out-of-order events without
   regressing stages. Preserve unknown-event handling when extending the protocol.

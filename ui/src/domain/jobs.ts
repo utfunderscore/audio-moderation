@@ -27,10 +27,5 @@ export interface AudioProcessingJob {
   scores?: ModerationScores
 }
 
-export interface AudioJobStore {
-  listJobs(userId: string): Promise<AudioProcessingJob[]>
-  upsertJob(job: AudioProcessingJob): Promise<void>
-}
-
 /** Placeholder identity until the UI is connected to authentication. */
 export const DEMO_USER_ID = "demo-user"

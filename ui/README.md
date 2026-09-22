@@ -1,77 +1,91 @@
-# SocialGuard UI — Audio Moderation Demo
+# SocialGuard UI — Audio Moderation
 
-A single-page demonstration of the audio moderation pipeline. It takes an audio
-file and advances a stage tracker through the same event sequence the deployed
+A single-page React/Vite UI for the audio moderation pipeline. It takes an audio
+file and advances a stage tracker through the event sequence the deployed
 task-events WebSocket emits.
 
-**Everything is simulated in the browser.** There is no HTTP call, S3 upload, or
-WebSocket connection. The scripts in this app mirror the real protocol so the
-mock can be swapped for the real transport later (see below).
+The UI contains **no backend interaction code**. Every backend operation is
+declared in one place — `src/api/backend.ts` — and the UI depends only on that
+interface. Uploads, auth, HTTP, and the WebSocket live in the implementation.
 
 ## Run
 
 ```sh
 npm install
-npm run dev       # http://localhost:5173
+npm run dev       # http://127.0.0.1:5173
 npm test          # reducer unit tests (vitest)
 npm run lint
 npm run build     # tsc -b && vite build
 ```
 
-To expose the dev server publicly over Tailscale Funnel, see
-[TAILSCALE_FUNNEL.md](TAILSCALE_FUNNEL.md).
+Point the app at a deployed stack in `.env.local`. Both values come from
+Terraform's local state:
+
+```sh
+terraform -chdir=../terraform output -raw api_endpoint
+terraform -chdir=../terraform output -raw pipeline_task_events_websocket_endpoint
+```
+
+- `VITE_API_ENDPOINT` — the public HTTP API base URL (`https://…/`), used for
+  the Connect RPC calls.
+- `VITE_TASK_EVENTS_ENDPOINT` — the deployed task-events WebSocket URL
+  (`wss://…`). `ApiBackend` exchanges the evaluation's bearer token for a
+  one-time ticket and sends it directly to that endpoint.
+
+Vite expands `$VAR` references in env files, so escape the API Gateway
+`$default` stage as `\$default` or it is dropped from the task-events URL.
 
 ## What it shows
 
 A vertical timeline with one page per stage, filling in as the pipeline runs:
 
-- **Audio** — choosing a file starts the run immediately; the playable waveform
-  and source URI appear only once audio processing finishes. The source URI
-  becomes the stitched `evaluations/<id>.wav`.
-- **Transcription** — the transcript, 30 words from the sample.
-- **Moderation** — five category scores with a flag verdict. This is where the
-  timeline ends; the toast confirms the outcome.
-
-The failure states render inline on the stage that failed.
+- **Audio** — choosing a file starts the evaluation; the playable waveform
+  appears once audio processing finishes.
+- **Transcription** — the transcript, read from the evaluation result.
+- **Moderation** — five category scores with a flag verdict. A toast confirms
+  the terminal outcome; failures render inline on the stage that failed.
 
 Partial stage changes show `*_STARTED` as processing and `*_FINISHED` as
-complete. The mock also covers replay-then-live delivery, at-least-once
-duplicates, and unknown future events. Transcript and score values are scenario
-fixtures: the real WebSocket carries event names only.
+complete. The stage machine tolerates duplicate and out-of-order events without
+regressing.
 
-Technical test-harness settings are intentionally kept out of the product UI.
+## The backend seam
 
-The event names and ordering are taken from the backend
-(`backend/crates/start-evaluation-lambda`, `audio-processing-lambda`,
-`transcription-caller-lambda`, `moderation-caller-lambda`,
-`task-callback-lambda`, `task-event-emitter`).
+`src/api/backend.ts` is the single interface for every operation the UI needs:
+
+| Operation | Used by |
+| --- | --- |
+| `listJobs(userId)` | job history |
+| `startEvaluation({ userId, audio })` | choosing a file |
+| `subscribeTaskEvents(evaluationId, handlers)` | live stage tracking |
+| `getEvaluationResult(evaluationId)` | transcript and scores |
+| `getJobAudio(jobId)` | replaying a past job |
+
+`src/main.tsx` is the composition root: it supplies the `Backend` implementation
+to `<App backend={...} />`. It currently passes a placeholder that throws
+`not implemented` for every operation, so the app builds and renders but performs
+no backend work until a real implementation is wired in.
+
+Task-event frames are raw event names and delivery is at-least-once, so the
+reducer dedupes by name. Transcripts and scores are not carried on the stream;
+they come from `getEvaluationResult` after the workflow settles.
 
 ## Layout
 
 ```
 src/
-  domain/      events, stage definitions, pure reducer (+ tests)
-  transport/   TaskEventsClient seam, mock client, scenarios, real WS stub
-  hooks/       usePipelineRun, useAudioInput, useElapsed
+  api/         Backend interface (the only backend seam)
+  domain/      events, stages, moderation, jobs, pure reducer (+ tests)
+  hooks/       useEvaluation, useJobHistory, useAudioInput, useElapsed, useMediaQuery
   components/
     ui/        generated shadcn/ui components
     demo/      customer-facing audio, job history, and result views
 ```
 
-## Swapping in the real transport
-
-`src/transport/webSocketClient.ts` implements `TaskEventsClient` against the
-real `wss://` endpoint shape, but it is not usable against the deployed server:
-it is unwired and still sends `{"action":"subscribe","taskId":<number>}`.
-The deployed handshake is to authorize an evaluation access token to the
-`CreateTaskEventsTicket` HTTP RPC, receive a one-time ticket, then send
-`{"action":"subscribe","ticket":<ticket>}`. Frames are raw UTF-8 event names
-with replay-then-live, at-least-once delivery. Updating the adapter and wiring it
-up require an API endpoint and authorization/token exchange. Terraform now
-manages matching API Gateway and presigned-upload S3 CORS rules for local Vite,
-local preview, and HTTPS-hosted frontends (including Tailscale Funnel). Add any
-more restrictive production origins through `browser_allowed_origins`. The
-real transport wiring remains deliberately out of scope for this UI-only phase.
+The event names and ordering are taken from the backend
+(`backend/crates/start-evaluation-lambda`, `audio-processing-lambda`,
+`transcription-caller-lambda`, `moderation-caller-lambda`,
+`task-callback-lambda`, `task-event-emitter`).
 
 ## Icons and components
 
