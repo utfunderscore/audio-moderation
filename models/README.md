@@ -61,7 +61,7 @@ family API route -> submit_model(job) -> idempotency claim
      -> job.submit(audio_url) [spawn family-specific GPU model]
      -> await result with shared deadline and cancellation handling
      -> job.callback_outcome(result, task_id)
-     -> signed callback with shared retries
+     -> direct Lambda callback with shared retries
 ```
 
 `ModelJob[Result]` is a typed adapter for a serializable task, GPU submission, and
@@ -106,9 +106,10 @@ preparation and submission time. Failures produce a shared failed outcome and
 trigger best-effort cancellation if a worker was submitted.
 
 The function logs success or failure without transcript text, task tokens, or
-exception messages. It posts the terminal outcome to the URI configured by the
-required `CALLBACK_URI` environment variable, which the orchestration
-validates before starting any model. Failure callbacks
+exception messages. It invokes the callback Lambda named by the required
+`TASK_CALLBACK_FUNCTION_NAME` environment variable, wrapping the callback body
+in the API Gateway v2 event envelope expected by the Lambda. The orchestration
+validates this configuration before starting any model. Failure callbacks
 identify the exception type but omit its message to avoid exposing signed URLs,
 credentials, internal paths, or provider response bodies. Callback delivery makes
 up to three attempts for network errors, request timeouts, HTTP 408/425/429, and
@@ -120,7 +121,8 @@ The duration limit keeps audio embeddings and generated text within the model's
 context window while bounding temporary disk, memory, and inference time.
 
 The AWS role named by `AWS_ROLE_ARN` must trust Modal's OIDC provider and permit
-`s3:GetObject` for input objects and `execute-api:Invoke` for the callback API.
+`s3:GetObject` for input objects and `lambda:InvokeFunction` for the callback
+Lambda.
 The endpoint also requires Modal proxy authentication.
 
 Create the named Modal Secret that injects the required runtime configuration
@@ -137,8 +139,9 @@ uv run modal secret create socialguard-transcription-runtime \
 Use `--force` when intentionally replacing an existing secret. The secret must
 exist in the same Modal environment used by `modal serve` or `modal deploy`.
 Deployment validates the shared AWS keys. The shared CPU worker validates each
-job family's callback URI before starting its model. Configure the shared
-`CALLBACK_URI` in the same secret; all model families deliver to it.
+job family's callback function name before starting its model. Configure the
+shared `TASK_CALLBACK_FUNCTION_NAME` in the same secret; all model families
+deliver to it.
 
 Verify the Granite image imports without downloading the model or running GPU
 inference:
@@ -357,8 +360,8 @@ moderation quality.
 `ModerationJob` implements `ModelJob[ModerationScores]`. It stores only its
 `ModerationTask`, so it can be serialized to the shared CPU worker. It dispatches
 the resolved audio URL and transcription to the selected model, and maps the
-returned scores or shared failure to the callback above. The callback URI comes
-from the shared `CALLBACK_URI` environment variable.
+returned scores or shared failure to the callback above. The callback Lambda
+name comes from the shared `TASK_CALLBACK_FUNCTION_NAME` environment variable.
 
 To connect a concrete model:
 
@@ -373,7 +376,7 @@ To connect a concrete model:
    ID to `MODEL_SUBMITTERS`. Register in source, not by mutating the registry in an
    HTTP request, so API and CPU containers load identical definitions.
 4. Implement support for the proposed payload in the callback consumer; the
-   shared runtime secret already provides `CALLBACK_URI`.
+   shared runtime secret already provides `TASK_CALLBACK_FUNCTION_NAME`.
 
 The job and API route require no changes when adding a model to the registry.
 

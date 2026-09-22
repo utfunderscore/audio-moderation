@@ -124,7 +124,7 @@ resource "aws_lambda_function" "transcription_caller" {
       MODAL_PROXY_TOKEN_SECRET_PARAMETER = var.modal_proxy_token_secret_parameter_name
       TRANSCRIPTION_ENDPOINT_URL         = var.transcription_endpoint_url
       DATABASE_URL_PARAMETER             = var.database_parameter_name
-      TASK_EVENTS_MANAGEMENT_ENDPOINT    = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
+      TASK_EVENTS_MANAGEMENT_ENDPOINT    = local.task_events_management_endpoint
       RUST_LOG                           = "info"
     }
   }

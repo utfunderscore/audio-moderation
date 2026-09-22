@@ -80,6 +80,13 @@ variables, timeout and memory settings, IAM role, API or event permissions, and
 CloudWatch log group. After Terraform finishes, the script waits until AWS reports
 that all eight function updates are complete.
 
+When `--enable-cloudflare-proxy` is supplied, Terraform also requests a free ACM
+certificate, creates API Gateway custom domains, disables the default
+`execute-api` endpoints, and publishes proxied Cloudflare CNAME records. The
+Cloudflare provider reads `CLOUDFLARE_API_TOKEN` from the environment, or the
+legacy `CLOUDFLARE_API_KEY` plus `CLOUDFLARE_EMAIL` pair; credentials are never
+passed as Terraform variables.
+
 ## API Gateway updates
 
 Terraform manages two APIs:
@@ -177,6 +184,19 @@ for every Lambda update:
 
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh deploy \
+  --transcription-endpoint-url https://transcription.example/transcriptions \
+  --modal-endpoint-url https://moderation.example
+```
+
+To expose the APIs through Cloudflare:
+
+```sh
+CLOUDFLARE_API_TOKEN=<redacted> AWS_PROFILE=admin \
+  ./deployment-integration.sh deploy \
+  --enable-cloudflare-proxy \
+  --cloudflare-zone-name utf.lol \
+  --public-api-domain-name api-guard.utf.lol \
+  --task-events-domain-name events-guard.utf.lol \
   --transcription-endpoint-url https://transcription.example/transcriptions \
   --modal-endpoint-url https://moderation.example
 ```

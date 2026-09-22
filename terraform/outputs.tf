@@ -1,9 +1,9 @@
 output "api_endpoint" {
-  value = aws_apigatewayv2_stage.default.invoke_url
+  value = local.public_api_endpoint
 }
 
 output "pipeline_task_events_websocket_endpoint" {
-  value = aws_apigatewayv2_stage.pipeline_task_events.invoke_url
+  value = local.task_events_websocket_endpoint
 }
 
 output "task_events_function_name" {
@@ -65,7 +65,7 @@ output "task_callback_function_name" {
 
 output "task_callback_url" {
   description = "SigV4-protected endpoint the external transcription service must call back"
-  value       = "${trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")}/callbacks/external-task"
+  value       = "${local.public_api_endpoint}/callbacks/external-task"
 }
 
 output "transcription_caller_ecr_repository_url" {

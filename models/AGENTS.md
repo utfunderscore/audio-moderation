@@ -35,9 +35,10 @@ Run from `models/` (Python >=3.12, locked with `uv.lock`):
 - Both families use the existing Modal app `socialguard-transcription` and named
   Secret `socialguard-transcription-runtime`, defined in `modal_app.py`.
   Deployment-shell variables are not automatically injected into containers.
-- The runtime secret supplies `AWS_REGION`, `AWS_ROLE_ARN`, and `CALLBACK_URI`;
-  the role uses Modal OIDC for S3 reads and callback invocation. Follow `README.md`
-  for secret/environment setup and persistent model-cache volumes.
+- The runtime secret supplies `AWS_REGION`, `AWS_ROLE_ARN`, and
+  `TASK_CALLBACK_FUNCTION_NAME`; the role uses Modal OIDC for S3 reads and
+  direct callback invocation. Follow `README.md` for secret/environment setup
+  and persistent model-cache volumes.
 - Moderation returns five model-defined category scores, not a combined verdict
   or calibrated probabilities. Preserve their semantics from
   `moderation/contracts.py` and the model-specific score mapping.

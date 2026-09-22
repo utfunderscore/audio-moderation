@@ -64,9 +64,10 @@ resource "aws_cloudwatch_log_group" "task_events" {
 }
 
 resource "aws_apigatewayv2_api" "pipeline_task_events" {
-  name                       = "${local.name_prefix}-pipeline-task-events"
-  protocol_type              = "WEBSOCKET"
-  route_selection_expression = "$request.body.action"
+  name                         = "${local.name_prefix}-pipeline-task-events"
+  protocol_type                = "WEBSOCKET"
+  route_selection_expression   = "$request.body.action"
+  disable_execute_api_endpoint = var.enable_cloudflare_proxy
 }
 
 resource "aws_lambda_function" "task_events" {
@@ -81,7 +82,7 @@ resource "aws_lambda_function" "task_events" {
   environment {
     variables = {
       DATABASE_URL_PARAMETER          = var.database_parameter_name
-      TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
+      TASK_EVENTS_MANAGEMENT_ENDPOINT = local.task_events_management_endpoint
       RUST_LOG                        = "info"
     }
   }

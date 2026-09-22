@@ -24,6 +24,10 @@ MODAL_WORKSPACE_ID="${MODAL_WORKSPACE_ID:-ac-k4lbrkEynY351mickkxfRh}"
 IMAGE_TAG="${IMAGE_TAG:-}"
 AUDIO_FILE="${AUDIO_FILE:-}"
 TASK_EVENTS_ENDPOINT="${AUDIO_MODERATION_TASK_EVENTS_ENDPOINT:-}"
+ENABLE_CLOUDFLARE_PROXY="${ENABLE_CLOUDFLARE_PROXY:-false}"
+CLOUDFLARE_ZONE_NAME="${CLOUDFLARE_ZONE_NAME:-utf.lol}"
+PUBLIC_API_DOMAIN_NAME="${PUBLIC_API_DOMAIN_NAME:-api-guard.utf.lol}"
+TASK_EVENTS_DOMAIN_NAME="${TASK_EVENTS_DOMAIN_NAME:-events-guard.utf.lol}"
 AUTO_APPROVE=false
 
 usage() {
@@ -74,6 +78,10 @@ Options:
   --modal-workspace-id ID                 Modal workspace ID
   --modal-endpoint-url URL                Base URL for the Modal moderation API
   --audio-file FILE                       Readable audio fixture for audio-conversion or e2e
+  --enable-cloudflare-proxy               Publish the HTTP and WebSocket APIs through Cloudflare
+  --cloudflare-zone-name NAME             Cloudflare zone (default: utf.lol)
+  --public-api-domain-name NAME           Public HTTP API hostname (default: api-guard.utf.lol)
+  --task-events-domain-name NAME          Public WebSocket hostname (default: events-guard.utf.lol)
   --image-tag TAG                         Immutable image tag (deploy only; default is git SHA
                                             plus UTC timestamp)
   --auto-approve                          Skip Terraform approval prompts (deploy/all only)
@@ -164,6 +172,10 @@ while [[ $# -gt 0 ]]; do
         --modal-endpoint-url) require_value "$@"; MODAL_ENDPOINT_URL="$2"; shift 2 ;;
         --modal-workspace-id) require_value "$@"; MODAL_WORKSPACE_ID="$2"; shift 2 ;;
         --audio-file) require_value "$@"; AUDIO_FILE="$2"; shift 2 ;;
+        --enable-cloudflare-proxy) ENABLE_CLOUDFLARE_PROXY=true; shift ;;
+        --cloudflare-zone-name) require_value "$@"; CLOUDFLARE_ZONE_NAME="$2"; shift 2 ;;
+        --public-api-domain-name) require_value "$@"; PUBLIC_API_DOMAIN_NAME="$2"; shift 2 ;;
+        --task-events-domain-name) require_value "$@"; TASK_EVENTS_DOMAIN_NAME="$2"; shift 2 ;;
         --image-tag) require_value "$@"; IMAGE_TAG="$2"; shift 2 ;;
         --auto-approve) AUTO_APPROVE=true; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -277,6 +289,15 @@ preflight() {
     printf 'AWS target region: %s\n' "${AWS_REGION}"
     printf 'Terraform uses local state in terraform/. Do not run deploys concurrently from separate worktrees; local state has no shared lock.\n'
 
+    if [[ "${target_suite}" == full && "${ENABLE_CLOUDFLARE_PROXY}" == true ]]; then
+        if [[ -z "${CLOUDFLARE_API_TOKEN:-}" && ( -z "${CLOUDFLARE_API_KEY:-}" || -z "${CLOUDFLARE_EMAIL:-}" ) ]]; then
+            printf 'Cloudflare credentials are required: set CLOUDFLARE_API_TOKEN, or both CLOUDFLARE_API_KEY and CLOUDFLARE_EMAIL.\n' >&2
+            exit 1
+        fi
+        printf 'Cloudflare proxy target: https://%s and wss://%s (zone %s).\n' \
+            "${PUBLIC_API_DOMAIN_NAME}" "${TASK_EVENTS_DOMAIN_NAME}" "${CLOUDFLARE_ZONE_NAME}"
+    fi
+
     case "${target_suite}" in
         full)
             for command in cargo docker git jq; do require_command "${command}"; done
@@ -365,6 +386,10 @@ set_terraform_vars() {
         -var="modal_endpoint_url=${MODAL_ENDPOINT_URL}"
         -var="modal_workspace_id=${MODAL_WORKSPACE_ID}"
         -var="enable_test_resources=true"
+        -var="enable_cloudflare_proxy=${ENABLE_CLOUDFLARE_PROXY}"
+        -var="cloudflare_zone_name=${CLOUDFLARE_ZONE_NAME}"
+        -var="public_api_domain_name=${PUBLIC_API_DOMAIN_NAME}"
+        -var="task_events_domain_name=${TASK_EVENTS_DOMAIN_NAME}"
         -var="submit_audio_image_tag=${IMAGE_TAG}"
         -var="confirm_upload_image_tag=${IMAGE_TAG}"
         -var="audio_processing_image_tag=${IMAGE_TAG}"

@@ -15,6 +15,9 @@ For a code-oriented walkthrough of the runner itself, see
 - Do not use or introduce a `latest` Lambda image tag. A deployment must use one collision-checked immutable tag for all eight images.
 - Test-only Terraform resources must remain gated by `enable_test_resources`, which defaults to `false`. The integration deployment script explicitly enables them.
 - Never print decrypted SSM parameter values or database credentials.
+- Cloudflare proxy deployment reads `CLOUDFLARE_API_TOKEN` from the environment,
+  or the legacy `CLOUDFLARE_API_KEY` plus `CLOUDFLARE_EMAIL` pair; never pass
+  credentials as Terraform variables or commit them to a file.
 - Do not deploy or modify Modal resources without explicit approval immediately before the Modal command.
 - Do not assume the checked-in `socialguard-models` gateway is compatible with the Rust `TranscriptionRequest`. A compatible external endpoint must be verified separately.
 
@@ -96,6 +99,10 @@ The complete deployment and `evaluation-e2e` require:
 - An HTTPS endpoint verified to accept this repository's Rust `TranscriptionRequest` contract. It defaults to the `transcription_endpoint_url` Terraform variable, so the runner can resolve it from Terraform output or the deployed transcription-caller instead of requiring `--transcription-endpoint-url`.
 - An HTTPS Modal base URL whose `/moderation/` route accepts this repository's `ModerationRequest` contract. Pass it with `--modal-endpoint-url`, or let the runner resolve `modal_endpoint_url` from Terraform or the deployed moderation-caller.
 - A readable, nonempty audio file for conversion or end-to-end testing.
+- When `--enable-cloudflare-proxy` is used, a Cloudflare API token with Zone Read
+  and DNS Edit access to the configured zone, or a legacy Global API Key plus the
+  account email. The deployment creates DNS-only ACM validation records and
+  proxied CNAME records for the HTTP and WebSocket APIs.
 - An applied task-events WebSocket API for the `task-events` and `evaluation-e2e`
   suites. The runner obtains its `wss://` endpoint from Terraform state unless
   `AUDIO_MODERATION_TASK_EVENTS_ENDPOINT` is explicitly set. `all task-events`

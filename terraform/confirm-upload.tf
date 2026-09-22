@@ -135,7 +135,7 @@ resource "aws_lambda_function" "confirm_upload" {
       ARTIFACTS_BUCKET_NAME           = aws_s3_bucket.artifacts.bucket
       DATABASE_URL_PARAMETER          = var.database_parameter_name
       STATE_MACHINE_ARN               = aws_sfn_state_machine.audio_processing.arn
-      TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
+      TASK_EVENTS_MANAGEMENT_ENDPOINT = local.task_events_management_endpoint
       UPLOADS_BUCKET_NAME             = aws_s3_bucket.uploads.bucket
       TENANT_ID                       = var.tenant_id
       RUST_LOG                        = "info"

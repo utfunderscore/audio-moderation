@@ -115,7 +115,7 @@ resource "aws_lambda_function" "task_callback" {
   environment {
     variables = {
       DATABASE_URL_PARAMETER          = var.database_parameter_name
-      TASK_EVENTS_MANAGEMENT_ENDPOINT = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
+      TASK_EVENTS_MANAGEMENT_ENDPOINT = local.task_events_management_endpoint
       RUST_LOG                        = "info"
     }
   }

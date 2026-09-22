@@ -120,6 +120,30 @@ variable "browser_allowed_origins" {
   }
 }
 
+variable "enable_cloudflare_proxy" {
+  description = "Create API Gateway custom domains and proxy them through Cloudflare"
+  type        = bool
+  default     = false
+}
+
+variable "cloudflare_zone_name" {
+  description = "Cloudflare DNS zone that owns the public API hostnames"
+  type        = string
+  default     = "utf.lol"
+}
+
+variable "public_api_domain_name" {
+  description = "Cloudflare-proxied hostname for the public HTTP API"
+  type        = string
+  default     = "api-guard.utf.lol"
+}
+
+variable "task_events_domain_name" {
+  description = "Cloudflare-proxied hostname for the task-events WebSocket API"
+  type        = string
+  default     = "events-guard.utf.lol"
+}
+
 variable "audio_source_bucket_arns" {
   description = "Additional S3 bucket ARNs from which the audio-processing Lambda may read audio objects"
   type        = set(string)

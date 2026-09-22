@@ -149,8 +149,8 @@ def test_process_transcription_posts_worker_outcome(
     callback = Mock()
     monkeypatch.setattr(
         pipeline,
-        "get_callback_uri",
-        Mock(return_value="https://example.com/callback"),
+        "get_callback_function_name",
+        Mock(return_value="task-callback"),
     )
     monkeypatch.setattr(pipeline, "run_model", run)
     monkeypatch.setattr(pipeline, "post_callback", callback)
@@ -166,7 +166,7 @@ def test_process_transcription_posts_worker_outcome(
     run.assert_awaited_once_with(job, session)
     callback.assert_called_once_with(
         session=session,
-        callback_uri="https://example.com/callback",
+        callback_function_name="task-callback",
         task_token="token-123",
         outcome={
             "type": "success",
@@ -186,12 +186,12 @@ def test_process_transcription_validates_callback_before_worker(
     run = AsyncMock()
     monkeypatch.setattr(
         pipeline,
-        "get_callback_uri",
-        Mock(side_effect=RuntimeError("CALLBACK_URI is required")),
+        "get_callback_function_name",
+        Mock(side_effect=RuntimeError("TASK_CALLBACK_FUNCTION_NAME is required")),
     )
     monkeypatch.setattr(pipeline, "run_model", run)
 
-    with pytest.raises(RuntimeError, match="CALLBACK_URI"):
+    with pytest.raises(RuntimeError, match="TASK_CALLBACK_FUNCTION_NAME"):
         asyncio.run(
             pipeline.process_model.local(  # pyright: ignore[reportFunctionMemberAccess]
                 TranscriptionJob(task), "transcription-456"
@@ -226,7 +226,7 @@ def test_moderation_uses_same_cpu_gpu_and_callback_lifecycle(
     submitter = AsyncMock(return_value=services.worker)
     monkeypatch.setitem(MODEL_SUBMITTERS, task.model, submitter)
     job = ModerationJob(task)
-    monkeypatch.setenv("CALLBACK_URI", "https://example.com/moderation-callback")
+    monkeypatch.setenv("TASK_CALLBACK_FUNCTION_NAME", "task-callback")
     callback = Mock()
     monkeypatch.setattr(pipeline, "post_callback", callback)
 
@@ -252,7 +252,7 @@ def test_moderation_uses_same_cpu_gpu_and_callback_lifecycle(
     )
     callback.assert_called_once_with(
         session=services.authenticate.return_value,
-        callback_uri="https://example.com/moderation-callback",
+        callback_function_name="task-callback",
         task_token=task.task_token,
         outcome=expected,
     )

@@ -10,7 +10,7 @@ import modal
 from socialguard_models.aws import assume_modal_oidc_role, create_presigned_download_url
 from socialguard_models.callbacks import (
     CALLBACK_MAX_DURATION_SECONDS,
-    get_callback_uri,
+    get_callback_function_name,
     post_callback,
 )
 from socialguard_models.contracts import FailedOutcome
@@ -72,13 +72,13 @@ async def run_model[Result](
 @modal.concurrent(max_inputs=MAX_CONCURRENT_TASKS)  # pyright: ignore[reportUnknownMemberType]
 async def process_model[Result](job: ModelJob[Result], task_id: str) -> None:
     """Run every accepted model job outside the HTTP lifecycle on shared CPU compute."""
-    callback_uri = get_callback_uri()
+    callback_function_name = get_callback_function_name()
     session = await asyncio.to_thread(assume_modal_oidc_role)
     result = await run_model(job, session)
     await asyncio.to_thread(
         post_callback,
         session=session,
-        callback_uri=callback_uri,
+        callback_function_name=callback_function_name,
         task_token=job.task.task_token,
         outcome=job.callback_outcome(result, task_id),
     )

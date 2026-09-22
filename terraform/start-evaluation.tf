@@ -125,7 +125,7 @@ resource "aws_lambda_function" "start_evaluation" {
       EVALUATION_ACCESS_SECRET_PARAMETER = var.evaluation_access_secret_parameter_name
       STATE_MACHINE_ARN                  = aws_sfn_state_machine.audio_processing.arn
       TENANT_ID                          = var.tenant_id
-      TASK_EVENTS_MANAGEMENT_ENDPOINT    = replace(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "wss://", "https://")
+      TASK_EVENTS_MANAGEMENT_ENDPOINT    = local.task_events_management_endpoint
       RUST_LOG                           = "info"
     }
   }
