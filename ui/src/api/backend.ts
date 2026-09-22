@@ -1,6 +1,10 @@
 import type { AudioProcessingJob } from "@/domain/jobs"
-import type { ModerationScores } from "@/domain/moderation"
 import type { ConnectionState } from "@/domain/reducer"
+import type {
+  EvaluationResult,
+  StartEvaluationInput,
+  StartedEvaluation,
+} from "./evaluation"
 
 /**
  * The single seam between the UI and the backend.
@@ -22,6 +26,9 @@ export interface Backend {
   /** Upload the selected audio and start the evaluation pipeline. */
   startEvaluation(input: StartEvaluationInput): Promise<StartedEvaluation>
 
+  /** Restore the current status for an evaluation submitted by this tab. */
+  resumeEvaluation(evaluationId: string): Promise<StartedEvaluation>
+
   /** Persisted transcript and scores for a finished evaluation, if any. */
   getEvaluationResult(evaluationId: string): Promise<EvaluationResult | null>
 
@@ -36,22 +43,6 @@ export interface Backend {
     evaluationId: string,
     handlers: TaskEventHandlers
   ): Unsubscribe
-}
-
-export interface StartEvaluationInput {
-  userId: string
-  audio: File
-}
-
-export interface StartedEvaluation {
-  evaluationId: string
-  /** `PIPELINE_TASK_STATUS_*` returned at ingress; seeds the stage tracker. */
-  status: string
-}
-
-export interface EvaluationResult {
-  transcript?: string
-  scores?: ModerationScores
 }
 
 /** One task-events frame. The stream carries event names only. */

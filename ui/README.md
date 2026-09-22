@@ -57,6 +57,7 @@ regressing.
 | --- | --- |
 | `listJobs(userId)` | job history |
 | `startEvaluation({ userId, audio })` | choosing a file |
+| `resumeEvaluation(evaluationId)` | restoring an in-progress job after reload |
 | `subscribeTaskEvents(evaluationId, handlers)` | live stage tracking |
 | `getEvaluationResult(evaluationId)` | transcript and scores |
 | `getJobAudio(jobId)` | replaying a past job |

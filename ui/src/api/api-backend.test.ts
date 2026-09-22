@@ -9,6 +9,7 @@ import {
   ReviewJobStatus,
 } from "@/gen/audio/review/v1/audio_review_pb"
 import { ApiBackend } from "./api-backend"
+import { BrowserEvaluationAccessStore } from "./browser-evaluation-access-store"
 import { BrowserEvaluationStore } from "./browser-evaluation-store"
 
 class MemoryStorage {
@@ -178,6 +179,79 @@ describe("ApiBackend.startEvaluation", () => {
       })
     ).rejects.toThrow("not authorized")
     expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it("restores an in-progress evaluation after a page reload", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null)))
+    // biome-ignore lint/complexity/useArrowFunction: WebSocket must be constructable.
+    const WebSocketMock = vi.fn(function () {
+      return {
+        send: vi.fn(),
+        close: vi.fn(),
+        onopen: null,
+        onmessage: null,
+      }
+    })
+    vi.stubGlobal("WebSocket", WebSocketMock)
+
+    let authorization = ""
+    const transport = createRouterTransport(({ service }) => {
+      service(AudioReviewService, {
+        submitReview(_request, context) {
+          authorization = context.requestHeader.get("authorization") ?? ""
+          return {
+            evaluationId: "evaluation-1",
+            reviewId: "review-1",
+            uploadUrl: "https://uploads.example/source",
+          }
+        },
+      })
+      service(AudioModerationService, {
+        getEvaluation(_request, context) {
+          expect(context.requestHeader.get("authorization")).toBe(authorization)
+          return {
+            evaluation: {
+              evaluationId: "evaluation-1",
+              status: PipelineTaskStatus.STARTED_ASR,
+            },
+          }
+        },
+        createTaskEventsTicket(_request, context) {
+          expect(context.requestHeader.get("authorization")).toBe(authorization)
+          return { ticket: "reload-ticket" }
+        },
+      })
+    })
+    const jobsStorage = new MemoryStorage()
+    const accessStorage = new MemoryStorage()
+    const firstPage = new ApiBackend(
+      "https://api.example",
+      transport,
+      new BrowserEvaluationStore(jobsStorage),
+      "wss://events.example/live",
+      new BrowserEvaluationAccessStore(accessStorage)
+    )
+    await firstPage.startEvaluation({
+      userId: "user-1",
+      audio: new File(["audio"], "sample.wav"),
+    })
+
+    const reloadedPage = new ApiBackend(
+      "https://api.example",
+      transport,
+      new BrowserEvaluationStore(jobsStorage),
+      "wss://events.example/live",
+      new BrowserEvaluationAccessStore(accessStorage)
+    )
+    await expect(
+      reloadedPage.resumeEvaluation("evaluation-1")
+    ).resolves.toEqual({
+      evaluationId: "evaluation-1",
+      status: "PIPELINE_TASK_STATUS_STARTED_ASR",
+    })
+
+    reloadedPage.subscribeTaskEvents("evaluation-1", { onFrame: vi.fn() })
+    await vi.waitFor(() => expect(WebSocketMock).toHaveBeenCalledOnce())
   })
 
   it("fetches and persists a submitted evaluation's terminal result", async () => {

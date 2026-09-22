@@ -6,15 +6,14 @@ import {
   type Transport,
 } from "@connectrpc/connect"
 import { createConnectTransport } from "@connectrpc/connect-web"
+import type { Backend, TaskEventHandlers, Unsubscribe } from "@/api/backend"
+import { BrowserEvaluationAccessStore } from "@/api/browser-evaluation-access-store"
+import { BrowserEvaluationStore } from "@/api/browser-evaluation-store"
 import type {
-  Backend,
   EvaluationResult,
   StartEvaluationInput,
   StartedEvaluation,
-  TaskEventHandlers,
-  Unsubscribe,
-} from "@/api/backend"
-import { BrowserEvaluationStore } from "@/api/browser-evaluation-store"
+} from "@/api/evaluation"
 import { subscribeTaskEventsWebSocket } from "@/api/task-events-websocket"
 import type { AudioProcessingJob } from "@/domain/jobs"
 import {
@@ -24,6 +23,10 @@ import {
 import { AudioReviewService } from "@/gen/audio/review/v1/audio_review_pb"
 
 const PENDING_STATUS = "PIPELINE_TASK_STATUS_PENDING"
+
+function pipelineStatusName(status: PipelineTaskStatus): string {
+  return `PIPELINE_TASK_STATUS_${PipelineTaskStatus[status] ?? "UNSPECIFIED"}`
+}
 
 const debugRpc: Interceptor = (next) => async (request) => {
   const method = `${request.service.typeName}/${request.method.name}`
@@ -43,11 +46,6 @@ const debugRpc: Interceptor = (next) => async (request) => {
     })
     throw error
   }
-}
-
-interface EvaluationAccess {
-  reviewId: string
-  token: string
 }
 
 function reviewToken(): string {
@@ -73,7 +71,7 @@ async function responseError(
 
 /** Backend implementation for the application's HTTP and event-stream APIs. */
 export class ApiBackend implements Backend {
-  private readonly evaluationAccess = new Map<string, EvaluationAccess>()
+  private readonly evaluationAccess: BrowserEvaluationAccessStore
   private readonly evaluationAudio = new Map<string, Blob>()
   private readonly evaluations: BrowserEvaluationStore
   private readonly moderationClient: Client<typeof AudioModerationService>
@@ -87,12 +85,14 @@ export class ApiBackend implements Backend {
       interceptors: [debugRpc],
     }),
     evaluations = new BrowserEvaluationStore(),
-    taskEventsEndpoint = import.meta.env.VITE_TASK_EVENTS_ENDPOINT ?? ""
+    taskEventsEndpoint = import.meta.env.VITE_TASK_EVENTS_ENDPOINT ?? "",
+    evaluationAccess = new BrowserEvaluationAccessStore()
   ) {
     this.moderationClient = createClient(AudioModerationService, transport)
     this.reviewClient = createClient(AudioReviewService, transport)
     this.evaluations = evaluations
     this.taskEventsEndpoint = taskEventsEndpoint
+    this.evaluationAccess = evaluationAccess
   }
 
   async listJobs(userId: string): Promise<AudioProcessingJob[]> {
@@ -131,7 +131,6 @@ export class ApiBackend implements Backend {
     if (!upload.ok) throw await responseError("Audio upload", upload)
 
     this.evaluationAccess.set(submitted.evaluationId, {
-      reviewId: submitted.reviewId,
       token,
     })
     this.evaluationAudio.set(submitted.evaluationId, input.audio)
@@ -145,6 +144,21 @@ export class ApiBackend implements Backend {
     return {
       evaluationId: submitted.evaluationId,
       status: PENDING_STATUS,
+    }
+  }
+
+  async resumeEvaluation(evaluationId: string): Promise<StartedEvaluation> {
+    const access = this.requireAccess(evaluationId)
+    const response = await this.moderationClient.getEvaluation(
+      { evaluationId },
+      { headers: { authorization: `Bearer ${access.token}` } }
+    )
+    if (response.evaluation === undefined) {
+      throw new Error("GetEvaluation returned no evaluation")
+    }
+    return {
+      evaluationId,
+      status: pipelineStatusName(response.evaluation.status),
     }
   }
 
@@ -170,6 +184,11 @@ export class ApiBackend implements Backend {
     ) {
       this.evaluations.recordFinished(evaluationId, "failed")
     }
+    const terminal =
+      evaluation.status === PipelineTaskStatus.SUCCEEDED ||
+      evaluation.status === PipelineTaskStatus.FAILED ||
+      evaluation.status === PipelineTaskStatus.TIMED_OUT ||
+      evaluation.status === PipelineTaskStatus.CANCELLED
 
     const transcript = evaluation.transcription?.transcript
     const remoteScores = evaluation.moderation?.scores
@@ -187,10 +206,12 @@ export class ApiBackend implements Backend {
             },
     }
     if (result.transcript === undefined && result.scores === undefined) {
+      if (terminal) this.evaluationAccess.remove(evaluationId)
       return null
     }
 
     this.evaluations.recordResult(evaluationId, result)
+    if (terminal) this.evaluationAccess.remove(evaluationId)
     return result
   }
 
@@ -211,12 +232,7 @@ export class ApiBackend implements Backend {
     return subscribeTaskEventsWebSocket(
       this.taskEventsEndpoint,
       async (signal) => {
-        const access = this.evaluationAccess.get(evaluationId)
-        if (access === undefined) {
-          throw new Error(
-            "Evaluation access is only available in the tab that submitted this job"
-          )
-        }
+        const access = this.requireAccess(evaluationId)
         const { ticket } = await this.moderationClient.createTaskEventsTicket(
           { evaluationId },
           {
@@ -228,5 +244,15 @@ export class ApiBackend implements Backend {
       },
       handlers
     )
+  }
+
+  private requireAccess(evaluationId: string) {
+    const access = this.evaluationAccess.get(evaluationId)
+    if (access === undefined) {
+      throw new Error(
+        "Evaluation access is only available in the tab that submitted this job"
+      )
+    }
+    return access
   }
 }

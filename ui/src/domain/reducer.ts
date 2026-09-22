@@ -39,7 +39,13 @@ export interface PipelineState {
 
 export type PipelineAction =
   | { type: "reset" }
-  | { type: "seed"; evaluationId: string; status: string; at: number }
+  | {
+      type: "seed"
+      evaluationId: string
+      status: string
+      at: number
+      startedAt?: number
+    }
   | { type: "connection"; state: ConnectionState }
   | { type: "frame"; name: string; source: EventSource; at: number }
   | { type: "clear-events" }
@@ -249,7 +255,8 @@ function seed(
   state: PipelineState,
   evaluationId: string,
   status: string,
-  at: number
+  at: number,
+  startedAt = at
 ): PipelineState {
   const stages = { ...createStages(), ...seedStageStates(status) }
   const times = createStageTimes()
@@ -267,7 +274,7 @@ function seed(
     stages,
     stageTimes: times,
     outcome: seedOutcome(status),
-    startedAt: at,
+    startedAt,
   }
 }
 
@@ -286,7 +293,13 @@ export function pipelineReducer(
       return { ...state, connection: action.state }
 
     case "seed":
-      return seed(state, action.evaluationId, action.status, action.at)
+      return seed(
+        state,
+        action.evaluationId,
+        action.status,
+        action.at,
+        action.startedAt
+      )
 
     case "frame": {
       const { name, source, at } = action

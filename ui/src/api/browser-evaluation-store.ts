@@ -1,4 +1,4 @@
-import type { EvaluationResult } from "@/api/backend"
+import type { EvaluationResult } from "@/api/evaluation"
 import type { AudioJobStatus, AudioProcessingJob } from "@/domain/jobs"
 import type { ModerationScores } from "@/domain/moderation"
 
