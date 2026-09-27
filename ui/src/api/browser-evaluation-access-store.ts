@@ -1,6 +1,7 @@
 const STORAGE_KEY = "audio-moderation.evaluation-access.v1"
 
 export interface EvaluationAccess {
+  reviewId: string
   token: string
 }
 
@@ -17,7 +18,7 @@ interface StorageLike {
 function isAccess(value: unknown): value is EvaluationAccess {
   if (typeof value !== "object" || value === null) return false
   const access = value as Partial<EvaluationAccess>
-  return typeof access.token === "string"
+  return typeof access.reviewId === "string" && typeof access.token === "string"
 }
 
 function parseAccess(
@@ -62,12 +63,6 @@ export class BrowserEvaluationAccessStore {
 
   set(evaluationId: string, access: EvaluationAccess): void {
     this.evaluations = { ...this.read(), [evaluationId]: { ...access } }
-    this.write()
-  }
-
-  remove(evaluationId: string): void {
-    const { [evaluationId]: _removed, ...remaining } = this.read()
-    this.evaluations = remaining
     this.write()
   }
 

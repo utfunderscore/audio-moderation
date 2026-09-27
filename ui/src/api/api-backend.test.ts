@@ -182,7 +182,8 @@ describe("ApiBackend.startEvaluation", () => {
   })
 
   it("restores an in-progress evaluation after a page reload", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null)))
+    const fetcher = vi.fn().mockResolvedValue(new Response(null))
+    vi.stubGlobal("fetch", fetcher)
     // biome-ignore lint/complexity/useArrowFunction: WebSocket must be constructable.
     const WebSocketMock = vi.fn(function () {
       return {
@@ -204,6 +205,11 @@ describe("ApiBackend.startEvaluation", () => {
             reviewId: "review-1",
             uploadUrl: "https://uploads.example/source",
           }
+        },
+        getReviewAudio(request, context) {
+          expect(request.reviewId).toBe("review-1")
+          expect(context.requestHeader.get("authorization")).toBe(authorization)
+          return { downloadUrl: "https://downloads.example/source" }
         },
       })
       service(AudioModerationService, {
@@ -249,6 +255,10 @@ describe("ApiBackend.startEvaluation", () => {
       evaluationId: "evaluation-1",
       status: "PIPELINE_TASK_STATUS_STARTED_ASR",
     })
+    await expect(
+      reloadedPage.getJobAudio("evaluation-1")
+    ).resolves.toBeInstanceOf(Blob)
+    expect(fetcher).toHaveBeenLastCalledWith("https://downloads.example/source")
 
     reloadedPage.subscribeTaskEvents("evaluation-1", { onFrame: vi.fn() })
     await vi.waitFor(() => expect(WebSocketMock).toHaveBeenCalledOnce())

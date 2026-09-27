@@ -60,7 +60,7 @@ regressing.
 | `resumeEvaluation(evaluationId)` | restoring an in-progress job after reload |
 | `subscribeTaskEvents(evaluationId, handlers)` | live stage tracking |
 | `getEvaluationResult(evaluationId)` | transcript and scores |
-| `getJobAudio(jobId)` | replaying a past job |
+| `getJobAudio(jobId)` | replaying a past job through a fresh signed download |
 
 `src/main.tsx` is the composition root: it supplies the `Backend` implementation
 to `<App backend={...} />`. It currently passes a placeholder that throws

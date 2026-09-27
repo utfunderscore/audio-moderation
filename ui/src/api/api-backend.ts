@@ -131,6 +131,7 @@ export class ApiBackend implements Backend {
     if (!upload.ok) throw await responseError("Audio upload", upload)
 
     this.evaluationAccess.set(submitted.evaluationId, {
+      reviewId: submitted.reviewId,
       token,
     })
     this.evaluationAudio.set(submitted.evaluationId, input.audio)
@@ -184,12 +185,6 @@ export class ApiBackend implements Backend {
     ) {
       this.evaluations.recordFinished(evaluationId, "failed")
     }
-    const terminal =
-      evaluation.status === PipelineTaskStatus.SUCCEEDED ||
-      evaluation.status === PipelineTaskStatus.FAILED ||
-      evaluation.status === PipelineTaskStatus.TIMED_OUT ||
-      evaluation.status === PipelineTaskStatus.CANCELLED
-
     const transcript = evaluation.transcription?.transcript
     const remoteScores = evaluation.moderation?.scores
     const result: EvaluationResult = {
@@ -206,23 +201,28 @@ export class ApiBackend implements Backend {
             },
     }
     if (result.transcript === undefined && result.scores === undefined) {
-      if (terminal) this.evaluationAccess.remove(evaluationId)
       return null
     }
 
     this.evaluations.recordResult(evaluationId, result)
-    if (terminal) this.evaluationAccess.remove(evaluationId)
     return result
   }
 
   async getJobAudio(jobId: string): Promise<Blob> {
     const audio = this.evaluationAudio.get(jobId)
-    if (audio === undefined) {
-      throw new Error(
-        "Audio is only available in the tab that submitted this job"
-      )
+    if (audio !== undefined) return audio
+
+    const access = this.requireAccess(jobId)
+    const { downloadUrl } = await this.reviewClient.getReviewAudio(
+      { reviewId: access.reviewId },
+      { headers: { authorization: `Bearer ${access.token}` } }
+    )
+    if (downloadUrl === "") {
+      throw new Error("GetReviewAudio returned no download URL")
     }
-    return audio
+    const response = await fetch(downloadUrl)
+    if (!response.ok) throw await responseError("Audio download", response)
+    return response.blob()
   }
 
   subscribeTaskEvents(
