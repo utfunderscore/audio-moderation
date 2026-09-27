@@ -6,19 +6,20 @@ use buffa_types::google::protobuf::Timestamp;
 use common::{review_token_hash, review_token_hash_matches};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest};
 use database::{
-    NewReviewPipelineTask, PipelineTaskEventTicketStore, PipelineTaskStore,
+    NewReviewPipelineTask, PipelineTaskEventTicketStore, PipelineTaskStore, ReviewJob,
     ReviewJobStatus as DatabaseReviewJobStatus, ReviewJobStore,
 };
 use tracing::{error, info, warn};
 
 use crate::proto::audio::review::v1::{
     AudioReviewService, CreateReviewEventsTicketRequest, CreateReviewEventsTicketResponse,
-    GetReviewRequest, GetReviewResponse, Review, ReviewJobStatus, SubmitReviewRequest,
-    SubmitReviewResponse,
+    GetReviewAudioRequest, GetReviewAudioResponse, GetReviewRequest, GetReviewResponse, Review,
+    ReviewJobStatus, SubmitReviewRequest, SubmitReviewResponse,
 };
 
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 const UPLOAD_URL_TTL: Duration = Duration::from_secs(15 * 60);
+const DOWNLOAD_URL_TTL: Duration = Duration::from_secs(15 * 60);
 const AUTHORIZATION_HEADER: &str = "authorization";
 const TASK_EVENTS_TICKET_LIFETIME: chrono::Duration = chrono::Duration::minutes(2);
 
@@ -51,7 +52,11 @@ impl SubmitReviewService {
         }
     }
 
-    async fn authorize(&self, ctx: &RequestContext, review_id: i32) -> Result<(), ConnectError> {
+    async fn authorize(
+        &self,
+        ctx: &RequestContext,
+        review_id: i32,
+    ) -> Result<ReviewJob, ConnectError> {
         let token_hash = review_token_hash_from_authorization(ctx)?;
         let review = self.store.get(review_id, &self.tenant_id).await.map_err(
             |database_error| {
@@ -59,11 +64,10 @@ impl SubmitReviewService {
                 ConnectError::internal("failed to authorize review")
             },
         )?;
-        review
-            .as_ref()
-            .map(|review| ensure_review_token_matches(&review.access_token_hash, &token_hash))
-            .transpose()?
-            .ok_or_else(|| ConnectError::unauthenticated("invalid review access token"))
+        let review =
+            review.ok_or_else(|| ConnectError::unauthenticated("invalid review access token"))?;
+        ensure_review_token_matches(&review.access_token_hash, &token_hash)?;
+        Ok(review)
     }
 }
 
@@ -250,6 +254,40 @@ impl AudioReviewService for SubmitReviewService {
         })
     }
 
+    async fn get_review_audio<'a>(
+        &'a self,
+        ctx: RequestContext,
+        request: ServiceRequest<'_, GetReviewAudioRequest>,
+    ) -> connectrpc::ServiceResult<
+        impl connectrpc::Encodable<GetReviewAudioResponse> + Send + use<'a>,
+    > {
+        let review_id = parse_review_id(request.review_id)?;
+        let review = self.authorize(&ctx, review_id).await?;
+        let download = presign_download(
+            &self.s3_client,
+            &self.uploads_bucket,
+            &review.input_file_path,
+        )
+        .await
+        .map_err(|presign_error| {
+            error!(
+                reviewId = review_id,
+                error = ?presign_error,
+                "failed to issue audio download URL"
+            );
+            presign_error
+        })?;
+        let expires_at = chrono::Utc::now()
+            + chrono::Duration::from_std(DOWNLOAD_URL_TTL)
+                .map_err(|_| ConnectError::internal("failed to configure download URL"))?;
+
+        Response::ok(GetReviewAudioResponse {
+            download_url: download.uri().to_owned(),
+            expires_at: timestamp(expires_at).into(),
+            ..Default::default()
+        })
+    }
+
     async fn create_review_events_ticket<'a>(
         &'a self,
         ctx: RequestContext,
@@ -351,6 +389,23 @@ async fn presign_upload(
         .presigned(presigning_config)
         .await
         .map_err(|_| ConnectError::internal("failed to create upload URL"))
+}
+
+async fn presign_download(
+    s3_client: &S3Client,
+    bucket: &str,
+    key: &str,
+) -> Result<aws_sdk_s3::presigning::PresignedRequest, ConnectError> {
+    let presigning_config = PresigningConfig::expires_in(DOWNLOAD_URL_TTL)
+        .map_err(|_| ConnectError::internal("failed to configure download URL"))?;
+
+    s3_client
+        .get_object()
+        .bucket(bucket)
+        .key(key)
+        .presigned(presigning_config)
+        .await
+        .map_err(|_| ConnectError::internal("failed to create download URL"))
 }
 
 fn validate_content_type(content_type: &str) -> Result<&str, ConnectError> {
@@ -579,5 +634,31 @@ mod tests {
                 .any(|(name, value)| name == "content-type" && value == "audio/wav")
         );
         assert!(!upload.headers().any(|(name, _)| name == "if-none-match"));
+    }
+
+    #[tokio::test]
+    async fn presigns_get_for_the_requested_object() {
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version_latest()
+            .credentials_provider(Credentials::new(
+                "test-access-key",
+                "test-secret-key",
+                None,
+                None,
+                "test",
+            ))
+            .region(Region::new("eu-west-2"))
+            .build();
+        let client = S3Client::from_conf(config);
+
+        let download = presign_download(&client, "uploads-bucket", "reviews/task-1/source")
+            .await
+            .unwrap();
+
+        assert_eq!(download.method(), "GET");
+        assert!(download.uri().starts_with(
+            "https://uploads-bucket.s3.eu-west-2.amazonaws.com/reviews/task-1/source?"
+        ));
+        assert!(download.uri().contains("X-Amz-Expires=900"));
     }
 }

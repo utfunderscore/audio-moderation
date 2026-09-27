@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react"
+import type { Backend } from "@/api/backend"
 import type {
-  Backend,
   EvaluationResult,
+  ResumeEvaluationInput,
   StartEvaluationInput,
-} from "@/api/backend"
+  StartedEvaluation,
+} from "@/api/evaluation"
 import type { PipelineState } from "@/domain/reducer"
 import {
   createInitialState,
@@ -16,6 +18,7 @@ export interface EvaluationRun {
   /** Transcript and scores fetched once the run reaches a terminal event. */
   result: EvaluationResult | null
   start: (input: StartEvaluationInput) => void
+  resume: (input: ResumeEvaluationInput) => void
   reset: () => void
   running: boolean
   hasRun: boolean
@@ -48,6 +51,35 @@ export function useEvaluation(backend: Backend): EvaluationRun {
     dispatch({ type: "reset" })
   }, [teardown])
 
+  const follow = useCallback(
+    (started: StartedEvaluation, token: number, startedAt?: number) => {
+      if (runTokenRef.current !== token) return
+      dispatch({
+        type: "seed",
+        evaluationId: started.evaluationId,
+        status: started.status,
+        at: Date.now(),
+        startedAt,
+      })
+      unsubscribeRef.current = backend.subscribeTaskEvents(
+        started.evaluationId,
+        {
+          onFrame: (frame) =>
+            dispatch({
+              type: "frame",
+              name: frame.name,
+              source: "live",
+              at: Date.now(),
+            }),
+          onConnectionChange: (connection) =>
+            dispatch({ type: "connection", state: connection }),
+          onError: () => dispatch({ type: "connection", state: "error" }),
+        }
+      )
+    },
+    [backend]
+  )
+
   const start = useCallback(
     (input: StartEvaluationInput) => {
       runTokenRef.current += 1
@@ -59,33 +91,30 @@ export function useEvaluation(backend: Backend): EvaluationRun {
 
       void backend
         .startEvaluation(input)
-        .then(({ evaluationId, status }) => {
-          if (runTokenRef.current !== token) return
-          dispatch({
-            type: "seed",
-            evaluationId,
-            status,
-            at: Date.now(),
-          })
-          unsubscribeRef.current = backend.subscribeTaskEvents(evaluationId, {
-            onFrame: (frame) =>
-              dispatch({
-                type: "frame",
-                name: frame.name,
-                source: "live",
-                at: Date.now(),
-              }),
-            onConnectionChange: (connection) =>
-              dispatch({ type: "connection", state: connection }),
-            onError: () => dispatch({ type: "connection", state: "error" }),
-          })
-        })
+        .then((started) => follow(started, token))
         .catch(() => {
           if (runTokenRef.current !== token) return
           dispatch({ type: "connection", state: "error" })
         })
     },
-    [backend, teardown]
+    [backend, follow, teardown]
+  )
+
+  const resume = useCallback(
+    (input: ResumeEvaluationInput) => {
+      runTokenRef.current += 1
+      const token = runTokenRef.current
+      teardown()
+      setResult(null)
+      void backend
+        .resumeEvaluation(input.evaluationId)
+        .then((started) => follow(started, token, input.startedAt))
+        .catch(() => {
+          if (runTokenRef.current !== token) return
+          dispatch({ type: "reset" })
+        })
+    },
+    [backend, follow, teardown]
   )
 
   useEffect(() => teardown, [teardown])
@@ -117,6 +146,7 @@ export function useEvaluation(backend: Backend): EvaluationRun {
     state,
     result,
     start,
+    resume,
     reset,
     running: isRunning(state),
     hasRun: state.startedAt !== null,

@@ -381,7 +381,7 @@ These values have different jobs and should not be treated as interchangeable:
 | AWS callback token | Secret used by an external processing job to resume Step Functions. Only its fingerprint is stored. |
 
 For the implemented review flow, the same `review_v1` token authorizes `GetReview`,
-the linked `GetEvaluation`, `CreateReviewEventsTicket`, and linked
+`GetReviewAudio`, the linked `GetEvaluation`, `CreateReviewEventsTicket`, and linked
 `CreateTaskEventsTicket`. The client can
 create a ticket and subscribe as soon as `SubmitReview` returns; it does not
 need to poll for an evaluation ID.

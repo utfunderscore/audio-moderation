@@ -87,6 +87,19 @@ export function App({ backend }: { backend: Backend }) {
 
   const { state } = evaluation
   const { evaluationId, outcome } = state
+  const { hasRun, resume } = evaluation
+
+  useEffect(() => {
+    if (jobsLoading || hasRun) return
+    const processingJob = previousJobs.find(
+      (job) => job.status === "processing"
+    )
+    if (processingJob === undefined) return
+    resume({
+      evaluationId: processingJob.id,
+      startedAt: processingJob.submittedAt,
+    })
+  }, [hasRun, jobsLoading, previousJobs, resume])
   const historyVersion =
     evaluationId === null
       ? null
@@ -165,11 +178,15 @@ export function App({ backend }: { backend: Backend }) {
         : state.outcome === null
           ? "processing"
           : "failed"
+  const storedCurrentJob = previousJobs.find((job) => job.id === evaluationId)
+  const currentFileName = audio.file?.name ?? storedCurrentJob?.fileName
   const currentJob =
-    audio.file !== null && evaluation.hasRun && state.startedAt !== null
+    currentFileName !== undefined &&
+    evaluation.hasRun &&
+    state.startedAt !== null
       ? {
           id: state.evaluationId ?? "—",
-          fileName: audio.file.name,
+          fileName: currentFileName,
           startedAt: state.startedAt,
           endedAt: state.stageTimes.result.endedAt,
           status: currentJobStatus,

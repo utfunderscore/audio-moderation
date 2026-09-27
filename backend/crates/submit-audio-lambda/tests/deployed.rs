@@ -18,6 +18,7 @@ use task_events_websocket::TaskEventsWebSocket;
 
 const SUBMIT_REVIEW_PATH: &str = "/audio.review.v1.AudioReviewService/SubmitReview";
 const GET_REVIEW_PATH: &str = "/audio.review.v1.AudioReviewService/GetReview";
+const GET_REVIEW_AUDIO_PATH: &str = "/audio.review.v1.AudioReviewService/GetReviewAudio";
 const CREATE_REVIEW_EVENTS_TICKET_PATH: &str =
     "/audio.review.v1.AudioReviewService/CreateReviewEventsTicket";
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(60);
@@ -138,6 +139,21 @@ async fn starts_uploaded_review_evaluation_against_aws() -> Result<(), Box<dyn s
     );
 
     put_presigned(&client, upload_url, &upload_headers, audio.clone()).await?;
+    let download_url = get_review_audio(
+        &client,
+        &endpoint,
+        submitted["reviewId"].as_str().unwrap(),
+        &access_token,
+    )
+    .await?;
+    let downloaded = client
+        .get(download_url)
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    assert_eq!(downloaded.as_ref(), audio.as_slice());
     assert_eq!(
         socket
             .next_event(DISPATCH_TIMEOUT)
@@ -284,6 +300,38 @@ async fn get_review(
         "GetReview failed with {status}: {body}"
     );
     Ok(serde_json::from_str::<Value>(&body)?["review"].clone())
+}
+
+async fn get_review_audio(
+    client: &reqwest::Client,
+    endpoint: &str,
+    review_id: &str,
+    access_token: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let response = client
+        .post(format!(
+            "{}{}",
+            endpoint.trim_end_matches('/'),
+            GET_REVIEW_AUDIO_PATH
+        ))
+        .header("content-type", "application/json")
+        .header("connect-protocol-version", "1")
+        .bearer_auth(access_token)
+        .json(&json!({ "reviewId": review_id }))
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    assert!(
+        status.is_success(),
+        "GetReviewAudio failed with {status}: {body}"
+    );
+    let response: Value = serde_json::from_str(&body)?;
+    response["downloadUrl"]
+        .as_str()
+        .filter(|url| !url.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| IoError::other("audio response did not contain a download URL").into())
 }
 
 async fn wait_for_dispatched_task(

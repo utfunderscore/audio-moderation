@@ -37,6 +37,19 @@ const HAPPY_PATH = [
 ]
 
 describe("pipelineReducer", () => {
+  it("preserves the original start time when resuming", () => {
+    const state = pipelineReducer(createInitialState(), {
+      type: "seed",
+      evaluationId: "42",
+      status: PIPELINE_STATUS.startedAsr,
+      at: 5_000,
+      startedAt: 1_000,
+    })
+
+    expect(state.startedAt).toBe(1_000)
+    expect(state.stageTimes.transcription.startedAt).toBe(5_000)
+  })
+
   it("advances every stage through the happy path", () => {
     const state = feed(createInitialState(), HAPPY_PATH)
 
