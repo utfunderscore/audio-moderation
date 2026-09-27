@@ -121,6 +121,43 @@ export declare type GetReviewResponse = Message<"audio.review.v1.GetReviewRespon
 export declare const GetReviewResponseSchema: GenMessage<GetReviewResponse>;
 
 /**
+ * @generated from message audio.review.v1.GetReviewAudioRequest
+ */
+export declare type GetReviewAudioRequest = Message<"audio.review.v1.GetReviewAudioRequest"> & {
+  /**
+   * @generated from field: string review_id = 1;
+   */
+  reviewId: string;
+};
+
+/**
+ * Describes the message audio.review.v1.GetReviewAudioRequest.
+ * Use `create(GetReviewAudioRequestSchema)` to create a new message.
+ */
+export declare const GetReviewAudioRequestSchema: GenMessage<GetReviewAudioRequest>;
+
+/**
+ * @generated from message audio.review.v1.GetReviewAudioResponse
+ */
+export declare type GetReviewAudioResponse = Message<"audio.review.v1.GetReviewAudioResponse"> & {
+  /**
+   * @generated from field: string download_url = 1;
+   */
+  downloadUrl: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp expires_at = 2;
+   */
+  expiresAt?: Timestamp | undefined;
+};
+
+/**
+ * Describes the message audio.review.v1.GetReviewAudioResponse.
+ * Use `create(GetReviewAudioResponseSchema)` to create a new message.
+ */
+export declare const GetReviewAudioResponseSchema: GenMessage<GetReviewAudioResponse>;
+
+/**
  * @generated from message audio.review.v1.Review
  */
 export declare type Review = Message<"audio.review.v1.Review"> & {
@@ -255,6 +292,16 @@ export declare const AudioReviewService: GenService<{
     methodKind: "unary";
     input: typeof GetReviewRequestSchema;
     output: typeof GetReviewResponseSchema;
+  },
+  /**
+   * Requires the same review bearer token and returns a short-lived S3 GET URL.
+   *
+   * @generated from rpc audio.review.v1.AudioReviewService.GetReviewAudio
+   */
+  getReviewAudio: {
+    methodKind: "unary";
+    input: typeof GetReviewAudioRequestSchema;
+    output: typeof GetReviewAudioResponseSchema;
   },
   /**
    * @generated from rpc audio.review.v1.AudioReviewService.CreateReviewEventsTicket

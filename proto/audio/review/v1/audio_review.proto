@@ -9,6 +9,8 @@ service AudioReviewService {
   // Authorization: Bearer review_v1.<base64url-encoded 32 random bytes> header.
   rpc SubmitReview(SubmitReviewRequest) returns (SubmitReviewResponse);
   rpc GetReview(GetReviewRequest) returns (GetReviewResponse);
+  // Requires the same review bearer token and returns a short-lived S3 GET URL.
+  rpc GetReviewAudio(GetReviewAudioRequest) returns (GetReviewAudioResponse);
   rpc CreateReviewEventsTicket(CreateReviewEventsTicketRequest) returns (CreateReviewEventsTicketResponse);
 }
 
@@ -37,6 +39,15 @@ message GetReviewRequest {
 
 message GetReviewResponse {
   Review review = 1;
+}
+
+message GetReviewAudioRequest {
+  string review_id = 1;
+}
+
+message GetReviewAudioResponse {
+  string download_url = 1;
+  google.protobuf.Timestamp expires_at = 2;
 }
 
 message Review {

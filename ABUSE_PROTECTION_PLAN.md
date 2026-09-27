@@ -47,6 +47,8 @@ Lambda, Step Functions, transcription, moderation, or database costs.
 - Opaque review tokens remain valid while the review exists. They are scoped by
   the stored review-to-task relationship and cannot validate as `eval_v1.`
   tokens.
+- `GetReviewAudio` requires the review token and returns a 15-minute presigned
+  GET URL for that review's source object.
 - `SubmitReview` creates the linked evaluation before upload, so `GetReview`
   always exposes that stable ID. The same capability can authorize
   `GetEvaluation` only for the pipeline task explicitly linked to that review
