@@ -82,6 +82,7 @@ export function useEvaluation(backend: Backend): EvaluationRun {
 
   const start = useCallback(
     (input: StartEvaluationInput) => {
+      const startedAt = Date.now()
       runTokenRef.current += 1
       const token = runTokenRef.current
       teardown()
@@ -91,7 +92,7 @@ export function useEvaluation(backend: Backend): EvaluationRun {
 
       void backend
         .startEvaluation(input)
-        .then((started) => follow(started, token))
+        .then((started) => follow(started, token, startedAt))
         .catch(() => {
           if (runTokenRef.current !== token) return
           dispatch({ type: "connection", state: "error" })

@@ -352,9 +352,9 @@ export function runElapsed(state: PipelineState, now: number): number | null {
 
 export function formatDuration(ms: number | null): string {
   if (ms === null) return "—"
-  const totalSeconds = Math.max(0, Math.round(ms / 100) / 10)
-  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`
+  const totalSeconds = Math.max(0, Math.floor(ms / 1_000))
+  if (totalSeconds < 60) return `${totalSeconds}s`
   const minutes = Math.floor(totalSeconds / 60)
-  const seconds = Math.round(totalSeconds % 60)
+  const seconds = totalSeconds % 60
   return `${minutes}m ${seconds}s`
 }

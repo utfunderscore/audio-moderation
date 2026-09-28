@@ -4,14 +4,12 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-/** Wall-clock timestamp with milliseconds, e.g. 12:00:01.204. */
+/** Wall-clock timestamp to the second, e.g. 12:00:01. */
 export function formatClock(timestamp: number): string {
   const date = new Date(timestamp)
   const pad = (value: number, length = 2) =>
     value.toString().padStart(length, "0")
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
-    date.getSeconds()
-  )}.${pad(date.getMilliseconds(), 3)}`
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 /** Media position, e.g. 1:04. */

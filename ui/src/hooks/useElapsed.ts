@@ -1,14 +1,15 @@
 import { useEffect, useState } from "react"
 
-/** Ticks while `active` so elapsed labels and the run timer stay live. */
-export function useNow(active: boolean, intervalMs = 250): number {
+/** Ticks once a second while `active` so elapsed labels stay live. */
+export function useNow(active: boolean): number {
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
     if (!active) return undefined
-    const id = window.setInterval(() => setNow(Date.now()), intervalMs)
+    setNow(Date.now())
+    const id = window.setInterval(() => setNow(Date.now()), 1_000)
     return () => window.clearInterval(id)
-  }, [active, intervalMs])
+  }, [active])
 
   return now
 }

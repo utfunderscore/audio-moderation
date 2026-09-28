@@ -53,7 +53,7 @@ function formatSubmitted(timestamp: number) {
 }
 
 function formatStoredDuration(milliseconds: number) {
-  const seconds = Math.max(0, Math.round(milliseconds / 1_000))
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000))
   if (seconds < 60) return `${seconds}s`
 
   const minutes = Math.floor(seconds / 60)

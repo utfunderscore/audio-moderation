@@ -397,10 +397,7 @@ export function App({ backend }: { backend: Backend }) {
                     elapsed={null}
                     elapsedContent={
                       <ElapsedDuration
-                        startedAt={
-                          state.stageTimes.conversion.startedAt ??
-                          state.startedAt
-                        }
+                         startedAt={state.startedAt}
                         endedAt={
                           state.stageTimes.conversion.endedAt ??
                           state.stageTimes.result.endedAt

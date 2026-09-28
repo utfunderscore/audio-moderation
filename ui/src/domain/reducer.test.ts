@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   createInitialState,
+  formatDuration,
   PIPELINE_STATUS,
   type PipelineState,
   pipelineReducer,
@@ -184,5 +185,17 @@ describe("pipelineReducer", () => {
     const state = pipelineReducer(running, { type: "reset" })
 
     expect(state).toEqual(createInitialState())
+  })
+})
+
+describe("formatDuration", () => {
+  it("displays only completed whole seconds without resetting at minute boundaries", () => {
+    expect(formatDuration(null)).toBe("—")
+    expect(formatDuration(999)).toBe("0s")
+    expect(formatDuration(1_250)).toBe("1s")
+    expect(formatDuration(59_999)).toBe("59s")
+    expect(formatDuration(60_000)).toBe("1m 0s")
+    expect(formatDuration(119_999)).toBe("1m 59s")
+    expect(formatDuration(-100)).toBe("0s")
   })
 })
