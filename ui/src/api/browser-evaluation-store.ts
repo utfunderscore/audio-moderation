@@ -137,8 +137,10 @@ export class BrowserEvaluationStore {
     if (job === undefined) return
     this.upsert({
       ...job,
-      transcript: result.transcript,
-      scores: result.scores,
+      // Early transcription reads and terminal reads can finish out of order.
+      // A partial snapshot must not erase artifacts already persisted.
+      transcript: result.transcript ?? job.transcript,
+      scores: result.scores ?? job.scores,
     })
   }
 

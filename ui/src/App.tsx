@@ -445,6 +445,7 @@ export function App({ backend }: { backend: Backend }) {
                       <TranscriptionStage
                         state={state.stages.transcription}
                         transcript={transcript}
+                        loading={outcome === null}
                       />
                     </StagePage>
                   ) : null}

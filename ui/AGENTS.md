@@ -35,8 +35,9 @@ Run from `ui/`:
   event names, not JSON results. Replay/live delivery can duplicate events, so
   `subscribeTaskEvents` implementations must tolerate duplicates; the stream
   cannot distinguish replay from live frames.
-- Transcripts and moderation scores are not delivered on the stream. They come
-  from `getEvaluationResult` after the workflow settles.
+- Transcripts and moderation scores are not delivered on the stream. Read the
+  transcript with `getEvaluationResult` after ASR finishes, and refresh the
+  result after the workflow settles to get scores.
 - Keep lifecycle transitions in `src/domain/reducer.ts`: it seeds from the
   StartEvaluation status and handles duplicate/out-of-order events without
   regressing stages. Preserve unknown-event handling when extending the protocol.

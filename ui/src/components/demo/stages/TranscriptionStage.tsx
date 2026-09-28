@@ -4,6 +4,7 @@ import type { StageState } from "@/domain/stages"
 interface TranscriptionStageProps {
   state: StageState
   transcript?: string
+  loading?: boolean
 }
 
 function countWords(text: string): number {
@@ -13,6 +14,7 @@ function countWords(text: string): number {
 export function TranscriptionStage({
   state,
   transcript,
+  loading = false,
 }: TranscriptionStageProps) {
   if (state === "processing") {
     return (
@@ -44,7 +46,12 @@ export function TranscriptionStage({
 
   if (transcript === undefined) {
     return (
-      <p className="text-sm text-muted-foreground">No transcript returned.</p>
+      <p
+        className="text-sm text-muted-foreground"
+        role={loading ? "status" : undefined}
+      >
+        {loading ? "Loading transcript…" : "No transcript returned."}
+      </p>
     )
   }
 

@@ -15,7 +15,7 @@ import {
 
 export interface EvaluationRun {
   state: PipelineState
-  /** Transcript and scores fetched once the run reaches a terminal event. */
+  /** Transcript after ASR; scores refreshed when the run reaches a terminal event. */
   result: EvaluationResult | null
   start: (input: StartEvaluationInput) => void
   resume: (input: ResumeEvaluationInput) => void
@@ -119,12 +119,17 @@ export function useEvaluation(backend: Backend): EvaluationRun {
 
   useEffect(() => teardown, [teardown])
 
-  // The event stream carries names only; read the persisted artifacts once the
-  // workflow settles.
+  // The stream carries names only. Read the transcript as soon as ASR completes,
+  // then refresh after the workflow settles to pick up moderation scores.
   useEffect(() => {
     const evaluationId = state.evaluationId
     const outcome = state.outcome
-    if (outcome === null || evaluationId === null) return undefined
+    if (
+      evaluationId === null ||
+      (state.stages.transcription !== "complete" && outcome === null)
+    ) {
+      return undefined
+    }
 
     let cancelled = false
     void backend
@@ -140,7 +145,7 @@ export function useEvaluation(backend: Backend): EvaluationRun {
     return () => {
       cancelled = true
     }
-  }, [backend, state.evaluationId, state.outcome])
+  }, [backend, state.evaluationId, state.outcome, state.stages.transcription])
 
   return {
     state,

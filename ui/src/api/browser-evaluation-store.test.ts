@@ -69,6 +69,29 @@ describe("BrowserEvaluationStore", () => {
     )
   })
 
+  it("does not discard terminal scores when an earlier transcript-only fetch resolves late", () => {
+    const store = new BrowserEvaluationStore(new MemoryStorage())
+    store.recordStarted({
+      evaluationId: "evaluation-1",
+      userId: "user-1",
+      fileName: "clip.wav",
+      submittedAt: 100,
+    })
+    store.recordResult("evaluation-1", {
+      transcript: "hello world",
+      scores: {
+        sexual: 0.01,
+        hate_or_discrimination: 0.02,
+        harassment_or_abuse: 0.03,
+        violence_or_threats: 0.04,
+        asking_for_pii: 0.05,
+      },
+    })
+    store.recordResult("evaluation-1", { transcript: "hello world" })
+
+    expect(store.getResult("evaluation-1")?.scores?.sexual).toBe(0.01)
+  })
+
   it("isolates users and ignores malformed persisted data", () => {
     const storage = new MemoryStorage()
     storage.setItem("audio-moderation.evaluations.v1", "not json")

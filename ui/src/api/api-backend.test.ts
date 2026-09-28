@@ -366,4 +366,44 @@ describe("ApiBackend.startEvaluation", () => {
     })
     expect(evaluationRequests).toBe(1)
   })
+
+  it("returns a finished transcription without marking a running evaluation complete", async () => {
+    const transport = createRouterTransport(({ service }) => {
+      service(AudioModerationService, {
+        getEvaluation() {
+          return {
+            evaluation: {
+              evaluationId: "evaluation-1",
+              status: PipelineTaskStatus.STARTED_MODERATION_PROCESSING,
+              transcription: { transcript: "early transcript" },
+            },
+          }
+        },
+      })
+    })
+    const jobs = new BrowserEvaluationStore(new MemoryStorage())
+    jobs.recordStarted({
+      evaluationId: "evaluation-1",
+      userId: "user-1",
+      fileName: "sample.mp3",
+      submittedAt: Date.now(),
+    })
+    const access = new BrowserEvaluationAccessStore(new MemoryStorage())
+    access.set("evaluation-1", { reviewId: "42", token: "test-token" })
+    const backend = new ApiBackend(
+      "https://api.example",
+      transport,
+      jobs,
+      "",
+      access
+    )
+
+    await expect(backend.getEvaluationResult("evaluation-1")).resolves.toEqual({
+      transcript: "early transcript",
+      scores: undefined,
+    })
+    await expect(backend.listJobs("user-1")).resolves.toMatchObject([
+      { status: "processing", transcript: "early transcript" },
+    ])
+  })
 })

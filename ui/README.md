@@ -4,9 +4,9 @@ A single-page React/Vite UI for the audio moderation pipeline. It takes an audio
 file and advances a stage tracker through the event sequence the deployed
 task-events WebSocket emits.
 
-The UI contains **no backend interaction code**. Every backend operation is
-declared in one place — `src/api/backend.ts` — and the UI depends only on that
-interface. Uploads, auth, HTTP, and the WebSocket live in the implementation.
+Every backend operation is declared in one place — `src/api/backend.ts` — and
+the UI depends only on that interface. `ApiBackend` implements the HTTP and
+WebSocket integration and is wired in `src/main.tsx`.
 
 ## Run
 
@@ -108,13 +108,13 @@ regressing.
 | `getJobAudio(jobId)` | replaying a past job through a fresh signed download |
 
 `src/main.tsx` is the composition root: it supplies the `Backend` implementation
-to `<App backend={...} />`. It currently passes a placeholder that throws
-`not implemented` for every operation, so the app builds and renders but performs
-no backend work until a real implementation is wired in.
+to `<App backend={...} />`. It currently supplies `ApiBackend`, configured with
+the public API and task-events URLs above.
 
 Task-event frames are raw event names and delivery is at-least-once, so the
 reducer dedupes by name. Transcripts and scores are not carried on the stream;
-they come from `getEvaluationResult` after the workflow settles.
+the UI reads the transcript with `getEvaluationResult` after ASR finishes and
+refreshes the result after the workflow settles for moderation scores.
 
 ## Layout
 
