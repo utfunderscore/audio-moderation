@@ -11,7 +11,7 @@ interface. Uploads, auth, HTTP, and the WebSocket live in the implementation.
 ## Run
 
 ```sh
-npm install
+npm ci
 npm run dev       # http://127.0.0.1:5173
 npm test          # reducer unit tests (vitest)
 npm run lint
@@ -22,8 +22,8 @@ Point the app at a deployed stack in `.env.local`. Both values come from
 Terraform's local state:
 
 ```sh
-terraform -chdir=../terraform output -raw api_endpoint
-terraform -chdir=../terraform output -raw pipeline_task_events_websocket_endpoint
+AWS_PROFILE=admin terraform -chdir=../terraform output -raw api_endpoint
+AWS_PROFILE=admin terraform -chdir=../terraform output -raw pipeline_task_events_websocket_endpoint
 ```
 
 - `VITE_API_ENDPOINT` — the public HTTP API base URL (`https://…/`), used for
@@ -34,6 +34,51 @@ terraform -chdir=../terraform output -raw pipeline_task_events_websocket_endpoin
 
 Vite expands `$VAR` references in env files, so escape the API Gateway
 `$default` stage as `\$default` or it is dropped from the task-events URL.
+
+## Cloudflare Workers
+
+The UI is hosted with [Workers Static Assets](https://developers.cloudflare.com/workers/static-assets/).
+`wrangler.jsonc` publishes Vite's `dist/` directory as the `socialguard-ui` Worker
+and serves `index.html` for unmatched paths so SPA deep links work.
+
+Use Node.js 22.13+ (or a newer supported LTS release). From `ui/`:
+
+```sh
+npm ci
+npm run preview:workers                 # build and serve locally on http://127.0.0.1:8787
+AWS_PROFILE=admin npm run deploy:dry-run # build and validate without publishing
+```
+
+For production, set `VITE_API_ENDPOINT` and `VITE_TASK_EVENTS_ENDPOINT` in
+`.env.production.local` or the build environment. These public URLs are embedded
+in the browser bundle at build time; changing Worker runtime variables does not
+change them. Rebuild and redeploy after changing either URL. The API and audio
+storage CORS configuration must allow the deployed UI origin.
+
+To publish, authenticate with Cloudflare and deploy:
+
+```sh
+npx wrangler login
+AWS_PROFILE=admin npm run deploy
+```
+
+`wrangler.jsonc` configures `guard.utf.lol` as the Worker's custom domain.
+Deploy into the Cloudflare account with the active `utf.lol` zone; Cloudflare
+creates the domain's DNS record and TLS certificate. An existing CNAME on that
+hostname must be removed before attaching the custom domain. To use another
+Worker name or hostname, edit `name` or `routes` in `wrangler.jsonc`.
+
+The default Terraform `browser_allowed_origins` covers local Wrangler on
+`http://localhost:8787` and `http://127.0.0.1:8787`, and its `https://*` entry
+already covers `https://guard.utf.lol` for both API calls and S3 uploads/downloads.
+The local-origin additions take effect after deploying the AWS configuration.
+If overriding this variable, include these origins in the override as well.
+
+For Cloudflare Workers Builds, select `ui` as the root directory, use `npm ci`
+as the build command and `AWS_PROFILE=admin npm run deploy` as the deploy command
+(the deploy script builds the UI). Set both `VITE_*` URLs as build variables.
+For other CI providers, also supply `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` through the CI environment.
 
 ## What it shows
 
