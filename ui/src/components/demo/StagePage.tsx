@@ -114,7 +114,7 @@ export function StagePage({
                 {elapsedContent ?? formatDuration(elapsed)}
               </span>
             ) : null}
-            {status !== "complete" ? (
+            {status !== "complete" && status !== "processing" ? (
               <Badge
                 key={status}
                 variant="outline"

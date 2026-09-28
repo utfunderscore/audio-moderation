@@ -1,5 +1,3 @@
-import { Loading01 } from "@untitledui/icons"
-
 import { Skeleton } from "@/components/ui/skeleton"
 
 /**
@@ -14,10 +12,6 @@ export function AudioProcessing({ fileName }: { fileName: string }) {
       aria-label="Processing audio"
     >
       <div className="flex items-center gap-3">
-        <Loading01
-          aria-hidden
-          className="size-4 shrink-0 animate-spin text-warning motion-reduce:animate-none"
-        />
         <div className="min-w-0">
           <p className="truncate text-sm font-medium">{fileName}</p>
           <p className="text-xs text-muted-foreground">Preparing your audio…</p>
