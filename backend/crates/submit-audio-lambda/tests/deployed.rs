@@ -21,6 +21,9 @@ const GET_REVIEW_PATH: &str = "/audio.review.v1.AudioReviewService/GetReview";
 const GET_REVIEW_AUDIO_PATH: &str = "/audio.review.v1.AudioReviewService/GetReviewAudio";
 const CREATE_REVIEW_EVENTS_TICKET_PATH: &str =
     "/audio.review.v1.AudioReviewService/CreateReviewEventsTicket";
+const GET_EVALUATION_PATH: &str = "/audio.moderation.v1.AudioModerationService/GetEvaluation";
+const CREATE_TASK_EVENTS_TICKET_PATH: &str =
+    "/audio.moderation.v1.AudioModerationService/CreateTaskEventsTicket";
 const DISPATCH_TIMEOUT: Duration = Duration::from_secs(60);
 const DUPLICATE_NOTIFICATION_WINDOW: Duration = Duration::from_secs(45);
 const WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(15);
@@ -73,6 +76,43 @@ async fn submits_review_against_aws() -> Result<(), Box<dyn std::error::Error>> 
     .await?;
     assert_eq!(review["status"], "REVIEW_JOB_STATUS_AWAITING_UPLOAD");
     assert_eq!(review["evaluationId"], submitted["evaluationId"]);
+
+    let evaluation_id = submitted["evaluationId"].as_str().unwrap();
+    let unauthorized = client
+        .post(format!(
+            "{}{}",
+            endpoint.trim_end_matches('/'),
+            GET_EVALUATION_PATH
+        ))
+        .header("content-type", "application/json")
+        .header("connect-protocol-version", "1")
+        .bearer_auth(review_token())
+        .json(&json!({ "evaluationId": evaluation_id }))
+        .send()
+        .await?;
+    assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let evaluation = authorized_evaluation_request(
+        &client,
+        &endpoint,
+        GET_EVALUATION_PATH,
+        evaluation_id,
+        &access_token,
+    )
+    .await?;
+    assert_eq!(evaluation["evaluation"]["evaluationId"], evaluation_id);
+    let ticket = authorized_evaluation_request(
+        &client,
+        &endpoint,
+        CREATE_TASK_EVENTS_TICKET_PATH,
+        evaluation_id,
+        &access_token,
+    )
+    .await?;
+    assert!(
+        ticket["ticket"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
 
     Ok(())
 }
@@ -538,6 +578,27 @@ async fn submit(
     let status = response.status();
     let body = response.text().await?;
     assert!(status.is_success(), "submit failed with {status}: {body}");
+    Ok(serde_json::from_str(&body)?)
+}
+
+async fn authorized_evaluation_request(
+    client: &reqwest::Client,
+    endpoint: &str,
+    path: &str,
+    evaluation_id: &str,
+    access_token: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let response = client
+        .post(format!("{}{}", endpoint.trim_end_matches('/'), path))
+        .header("content-type", "application/json")
+        .header("connect-protocol-version", "1")
+        .bearer_auth(access_token)
+        .json(&json!({ "evaluationId": evaluation_id }))
+        .send()
+        .await?;
+    let status = response.status();
+    let body = response.text().await?;
+    assert!(status.is_success(), "{path} failed with {status}: {body}");
     Ok(serde_json::from_str(&body)?)
 }
 

@@ -33,7 +33,7 @@ coherent version of the codebase.
 | `submit-audio` | Accepts review submissions and creates presigned S3 upload details. |
 | `confirm-upload` | Handles matching S3 upload notifications and starts review evaluations. |
 | `audio-processing` | Downloads input audio, stitches it, writes the artifact, and finalizes workflow outcomes. |
-| `start-evaluation` | Accepts evaluation requests, creates pipeline tasks, and starts Step Functions executions. |
+| `start-evaluation` | Serves evaluation snapshots and authorized task-event tickets for uploaded reviews. |
 | `task-callback` | Receives external transcription and moderation callbacks and resumes Step Functions tasks. |
 | `transcription-caller` | Starts an external transcription request. |
 | `moderation-caller` | Starts an external moderation request. |
@@ -96,7 +96,7 @@ Terraform manages two APIs:
 The HTTP API routes requests to:
 
 - `submit-audio` for review submission;
-- `start-evaluation` for evaluation ingress; and
+- `start-evaluation` for evaluation reads and task-event tickets; and
 - `task-callback` for external task callbacks.
 
 The deployment updates the Lambda integrations, routes, default stage, throttling,
@@ -238,7 +238,6 @@ AWS_PROFILE=admin ./deployment-integration.sh test review-submit
 
 AWS_PROFILE=admin ./deployment-integration.sh test review-confirmation
 
-AWS_PROFILE=admin ./deployment-integration.sh test evaluation-ingress
 ```
 
 ### Test audio conversion
@@ -251,18 +250,6 @@ AWS_PROFILE=admin ./deployment-integration.sh test audio-conversion \
   --audio-file ./sample_071.mp3
 ```
 
-### Run the complete evaluation flow
-
-Run the existing deployment through audio processing, transcription, moderation,
-callbacks, terminal workflow handling, and WebSocket lifecycle delivery:
-
-```sh
-AWS_PROFILE=admin ./deployment-integration.sh test evaluation-e2e \
-  --audio-file ./sample_071.mp3 \
-  --transcription-endpoint-url https://transcription.example/transcriptions \
-  --modal-endpoint-url https://moderation.example
-```
-
 ### Deploy and immediately run one suite
 
 `all` always deploys the complete eight-Lambda environment before running the
@@ -270,15 +257,6 @@ selected suite:
 
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh all task-events \
-  --transcription-endpoint-url https://transcription.example/transcriptions \
-  --modal-endpoint-url https://moderation.example
-```
-
-To deploy and run the full evaluation suite:
-
-```sh
-AWS_PROFILE=admin ./deployment-integration.sh all evaluation-e2e \
-  --audio-file ./sample_071.mp3 \
   --transcription-endpoint-url https://transcription.example/transcriptions \
   --modal-endpoint-url https://moderation.example
 ```

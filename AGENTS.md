@@ -2,10 +2,8 @@
 
 - Component commands and implementation gotchas live in `backend/AGENTS.md`,
   `models/AGENTS.md`, and `ui/AGENTS.md`. Cargo's workspace root is `backend/`.
-- Review upload notifications create an idempotent pipeline task and start the
-  Step Functions conversion → transcription → moderation flow. Public callers
-  can also start that flow with explicit audio object URIs through
-  `start-evaluation-lambda`.
+- Review submission creates an idempotent pipeline task; upload notifications
+  start the Step Functions conversion → transcription → moderation flow.
 - `models/` is a separate Modal deployable. Rust callers and Python services share
   JSON request/callback contracts, not code. Keep both sides in sync; terminal
   callbacks go through `task-callback-lambda` to resume Step Functions.
@@ -38,14 +36,12 @@
   It coordinates all eight images under one immutable tag; never use `latest`.
   Terraform state is local: do not deploy concurrently from separate worktrees.
 - Preflight checks that required SSM parameters exist as `SecureString` values, but
-  neither decrypts them nor validates the evaluation secret's 32-byte minimum. It
-  also neither applies migrations nor verifies database schema objects, and does
-  not contact model endpoints. Full deploy and E2E need the current database
-  schema, Modal OIDC, four SecureString SSM parameters, and compatible HTTPS
+  neither decrypts them nor applies migrations or verifies database schema
+  objects, and does not contact model endpoints. Full deploy needs the current
+  database schema, Modal OIDC, three SecureString SSM parameters, and compatible HTTPS
   endpoints. `--modal-endpoint-url` is a base URL; moderation appends
   `/moderation/`. Never print decrypted secrets.
 - `task-callback`, `transcription-caller`, and `moderation-caller` isolated suites
   are unsupported; do not bypass them with placeholder task tokens.
-  `evaluation-dispatch` requires `--audio-file`, returns before workflow completion,
-  and retains fixtures. `evaluation-e2e` waits for terminal workflow and WebSocket
-  lifecycle delivery; see the runbook for cleanup on success/failure.
+  `review-confirmation` tests upload-triggered dispatch but does not wait for
+  workflow completion; see the runbook for fixture cleanup.

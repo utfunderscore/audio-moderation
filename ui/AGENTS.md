@@ -38,7 +38,7 @@ Run from `ui/`:
 - Transcripts and moderation scores are not delivered on the stream. They come
   from `getEvaluationResult` after the workflow settles.
 - Keep lifecycle transitions in `src/domain/reducer.ts`: it seeds from the
-  StartEvaluation status and handles duplicate/out-of-order events without
+  locally returned pending status and handles duplicate/out-of-order events without
   regressing stages. Preserve unknown-event handling when extending the protocol.
 - `@/` resolves to `src/` in both Vite and Vitest. Vendored shadcn components
   live in `src/components/ui/`; demo-specific views live in `components/demo/`.
