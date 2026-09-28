@@ -13,7 +13,10 @@
     "generate:proto": "buf generate ../proto --template buf.gen.yaml",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "preview:workers": "npm run build && wrangler dev --local --ip 127.0.0.1 --port 8787",
+    "deploy": "npm run build && wrangler deploy",
+    "deploy:dry-run": "npm run build && wrangler deploy --dry-run"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.15.0",
@@ -52,6 +55,7 @@
     "typescript": "~6",
     "typescript-eslint": "^8",
     "vite": "^8",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "wrangler": "^4.143.0"
   }
 }

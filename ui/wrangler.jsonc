@@ -1,0 +1,10 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "socialguard-ui",
+  "compatibility_date": "2026-09-28",
+  "routes": [{ "pattern": "guard.utf.lol", "custom_domain": true }],
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+}

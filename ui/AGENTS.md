@@ -12,6 +12,11 @@ Run from `ui/`:
   `npm run typecheck` runs `tsc --noEmit` against an empty root files list,
   rather than building the referenced app/node projects.
 - Public Funnel/HMR uses `npm run dev:funnel`.
+- Cloudflare Workers hosts `dist/` using Static Assets and SPA fallback in
+  `wrangler.jsonc`. `npm run preview:workers` builds and runs local Wrangler on
+  `127.0.0.1:8787`; `AWS_PROFILE=admin npm run deploy:dry-run` validates packaging
+  and `AWS_PROFILE=admin npm run deploy` publishes. Both deployment commands build
+  first. `VITE_*` endpoint URLs must be supplied at build time.
 
 ## Backend seam and protocol boundaries
 

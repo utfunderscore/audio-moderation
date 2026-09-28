@@ -104,8 +104,10 @@ variable "browser_allowed_origins" {
   default = [
     "http://127.0.0.1:4173",
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:8787",
     "http://localhost:4173",
     "http://localhost:5173",
+    "http://localhost:8787",
     # API Gateway supports protocol wildcards. This covers HTTPS-hosted demos,
     # including Tailscale Funnel, without allowing arbitrary insecure origins.
     "https://*",
