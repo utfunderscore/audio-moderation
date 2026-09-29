@@ -8,10 +8,10 @@
   JSON request/callback contracts, not code. Keep both sides in sync; terminal
   callbacks go through `task-callback-lambda` to resume Step Functions.
 - Public RPC sources live in root `proto/`; database schema lives in `migrations/`.
-- `ui/` is a React/Vite browser-only demo, despite the root README's placeholder
-  description. `usePipelineRun` wires `MockTaskEventsClient`; transcripts and scores
-  are fixtures. Real task-event WebSocket frames contain event names only, with
-  at-least-once replay/live delivery. See `ui/README.md` for the transport boundary.
+- `ui/` is a React/Vite browser demo. Its `ApiBackend` owns RPC, upload, and
+  task-event transport behind the `Backend` interface. Task-event WebSocket
+  frames contain event names only, with at-least-once replay/live delivery;
+  transcripts and scores come from the evaluation read API. See `ui/README.md`.
 
 ## Shared policies and local database
 
@@ -35,12 +35,16 @@
 - Use the runner rather than direct Terraform apply or ad hoc image publication.
   It coordinates all eight images under one immutable tag; never use `latest`.
   Terraform state is local: do not deploy concurrently from separate worktrees.
-- Preflight checks that required SSM parameters exist as `SecureString` values, but
-  neither decrypts them nor applies migrations or verifies database schema
-  objects, and does not contact model endpoints. Full deploy needs the current
-  database schema, Modal OIDC, three SecureString SSM parameters, and compatible HTTPS
-  endpoints. `--modal-endpoint-url` is a base URL; moderation appends
-  `/moderation/`. Never print decrypted secrets.
+- Full preflight checks three existing SSM `SecureString` parameters without
+  decrypting them; Terraform creates the fourth, Turnstile secret parameter from
+  its managed widget at deploy time. Preflight does not apply migrations, verify
+  schema objects, or contact model endpoints. Full deploy needs the current
+  database schema, Modal OIDC, Cloudflare credentials, an explicit Turnstile
+  frontend hostname allowlist, and compatible HTTPS endpoints.
+  `--modal-endpoint-url` is a base URL; moderation appends `/moderation/`.
+  Deployed review suites require a fresh real `TURNSTILE_TEST_TOKEN`; dummy
+  tokens do not work against the Terraform-created secret. Never print decrypted
+  secrets or test tokens. Terraform state contains the widget secret; never commit it.
 - `task-callback`, `transcription-caller`, and `moderation-caller` isolated suites
   are unsupported; do not bypass them with placeholder task tokens.
   `review-confirmation` tests upload-triggered dispatch but does not wait for

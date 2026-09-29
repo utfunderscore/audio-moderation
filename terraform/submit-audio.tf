@@ -99,6 +99,19 @@ resource "aws_iam_role_policy" "submit_audio_database_parameter" {
   })
 }
 
+resource "aws_iam_role_policy" "submit_audio_turnstile_secret" {
+  name = "${local.name_prefix}-submit-audio-turnstile-secret"
+  role = aws_iam_role.submit_audio.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "ssm:GetParameter"
+      Resource = "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter${var.turnstile_secret_key_parameter_name}"
+    }]
+  })
+}
+
 resource "aws_cloudwatch_log_group" "submit_audio" {
   name              = "/aws/lambda/${local.name_prefix}-submit-audio"
   retention_in_days = 7
@@ -115,10 +128,13 @@ resource "aws_lambda_function" "submit_audio" {
 
   environment {
     variables = {
-      DATABASE_URL_PARAMETER = var.database_parameter_name
-      UPLOADS_BUCKET_NAME    = aws_s3_bucket.uploads.bucket
-      TENANT_ID              = var.tenant_id
-      RUST_LOG               = "info"
+      DATABASE_URL_PARAMETER         = var.database_parameter_name
+      TURNSTILE_SECRET_KEY_PARAMETER = var.turnstile_secret_key_parameter_name
+      TURNSTILE_ALLOWED_HOSTNAMES    = var.turnstile_allowed_hostnames
+      TURNSTILE_EXPECTED_ACTION      = var.turnstile_expected_action
+      UPLOADS_BUCKET_NAME            = aws_s3_bucket.uploads.bucket
+      TENANT_ID                      = var.tenant_id
+      RUST_LOG                       = "info"
     }
   }
 
@@ -127,6 +143,8 @@ resource "aws_lambda_function" "submit_audio" {
     aws_iam_role_policy_attachment.submit_audio_logs,
     aws_iam_role_policy.submit_audio_upload,
     aws_iam_role_policy.submit_audio_database_parameter,
+    aws_iam_role_policy.submit_audio_turnstile_secret,
+    aws_ssm_parameter.turnstile_secret,
     aws_cloudwatch_log_group.submit_audio,
   ]
 }

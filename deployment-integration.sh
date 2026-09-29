@@ -15,6 +15,9 @@ PROJECT_NAME="${PROJECT_NAME:-audio-moderation}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 TENANT_ID="${TENANT_ID:-default}"
 DATABASE_URL_PARAMETER="${DATABASE_URL_PARAMETER:-}"
+TURNSTILE_SECRET_KEY_PARAMETER="${TURNSTILE_SECRET_KEY_PARAMETER:-}"
+TURNSTILE_ALLOWED_HOSTNAMES="${TURNSTILE_ALLOWED_HOSTNAMES:-}"
+TURNSTILE_EXPECTED_ACTION="${TURNSTILE_EXPECTED_ACTION:-submit_review}"
 MODAL_PROXY_TOKEN_ID_PARAMETER="${MODAL_PROXY_TOKEN_ID_PARAMETER:-}"
 MODAL_PROXY_TOKEN_SECRET_PARAMETER="${MODAL_PROXY_TOKEN_SECRET_PARAMETER:-}"
 TRANSCRIPTION_ENDPOINT_URL="${TRANSCRIPTION_ENDPOINT_URL:-}"
@@ -60,6 +63,9 @@ Options:
   --environment NAME                      Environment (default: dev)
   --tenant-id ID                          Tenant ID (default: default)
   --database-parameter-name NAME          SecureString database URL parameter
+  --turnstile-secret-parameter-name NAME  Terraform-managed SecureString Turnstile secret parameter
+  --turnstile-allowed-hostnames NAMES      Comma-separated exact frontend hostnames (required to deploy)
+  --turnstile-expected-action ACTION      Widget/Siteverify action (default: submit_review)
   --modal-token-id-parameter-name NAME    SecureString Modal token ID parameter
   --modal-token-secret-parameter-name NAME
                                             SecureString Modal token secret parameter
@@ -156,6 +162,9 @@ while [[ $# -gt 0 ]]; do
         --environment) require_value "$@"; ENVIRONMENT="$2"; shift 2 ;;
         --tenant-id) require_value "$@"; TENANT_ID="$2"; shift 2 ;;
         --database-parameter-name) require_value "$@"; DATABASE_URL_PARAMETER="$2"; shift 2 ;;
+        --turnstile-secret-parameter-name) require_value "$@"; TURNSTILE_SECRET_KEY_PARAMETER="$2"; shift 2 ;;
+        --turnstile-allowed-hostnames) require_value "$@"; TURNSTILE_ALLOWED_HOSTNAMES="$2"; shift 2 ;;
+        --turnstile-expected-action) require_value "$@"; TURNSTILE_EXPECTED_ACTION="$2"; shift 2 ;;
         --modal-token-id-parameter-name) require_value "$@"; MODAL_PROXY_TOKEN_ID_PARAMETER="$2"; shift 2 ;;
         --modal-token-secret-parameter-name) require_value "$@"; MODAL_PROXY_TOKEN_SECRET_PARAMETER="$2"; shift 2 ;;
         --transcription-endpoint-url) require_value "$@"; TRANSCRIPTION_ENDPOINT_URL="$2"; shift 2 ;;
@@ -178,6 +187,7 @@ done
 export AWS_REGION
 
 DATABASE_URL_PARAMETER="${DATABASE_URL_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/database-url}"
+TURNSTILE_SECRET_KEY_PARAMETER="${TURNSTILE_SECRET_KEY_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/turnstile-secret-key}"
 MODAL_PROXY_TOKEN_ID_PARAMETER="${MODAL_PROXY_TOKEN_ID_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/modal-proxy-token-id}"
 MODAL_PROXY_TOKEN_SECRET_PARAMETER="${MODAL_PROXY_TOKEN_SECRET_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/modal-proxy-token-secret}"
 
@@ -201,6 +211,45 @@ validate_secure_parameter() {
         exit 1
     fi
     printf 'Validated encrypted SSM parameter: %s\n' "${parameter_name}"
+}
+
+validate_turnstile_configuration() {
+    local require_hostnames="${1:-false}"
+    if [[ ! "${TURNSTILE_SECRET_KEY_PARAMETER}" =~ ^/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$ ]]; then
+        printf 'Turnstile secret parameter name must be an absolute SSM path (for example /project/environment/turnstile-secret-key).\n' >&2
+        exit 1
+    fi
+    if [[ ! "${TURNSTILE_EXPECTED_ACTION}" =~ ^[a-zA-Z0-9_-]{1,32}$ ]]; then
+        printf 'Turnstile expected action must be 1-32 letters, digits, underscores, or hyphens.\n' >&2
+        exit 1
+    fi
+    if [[ -z "${TURNSTILE_ALLOWED_HOSTNAMES}" ]]; then
+        if [[ "${require_hostnames}" == true ]]; then
+            printf 'Set --turnstile-allowed-hostnames to the exact frontend hostnames before deploying.\n' >&2
+            exit 1
+        fi
+        return
+    fi
+    local hostname
+    local -a hostnames
+    IFS=',' read -r -a hostnames <<< "${TURNSTILE_ALLOWED_HOSTNAMES}"
+    if [[ "${TURNSTILE_ALLOWED_HOSTNAMES}" == *, ]]; then
+        printf 'Turnstile allowed hostnames cannot contain an empty entry.\n' >&2
+        exit 1
+    fi
+    for hostname in "${hostnames[@]}"; do
+        if [[ ! "${hostname}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$ ]]; then
+            printf 'Invalid Turnstile hostname: %s (use exact lowercase hostnames without schemes, ports, paths, whitespace, or wildcards).\n' "${hostname}" >&2
+            exit 1
+        fi
+    done
+}
+
+validate_turnstile_test_token() {
+    if [[ -z "${TURNSTILE_TEST_TOKEN:-}" ]]; then
+        printf 'TURNSTILE_TEST_TOKEN is required for deployed review tests (do not print or commit the token).\n' >&2
+        exit 1
+    fi
 }
 
 validate_modal_oidc_provider() {
@@ -267,6 +316,14 @@ validate_task_events_endpoint() {
 preflight() {
     local target_suite="${1:-full}"
     local allow_missing_deployed_endpoint="${2:-false}"
+    if [[ "${target_suite}" == full ]]; then
+        validate_turnstile_configuration true
+    else
+        validate_turnstile_configuration false
+    fi
+    if [[ "${target_suite}" == review-submit || "${target_suite}" == review-confirmation ]]; then
+        validate_turnstile_test_token
+    fi
     require_command aws
     require_command terraform
     ACCOUNT_ID="$(aws sts get-caller-identity --region "${AWS_REGION}" --query Account --output text)"
@@ -278,11 +335,14 @@ preflight() {
     printf 'AWS target region: %s\n' "${AWS_REGION}"
     printf 'Terraform uses local state in terraform/. Do not run deploys concurrently from separate worktrees; local state has no shared lock.\n'
 
-    if [[ "${target_suite}" == full && "${ENABLE_CLOUDFLARE_PROXY}" == true ]]; then
+    if [[ "${target_suite}" == full ]]; then
         if [[ -z "${CLOUDFLARE_API_TOKEN:-}" && ( -z "${CLOUDFLARE_API_KEY:-}" || -z "${CLOUDFLARE_EMAIL:-}" ) ]]; then
-            printf 'Cloudflare credentials are required: set CLOUDFLARE_API_TOKEN, or both CLOUDFLARE_API_KEY and CLOUDFLARE_EMAIL.\n' >&2
+            printf 'Cloudflare credentials are required to create the Turnstile widget: set CLOUDFLARE_API_TOKEN, or both CLOUDFLARE_API_KEY and CLOUDFLARE_EMAIL.\n' >&2
             exit 1
         fi
+        printf 'Cloudflare Turnstile widget account is resolved from zone %s.\n' "${CLOUDFLARE_ZONE_NAME}"
+    fi
+    if [[ "${target_suite}" == full && "${ENABLE_CLOUDFLARE_PROXY}" == true ]]; then
         printf 'Cloudflare proxy target: https://%s and wss://%s (zone %s).\n' \
             "${PUBLIC_API_DOMAIN_NAME}" "${TASK_EVENTS_DOMAIN_NAME}" "${CLOUDFLARE_ZONE_NAME}"
     fi
@@ -302,11 +362,13 @@ preflight() {
         review-submit)
             require_command cargo
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
+            validate_secure_parameter "${TURNSTILE_SECRET_KEY_PARAMETER}"
             printf 'Database schema prerequisite: the review-job schema must already be current.\n'
             ;;
         review-confirmation)
             require_command cargo
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
+            validate_secure_parameter "${TURNSTILE_SECRET_KEY_PARAMETER}"
             validate_task_events_endpoint "${allow_missing_deployed_endpoint}"
             printf 'Database schema prerequisite: the current review-job, pipeline-task, task-event, and WebSocket schemas must already be applied.\n'
             ;;
@@ -341,6 +403,9 @@ set_terraform_vars() {
         -var="environment=${ENVIRONMENT}"
         -var="tenant_id=${TENANT_ID}"
         -var="database_parameter_name=${DATABASE_URL_PARAMETER}"
+        -var="turnstile_secret_key_parameter_name=${TURNSTILE_SECRET_KEY_PARAMETER}"
+        -var="turnstile_allowed_hostnames=${TURNSTILE_ALLOWED_HOSTNAMES}"
+        -var="turnstile_expected_action=${TURNSTILE_EXPECTED_ACTION}"
         -var="modal_proxy_token_id_parameter_name=${MODAL_PROXY_TOKEN_ID_PARAMETER}"
         -var="modal_proxy_token_secret_parameter_name=${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
         -var="transcription_endpoint_url=${TRANSCRIPTION_ENDPOINT_URL}"
@@ -447,6 +512,7 @@ deploy() {
         printf 'Lambda updated: %s\n' "${function_name}"
     done
     printf 'Full deployment complete. API endpoint: %s\n' "$(terraform -chdir="${TERRAFORM_DIR}" output -raw api_endpoint)"
+    UI_ENV_DIR="${ROOT_DIR}/ui" "${ROOT_DIR}/ui/scripts/sync-deployment-env.sh"
 }
 
 load_api_endpoint() {

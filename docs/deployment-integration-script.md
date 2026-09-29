@@ -30,7 +30,7 @@ coherent version of the codebase.
 
 | Image | Purpose |
 |---|---|
-| `submit-audio` | Accepts review submissions and creates presigned S3 upload details. |
+| `submit-audio` | Verifies Turnstile on SubmitReview, accepts review submissions, and creates presigned S3 upload details. |
 | `confirm-upload` | Handles matching S3 upload notifications and starts review evaluations. |
 | `audio-processing` | Downloads input audio, stitches it, writes the artifact, and finalizes workflow outcomes. |
 | `start-evaluation` | Serves evaluation snapshots and authorized task-event tickets for uploaded reviews. |
@@ -79,6 +79,18 @@ Terraform also updates each function's configuration, including environment
 variables, timeout and memory settings, IAM role, API or event permissions, and
 CloudWatch log group. After Terraform finishes, the script waits until AWS reports
 that all eight function updates are complete.
+
+Terraform creates a Cloudflare Turnstile widget and writes its secret to an SSM
+SecureString. The secret is sensitive in plans but resides in local Terraform
+state; it never enters the Lambda environment or UI env files. SubmitReview's
+Lambda receives only the SSM **parameter name**, exact frontend hostname
+allowlist, and expected Siteverify action (default `submit_review`). The runner
+forwards `--turnstile-secret-parameter-name`, `--turnstile-allowed-hostnames`,
+and `--turnstile-expected-action` to Terraform. It requires Cloudflare credentials
+and an explicit hostname allowlist for full deployments, then copies the public
+sitekey/action to ignored UI env files after a successful apply. Deployed review
+tests require a fresh real `TURNSTILE_TEST_TOKEN` from the invoking environment;
+see the [runbook](deployment-integration.md#turnstile-setup-and-deployed-review-tests).
 
 When `--enable-cloudflare-proxy` is supplied, Terraform also requests a free ACM
 certificate, creates API Gateway custom domains, disables the default
@@ -151,8 +163,9 @@ Lambda permission.
 The apply updates the supporting resources required by the application:
 
 - one execution role and associated policies for each Lambda;
-- permissions for SSM parameters, KMS decryption, S3 objects, Step Functions,
-  callback invocation, and WebSocket connection management;
+- permissions for scoped SSM parameters (including the Turnstile secret), KMS
+  decryption, S3 objects, Step Functions, callback invocation, and WebSocket
+  connection management;
 - the Step Functions execution roles;
 - the Modal federated role that can read stitched artifacts and invoke callbacks;
 - CloudWatch log groups and retention settings; and
@@ -184,6 +197,7 @@ for every Lambda update:
 
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh deploy \
+  --turnstile-allowed-hostnames app.example.com \
   --transcription-endpoint-url https://transcription.example/transcriptions \
   --modal-endpoint-url https://moderation.example
 ```
@@ -197,6 +211,7 @@ CLOUDFLARE_API_TOKEN=<redacted> AWS_PROFILE=admin \
   --cloudflare-zone-name utf.lol \
   --public-api-domain-name api-guard.utf.lol \
   --task-events-domain-name events-guard.utf.lol \
+  --turnstile-allowed-hostnames app.example.com \
   --transcription-endpoint-url https://transcription.example/transcriptions \
   --modal-endpoint-url https://moderation.example
 ```
@@ -205,6 +220,7 @@ Terraform normally asks for approval. For an already-approved unattended deploym
 
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh deploy \
+  --turnstile-allowed-hostnames app.example.com \
   --transcription-endpoint-url https://transcription.example/transcriptions \
   --modal-endpoint-url https://moderation.example \
   --auto-approve
@@ -217,6 +233,7 @@ Use a release tag when the exact ECR image version needs to be recorded or share
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh deploy \
   --image-tag release-2026-09-16-1 \
+  --turnstile-allowed-hostnames app.example.com \
   --transcription-endpoint-url https://transcription.example/transcriptions \
   --modal-endpoint-url https://moderation.example
 ```
@@ -257,6 +274,7 @@ selected suite:
 
 ```sh
 AWS_PROFILE=admin ./deployment-integration.sh all task-events \
+  --turnstile-allowed-hostnames app.example.com \
   --transcription-endpoint-url https://transcription.example/transcriptions \
   --modal-endpoint-url https://moderation.example
 ```

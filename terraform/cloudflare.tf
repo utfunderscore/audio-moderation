@@ -9,7 +9,8 @@ locals {
 }
 
 data "cloudflare_zone" "public" {
-  count = var.enable_cloudflare_proxy ? 1 : 0
+  # The Turnstile widget uses this account even when the API DNS proxy is off.
+  count = 1
 
   filter = {
     name = var.cloudflare_zone_name

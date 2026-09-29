@@ -9,7 +9,8 @@ Monorepo for the SocialGuard audio moderation platform.
   root is `backend/Cargo.toml`.
 - `models/` — Python model services deployed to Modal (GPU transcription and
   moderation inference). See `models/README.md`.
-- `ui/` — front-end application (not started yet).
+- `ui/` — React/Vite browser application with Turnstile-protected audio submission.
+  See `ui/README.md` for API and public sitekey configuration.
 - `proto/` — protobuf definitions for the public API, shared across components.
 - `migrations/` — database migrations.
 - `terraform/` — infrastructure as code.
@@ -29,11 +30,19 @@ cargo test
 Deploy and run a deployed integration suite from the repository root:
 
 ```sh
+export TURNSTILE_ALLOWED_HOSTNAMES=guard.utf.lol,localhost,127.0.0.1
 AWS_PROFILE=admin ./deployment-integration.sh preflight
 AWS_PROFILE=admin ./deployment-integration.sh deploy
 ```
 
-See `docs/deployment-integration.md` for the full workflow and safety rules.
+Set `TURNSTILE_ALLOWED_HOSTNAMES` to the exact frontend widget hostnames for
+preflight/deploy and provide Cloudflare credentials. Add any other development
+hostname used in the browser; omit development hostnames in production. Use
+hostnames without a scheme or port. Terraform creates the
+widget and its SSM SecureString, then the runner writes the public sitekey to
+ignored UI env files. See
+`docs/deployment-integration.md` for Turnstile setup, deployed test tokens, the
+full workflow, and safety rules.
 
 ## Models
 
