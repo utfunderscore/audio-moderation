@@ -3,6 +3,8 @@ import type { ModerationScores } from "@/domain/moderation"
 export interface StartEvaluationInput {
   userId: string
   audio: File
+  /** Single-use Turnstile response for this submission attempt (never persisted). */
+  turnstileToken: string
 }
 
 export interface StartedEvaluation {

@@ -24,20 +24,11 @@ Lambda, Step Functions, transcription, moderation, or database costs.
 
 ## Implemented access controls
 
-### Evaluation capability tokens
+### Review capability tokens
 
-- An evaluation ID is an unguessable public identifier. Its access token is a
-  deterministic HMAC-SHA-256 value derived from that ID and the global evaluation
-  access secret; the token is prefixed `eval_v1.`.
-- `StartEvaluation` returns the same token for an idempotent replay as for the
-  original request. Tokens are not stored per evaluation, and no per-evaluation
-  token digest or first-issuance record exists.
 - `GetEvaluation` and `CreateTaskEventsTicket` require
-  `Authorization: Bearer <token>`. Verification binds the token to the requested
-  evaluation ID.
-- Rotating the global evaluation access secret is the current revocation mechanism:
-  it invalidates all previously issued evaluation tokens. Individual-token
-  revocation is not implemented.
+  `Authorization: Bearer <token>`. Verification binds the review token to the
+  review linked to the requested evaluation ID.
 - Before `SubmitReview`, clients generate and securely retain a `review_v1.`
   bearer token containing exactly 32 cryptographically random bytes encoded as
   unpadded base64url. They send it in `Authorization: Bearer ...`; it is never
@@ -45,8 +36,7 @@ Lambda, Step Functions, transcription, moderation, or database costs.
   SHA-256 digest. An idempotency key is a UUID retry/deduplication key, not an
   access credential, and a replay requires the same review token.
 - Opaque review tokens remain valid while the review exists. They are scoped by
-  the stored review-to-task relationship and cannot validate as `eval_v1.`
-  tokens.
+  the stored review-to-task relationship.
 - `GetReviewAudio` requires the review token and returns a 15-minute presigned
   GET URL for that review's source object.
 - `SubmitReview` creates the linked evaluation before upload, so `GetReview`
@@ -63,7 +53,7 @@ Lambda, Step Functions, transcription, moderation, or database costs.
 
 ### Limit anonymous submission
 
-- Apply API Gateway or AWS WAF rate limits to submission and evaluation-start
+- Apply API Gateway or AWS WAF rate limits to submission
   endpoints, with stricter burst limits than sustained limits.
 - Add a browser challenge such as Turnstile when the demo is made public. Verify
   challenge responses server-side and prevent response replay.

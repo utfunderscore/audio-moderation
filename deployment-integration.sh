@@ -15,7 +15,9 @@ PROJECT_NAME="${PROJECT_NAME:-audio-moderation}"
 ENVIRONMENT="${ENVIRONMENT:-dev}"
 TENANT_ID="${TENANT_ID:-default}"
 DATABASE_URL_PARAMETER="${DATABASE_URL_PARAMETER:-}"
-EVALUATION_ACCESS_SECRET_PARAMETER="${EVALUATION_ACCESS_SECRET_PARAMETER:-}"
+TURNSTILE_SECRET_KEY_PARAMETER="${TURNSTILE_SECRET_KEY_PARAMETER:-}"
+TURNSTILE_ALLOWED_HOSTNAMES="${TURNSTILE_ALLOWED_HOSTNAMES:-}"
+TURNSTILE_EXPECTED_ACTION="${TURNSTILE_EXPECTED_ACTION:-submit_review}"
 MODAL_PROXY_TOKEN_ID_PARAMETER="${MODAL_PROXY_TOKEN_ID_PARAMETER:-}"
 MODAL_PROXY_TOKEN_SECRET_PARAMETER="${MODAL_PROXY_TOKEN_SECRET_PARAMETER:-}"
 TRANSCRIPTION_ENDPOINT_URL="${TRANSCRIPTION_ENDPOINT_URL:-}"
@@ -43,23 +45,17 @@ Commands:
   deploy             Bootstrap eight ECR repositories, build and push eight images with one
                      immutable tag, then perform one full Terraform apply.
   test <suite>       Run one deployed suite without changing deployed infrastructure.
-  all [suite]        Deploy, then run a suite (default: evaluation-e2e).
+  all [suite]        Deploy, then run a suite (default: review-confirmation).
 
 Suites, ordered from isolated/cheap to full:
-  review-submit          SubmitReview creates an awaiting-upload review.
+  review-submit          SubmitReview creates a review; linked evaluation reads and tickets work.
   review-confirmation    A presigned source upload creates one pipeline task and dispatches its evaluation.
-  evaluation-ingress     StartEvaluation validation, lease/terminal retry behavior, and
-                         idempotency conflicts, with synthetic non-dispatched audio URIs.
-  evaluation-dispatch    Seeded dispatch and retry through the production workflow. Requires
-                         an audio fixture; executions continue asynchronously.
   audio-conversion       Direct synchronous audio-processing Lambda invocation.
   task-events            WebSocket task-event replay, live delivery, and disconnect cleanup.
   task-callback          Unsupported: requires an ASR-created persisted callback attempt.
   transcription-caller   Unsupported: requires a compatible external transcription API and
                           a safe task-token/task fixture harness that does not yet exist.
   moderation-caller      Unsupported: requires completed transcription and task-token fixtures.
-  evaluation-e2e         StartEvaluation through conversion, transcription, moderation,
-                          callbacks, and terminal workflow completion.
 
 Options:
   --region REGION                         AWS region (default: eu-west-2)
@@ -67,8 +63,9 @@ Options:
   --environment NAME                      Environment (default: dev)
   --tenant-id ID                          Tenant ID (default: default)
   --database-parameter-name NAME          SecureString database URL parameter
-  --evaluation-access-secret-parameter-name NAME
-                                            SecureString evaluation capability secret parameter
+  --turnstile-secret-parameter-name NAME  Terraform-managed SecureString Turnstile secret parameter
+  --turnstile-allowed-hostnames NAMES      Comma-separated exact frontend hostnames (required to deploy)
+  --turnstile-expected-action ACTION      Widget/Siteverify action (default: submit_review)
   --modal-token-id-parameter-name NAME    SecureString Modal token ID parameter
   --modal-token-secret-parameter-name NAME
                                             SecureString Modal token secret parameter
@@ -110,7 +107,7 @@ require_command() {
 
 is_suite() {
     case "$1" in
-        review-submit|review-confirmation|evaluation-ingress|evaluation-dispatch|audio-conversion|task-events|task-callback|transcription-caller|moderation-caller|evaluation-e2e) return 0 ;;
+        review-submit|review-confirmation|audio-conversion|task-events|task-callback|transcription-caller|moderation-caller) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -142,7 +139,7 @@ case "${ACTION}" in
             SUITE="$1"
             shift
         else
-            SUITE="evaluation-e2e"
+            SUITE="review-confirmation"
         fi
         ;;
     *)
@@ -165,7 +162,9 @@ while [[ $# -gt 0 ]]; do
         --environment) require_value "$@"; ENVIRONMENT="$2"; shift 2 ;;
         --tenant-id) require_value "$@"; TENANT_ID="$2"; shift 2 ;;
         --database-parameter-name) require_value "$@"; DATABASE_URL_PARAMETER="$2"; shift 2 ;;
-        --evaluation-access-secret-parameter-name) require_value "$@"; EVALUATION_ACCESS_SECRET_PARAMETER="$2"; shift 2 ;;
+        --turnstile-secret-parameter-name) require_value "$@"; TURNSTILE_SECRET_KEY_PARAMETER="$2"; shift 2 ;;
+        --turnstile-allowed-hostnames) require_value "$@"; TURNSTILE_ALLOWED_HOSTNAMES="$2"; shift 2 ;;
+        --turnstile-expected-action) require_value "$@"; TURNSTILE_EXPECTED_ACTION="$2"; shift 2 ;;
         --modal-token-id-parameter-name) require_value "$@"; MODAL_PROXY_TOKEN_ID_PARAMETER="$2"; shift 2 ;;
         --modal-token-secret-parameter-name) require_value "$@"; MODAL_PROXY_TOKEN_SECRET_PARAMETER="$2"; shift 2 ;;
         --transcription-endpoint-url) require_value "$@"; TRANSCRIPTION_ENDPOINT_URL="$2"; shift 2 ;;
@@ -188,7 +187,7 @@ done
 export AWS_REGION
 
 DATABASE_URL_PARAMETER="${DATABASE_URL_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/database-url}"
-EVALUATION_ACCESS_SECRET_PARAMETER="${EVALUATION_ACCESS_SECRET_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/evaluation-access-secret}"
+TURNSTILE_SECRET_KEY_PARAMETER="${TURNSTILE_SECRET_KEY_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/turnstile-secret-key}"
 MODAL_PROXY_TOKEN_ID_PARAMETER="${MODAL_PROXY_TOKEN_ID_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/modal-proxy-token-id}"
 MODAL_PROXY_TOKEN_SECRET_PARAMETER="${MODAL_PROXY_TOKEN_SECRET_PARAMETER:-/${PROJECT_NAME}/${ENVIRONMENT}/modal-proxy-token-secret}"
 
@@ -212,6 +211,45 @@ validate_secure_parameter() {
         exit 1
     fi
     printf 'Validated encrypted SSM parameter: %s\n' "${parameter_name}"
+}
+
+validate_turnstile_configuration() {
+    local require_hostnames="${1:-false}"
+    if [[ ! "${TURNSTILE_SECRET_KEY_PARAMETER}" =~ ^/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$ ]]; then
+        printf 'Turnstile secret parameter name must be an absolute SSM path (for example /project/environment/turnstile-secret-key).\n' >&2
+        exit 1
+    fi
+    if [[ ! "${TURNSTILE_EXPECTED_ACTION}" =~ ^[a-zA-Z0-9_-]{1,32}$ ]]; then
+        printf 'Turnstile expected action must be 1-32 letters, digits, underscores, or hyphens.\n' >&2
+        exit 1
+    fi
+    if [[ -z "${TURNSTILE_ALLOWED_HOSTNAMES}" ]]; then
+        if [[ "${require_hostnames}" == true ]]; then
+            printf 'Set --turnstile-allowed-hostnames to the exact frontend hostnames before deploying.\n' >&2
+            exit 1
+        fi
+        return
+    fi
+    local hostname
+    local -a hostnames
+    IFS=',' read -r -a hostnames <<< "${TURNSTILE_ALLOWED_HOSTNAMES}"
+    if [[ "${TURNSTILE_ALLOWED_HOSTNAMES}" == *, ]]; then
+        printf 'Turnstile allowed hostnames cannot contain an empty entry.\n' >&2
+        exit 1
+    fi
+    for hostname in "${hostnames[@]}"; do
+        if [[ ! "${hostname}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$ ]]; then
+            printf 'Invalid Turnstile hostname: %s (use exact lowercase hostnames without schemes, ports, paths, whitespace, or wildcards).\n' "${hostname}" >&2
+            exit 1
+        fi
+    done
+}
+
+validate_turnstile_test_token() {
+    if [[ -z "${TURNSTILE_TEST_TOKEN:-}" ]]; then
+        printf 'TURNSTILE_TEST_TOKEN is required for deployed review tests (do not print or commit the token).\n' >&2
+        exit 1
+    fi
 }
 
 validate_modal_oidc_provider() {
@@ -278,6 +316,14 @@ validate_task_events_endpoint() {
 preflight() {
     local target_suite="${1:-full}"
     local allow_missing_deployed_endpoint="${2:-false}"
+    if [[ "${target_suite}" == full ]]; then
+        validate_turnstile_configuration true
+    else
+        validate_turnstile_configuration false
+    fi
+    if [[ "${target_suite}" == review-submit || "${target_suite}" == review-confirmation ]]; then
+        validate_turnstile_test_token
+    fi
     require_command aws
     require_command terraform
     ACCOUNT_ID="$(aws sts get-caller-identity --region "${AWS_REGION}" --query Account --output text)"
@@ -289,11 +335,14 @@ preflight() {
     printf 'AWS target region: %s\n' "${AWS_REGION}"
     printf 'Terraform uses local state in terraform/. Do not run deploys concurrently from separate worktrees; local state has no shared lock.\n'
 
-    if [[ "${target_suite}" == full && "${ENABLE_CLOUDFLARE_PROXY}" == true ]]; then
+    if [[ "${target_suite}" == full ]]; then
         if [[ -z "${CLOUDFLARE_API_TOKEN:-}" && ( -z "${CLOUDFLARE_API_KEY:-}" || -z "${CLOUDFLARE_EMAIL:-}" ) ]]; then
-            printf 'Cloudflare credentials are required: set CLOUDFLARE_API_TOKEN, or both CLOUDFLARE_API_KEY and CLOUDFLARE_EMAIL.\n' >&2
+            printf 'Cloudflare credentials are required to create the Turnstile widget: set CLOUDFLARE_API_TOKEN, or both CLOUDFLARE_API_KEY and CLOUDFLARE_EMAIL.\n' >&2
             exit 1
         fi
+        printf 'Cloudflare Turnstile widget account is resolved from zone %s.\n' "${CLOUDFLARE_ZONE_NAME}"
+    fi
+    if [[ "${target_suite}" == full && "${ENABLE_CLOUDFLARE_PROXY}" == true ]]; then
         printf 'Cloudflare proxy target: https://%s and wss://%s (zone %s).\n' \
             "${PUBLIC_API_DOMAIN_NAME}" "${TASK_EVENTS_DOMAIN_NAME}" "${CLOUDFLARE_ZONE_NAME}"
     fi
@@ -302,7 +351,6 @@ preflight() {
         full)
             for command in cargo docker git jq; do require_command "${command}"; done
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
-            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
             validate_secure_parameter "${MODAL_PROXY_TOKEN_ID_PARAMETER}"
             validate_secure_parameter "${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
             validate_modal_oidc_provider
@@ -314,19 +362,15 @@ preflight() {
         review-submit)
             require_command cargo
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
+            validate_secure_parameter "${TURNSTILE_SECRET_KEY_PARAMETER}"
             printf 'Database schema prerequisite: the review-job schema must already be current.\n'
             ;;
         review-confirmation)
             require_command cargo
             validate_secure_parameter "${DATABASE_URL_PARAMETER}"
+            validate_secure_parameter "${TURNSTILE_SECRET_KEY_PARAMETER}"
             validate_task_events_endpoint "${allow_missing_deployed_endpoint}"
             printf 'Database schema prerequisite: the current review-job, pipeline-task, task-event, and WebSocket schemas must already be applied.\n'
-            ;;
-        evaluation-ingress)
-            for command in cargo jq; do require_command "${command}"; done
-            validate_secure_parameter "${DATABASE_URL_PARAMETER}"
-            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
-            printf 'Database schema prerequisite: the pipeline-task schema must already be current.\n'
             ;;
         audio-conversion)
             require_command jq
@@ -348,26 +392,6 @@ preflight() {
             printf 'moderation-caller is unsupported: it needs a completed transcription plus a real Step Functions task-token fixture.\n' >&2
             exit 1
             ;;
-        evaluation-e2e)
-            for command in cargo jq; do require_command "${command}"; done
-            validate_secure_parameter "${DATABASE_URL_PARAMETER}"
-            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
-            validate_secure_parameter "${MODAL_PROXY_TOKEN_ID_PARAMETER}"
-            validate_secure_parameter "${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
-            validate_modal_oidc_provider
-            validate_transcription_endpoint
-            validate_modal_endpoint
-            validate_task_events_endpoint "${allow_missing_deployed_endpoint}"
-            printf 'Database schema prerequisite: the pipeline-task schema must already be current.\n'
-            if [[ "${target_suite}" == "evaluation-e2e" ]]; then validate_audio_file; fi
-            ;;
-        evaluation-dispatch)
-            for command in cargo jq; do require_command "${command}"; done
-            validate_secure_parameter "${DATABASE_URL_PARAMETER}"
-            validate_secure_parameter "${EVALUATION_ACCESS_SECRET_PARAMETER}"
-            validate_audio_file
-            printf 'Database schema prerequisite: the pipeline-task schema must already be current.\n'
-            ;;
     esac
 }
 
@@ -379,7 +403,9 @@ set_terraform_vars() {
         -var="environment=${ENVIRONMENT}"
         -var="tenant_id=${TENANT_ID}"
         -var="database_parameter_name=${DATABASE_URL_PARAMETER}"
-        -var="evaluation_access_secret_parameter_name=${EVALUATION_ACCESS_SECRET_PARAMETER}"
+        -var="turnstile_secret_key_parameter_name=${TURNSTILE_SECRET_KEY_PARAMETER}"
+        -var="turnstile_allowed_hostnames=${TURNSTILE_ALLOWED_HOSTNAMES}"
+        -var="turnstile_expected_action=${TURNSTILE_EXPECTED_ACTION}"
         -var="modal_proxy_token_id_parameter_name=${MODAL_PROXY_TOKEN_ID_PARAMETER}"
         -var="modal_proxy_token_secret_parameter_name=${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
         -var="transcription_endpoint_url=${TRANSCRIPTION_ENDPOINT_URL}"
@@ -486,6 +512,7 @@ deploy() {
         printf 'Lambda updated: %s\n' "${function_name}"
     done
     printf 'Full deployment complete. API endpoint: %s\n' "$(terraform -chdir="${TERRAFORM_DIR}" output -raw api_endpoint)"
+    UI_ENV_DIR="${ROOT_DIR}/ui" "${ROOT_DIR}/ui/scripts/sync-deployment-env.sh"
 }
 
 load_api_endpoint() {
@@ -554,45 +581,6 @@ cleanup_fixtures() {
     done
 }
 
-provision_input_fixtures() {
-    validate_audio_file
-    FIXTURE_BUCKET="$(terraform -chdir="${TERRAFORM_DIR}" output -raw uploads_bucket_name)"
-    local run_id
-    run_id="$(fixture_run_id)"
-    FIXTURE_KEYS=(
-        "reviews/integration-tests/${run_id}/first.wav"
-        "reviews/integration-tests/${run_id}/second.wav"
-    )
-    FIXTURE_OBJECT_URIS=(
-        "s3://${FIXTURE_BUCKET}/${FIXTURE_KEYS[0]}"
-        "s3://${FIXTURE_BUCKET}/${FIXTURE_KEYS[1]}"
-    )
-    local key
-    for key in "${FIXTURE_KEYS[@]}"; do
-        aws s3 cp "${AUDIO_FILE}" "s3://${FIXTURE_BUCKET}/${key}" --region "${AWS_REGION}"
-    done
-    AUDIO_MODERATION_TEST_AUDIO_S3_URIS="$(jq -cn --arg bucket "${FIXTURE_BUCKET}" --arg first "${FIXTURE_KEYS[0]}" --arg second "${FIXTURE_KEYS[1]}" '["s3://" + $bucket + "/" + $first, "s3://" + $bucket + "/" + $second]')"
-    export AUDIO_MODERATION_TEST_AUDIO_S3_URIS
-}
-
-wait_for_execution_success() {
-    local execution_arn="$1"
-    local status
-    for _ in {1..60}; do
-        status="$(aws stepfunctions describe-execution --region "${AWS_REGION}" --execution-arn "${execution_arn}" --query status --output text)"
-        case "${status}" in
-            SUCCEEDED) return 0 ;;
-            FAILED|TIMED_OUT|ABORTED)
-                printf 'Test Step Functions execution ended as %s: %s\n' "${status}" "$(aws stepfunctions describe-execution --region "${AWS_REGION}" --execution-arn "${execution_arn}" --query cause --output text)" >&2
-                return 1
-                ;;
-        esac
-        sleep 2
-    done
-    printf 'Test Step Functions execution did not complete within two minutes: %s\n' "${execution_arn}" >&2
-    return 1
-}
-
 run_suite() {
     case "${SUITE}" in
         review-submit)
@@ -605,21 +593,6 @@ run_suite() {
             load_review_confirmation_environment
             load_task_events_endpoint
             cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package submit-audio-lambda --test deployed starts_uploaded_review_evaluation_against_aws -- --ignored --nocapture
-            ;;
-        evaluation-ingress)
-            preflight evaluation-ingress
-            unset AUDIO_MODERATION_TEST_AUDIO_S3_URIS
-            load_evaluation_environment
-            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package start-evaluation-lambda --test deployed evaluation_ingress_ -- --ignored --nocapture
-            ;;
-        evaluation-dispatch)
-            preflight evaluation-dispatch
-            load_evaluation_environment
-            # Dispatch assertions finish before the production workflows do.
-            # Retain and report their fixtures for those asynchronous executions.
-            trap cleanup_fixtures EXIT
-            provision_input_fixtures
-            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package start-evaluation-lambda --test deployed evaluation_dispatch_ -- --ignored --nocapture
             ;;
         audio-conversion)
             preflight audio-conversion
@@ -673,17 +646,6 @@ run_suite() {
         moderation-caller)
             printf 'moderation-caller is unsupported: the deployed caller needs a completed transcription plus a database task and a real Step Functions task token.\n' >&2
             return 1
-            ;;
-        evaluation-e2e)
-            preflight evaluation-e2e
-            load_evaluation_environment
-            load_task_events_endpoint
-            # Keep partial or failed asynchronous fixtures, but report every
-            # possible URI so they can be investigated or removed manually.
-            trap cleanup_fixtures EXIT
-            provision_input_fixtures
-            cargo test --manifest-path "${BACKEND_DIR}/Cargo.toml" --config "${BACKEND_DIR}/.cargo/config.toml" --package start-evaluation-lambda --test deployed completes_a_fresh_evaluation_and_replays_without_another_attempt -- --ignored --nocapture
-            FIXTURES_SAFE_TO_DELETE=true
             ;;
     esac
 }

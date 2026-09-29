@@ -41,6 +41,7 @@ describe("ApiBackend.startEvaluation", () => {
       service(AudioReviewService, {
         submitReview(request, context) {
           expect(request.contentType).toBe("audio/wav")
+          expect(request.turnstileToken).toBe("challenge-1")
           expect(context.requestHeader.get("authorization")).toMatch(
             /^Bearer review_v1.[A-Za-z0-9_-]{43}$/
           )
@@ -63,7 +64,11 @@ describe("ApiBackend.startEvaluation", () => {
     const backend = new ApiBackend("https://api.example/", transport)
 
     await expect(
-      backend.startEvaluation({ userId: "user-1", audio })
+      backend.startEvaluation({
+        userId: "user-1",
+        audio,
+        turnstileToken: "challenge-1",
+      })
     ).resolves.toEqual({
       evaluationId: "evaluation-1",
       status: "PIPELINE_TASK_STATUS_PENDING",
@@ -129,6 +134,7 @@ describe("ApiBackend.startEvaluation", () => {
       await backend.startEvaluation({
         userId: "user-1",
         audio: new File(["audio"], "sample.wav"),
+        turnstileToken: "challenge-1",
       })
       const handlers = {
         onFrame: vi.fn(),
@@ -176,6 +182,7 @@ describe("ApiBackend.startEvaluation", () => {
       backend.startEvaluation({
         userId: "user-1",
         audio: new File(["audio"], "sample.mp3", { type: "audio/mpeg" }),
+        turnstileToken: "challenge-1",
       })
     ).rejects.toThrow("not authorized")
     expect(fetcher).not.toHaveBeenCalled()
@@ -240,6 +247,7 @@ describe("ApiBackend.startEvaluation", () => {
     await firstPage.startEvaluation({
       userId: "user-1",
       audio: new File(["audio"], "sample.wav"),
+      turnstileToken: "challenge-1",
     })
 
     const reloadedPage = new ApiBackend(
@@ -321,7 +329,11 @@ describe("ApiBackend.startEvaluation", () => {
       type: "audio/mpeg",
     })
 
-    await backend.startEvaluation({ userId: "user-1", audio })
+    await backend.startEvaluation({
+      userId: "user-1",
+      audio,
+      turnstileToken: "challenge-1",
+    })
 
     await expect(backend.listJobs("user-1")).resolves.toMatchObject([
       {
@@ -365,5 +377,213 @@ describe("ApiBackend.startEvaluation", () => {
       scores: { asking_for_pii: 0.05 },
     })
     expect(evaluationRequests).toBe(1)
+  })
+
+  it("replays a lost SubmitReview response with the same owner and key, but a fresh challenge", async () => {
+    const audio = new File(["audio"], "sample.wav")
+    const requests: Array<{
+      owner: string | null
+      key: string | null
+      challenge: string
+    }> = []
+    let calls = 0
+    const transport = createRouterTransport(({ service }) => {
+      service(AudioReviewService, {
+        submitReview(request, context) {
+          requests.push({
+            owner: context.requestHeader.get("authorization"),
+            key: context.requestHeader.get("idempotency-key"),
+            challenge: request.turnstileToken,
+          })
+          calls += 1
+          if (calls === 1)
+            throw new ConnectError("response lost", Code.Unavailable)
+          return {
+            reviewId: `review-${calls}`,
+            evaluationId: `evaluation-${calls}`,
+            uploadUrl: "https://uploads.example/source",
+          }
+        },
+      })
+    })
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null)))
+    const backend = new ApiBackend("https://api.example", transport)
+    await expect(
+      backend.startEvaluation({
+        userId: "user-1",
+        audio,
+        turnstileToken: "challenge-1",
+      })
+    ).rejects.toThrow("response lost")
+    await expect(
+      backend.startEvaluation({ userId: "user-1", audio, turnstileToken: "" })
+    ).rejects.toThrow("Complete the security check")
+    expect(requests).toHaveLength(1)
+    await backend.startEvaluation({
+      userId: "user-1",
+      audio,
+      turnstileToken: "challenge-2",
+    })
+    expect(requests[1]).toEqual({ ...requests[0], challenge: "challenge-2" })
+    await backend.startEvaluation({
+      userId: "user-1",
+      audio,
+      turnstileToken: "challenge-3",
+    })
+    expect(requests[2].owner).not.toBe(requests[1].owner)
+    expect(requests[2].key).not.toBe(requests[1].key)
+  })
+
+  it("persists ownership before upload and replays after a lost upload response", async () => {
+    const audio = new File(["audio"], "sample.wav")
+    const access = new BrowserEvaluationAccessStore(new MemoryStorage())
+    const jobs = new BrowserEvaluationStore(new MemoryStorage())
+    const requests: Array<{
+      owner: string | null
+      key: string | null
+      challenge: string
+    }> = []
+    const transport = createRouterTransport(({ service }) => {
+      service(AudioReviewService, {
+        submitReview(request, context) {
+          requests.push({
+            owner: context.requestHeader.get("authorization"),
+            key: context.requestHeader.get("idempotency-key"),
+            challenge: request.turnstileToken,
+          })
+          return {
+            reviewId: "review-1",
+            evaluationId: "evaluation-1",
+            uploadUrl: "https://uploads.example/source",
+          }
+        },
+      })
+    })
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error("upload response lost"))
+      .mockResolvedValueOnce(new Response(null))
+    vi.stubGlobal("fetch", fetcher)
+    const backend = new ApiBackend(
+      "https://api.example",
+      transport,
+      jobs,
+      "",
+      access
+    )
+    await expect(
+      backend.startEvaluation({
+        userId: "user-1",
+        audio,
+        turnstileToken: "challenge-1",
+      })
+    ).rejects.toThrow("upload response lost")
+    expect(access.get("evaluation-1")).toEqual({
+      reviewId: "review-1",
+      token: requests[0].owner?.replace("Bearer ", ""),
+    })
+    await expect(backend.listJobs("user-1")).resolves.toEqual([])
+    await backend.startEvaluation({
+      userId: "user-1",
+      audio,
+      turnstileToken: "challenge-2",
+    })
+    expect(requests[1]).toEqual({ ...requests[0], challenge: "challenge-2" })
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    await expect(backend.listJobs("user-1")).resolves.toHaveLength(1)
+  })
+
+  it("resumes without a second upload when a lost upload response replays without a URL", async () => {
+    const audio = new File(["audio"], "sample.wav")
+    const requests: Array<{ owner: string | null; key: string | null }> = []
+    let calls = 0
+    const transport = createRouterTransport(({ service }) => {
+      service(AudioReviewService, {
+        submitReview(_request, context) {
+          requests.push({
+            owner: context.requestHeader.get("authorization"),
+            key: context.requestHeader.get("idempotency-key"),
+          })
+          calls += 1
+          if (calls === 2) {
+            return {
+              reviewId: "review-1",
+              evaluationId: "evaluation-1",
+              status: ReviewJobStatus.PENDING_PROCESSING,
+            }
+          }
+          return {
+            reviewId: `review-${calls}`,
+            evaluationId: `evaluation-${calls}`,
+            uploadUrl: "https://uploads.example/source",
+            status: ReviewJobStatus.AWAITING_UPLOAD,
+          }
+        },
+      })
+    })
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new Error("upload response lost"))
+      .mockResolvedValueOnce(new Response(null))
+    vi.stubGlobal("fetch", fetcher)
+    const backend = new ApiBackend("https://api.example", transport)
+
+    await expect(
+      backend.startEvaluation({
+        userId: "user-1",
+        audio,
+        turnstileToken: "challenge-1",
+      })
+    ).rejects.toThrow("upload response lost")
+    await expect(
+      backend.startEvaluation({
+        userId: "user-1",
+        audio,
+        turnstileToken: "challenge-2",
+      })
+    ).resolves.toEqual({
+      evaluationId: "evaluation-1",
+      status: "PIPELINE_TASK_STATUS_PENDING",
+    })
+
+    expect(requests[1]).toEqual(requests[0])
+    expect(fetcher).toHaveBeenCalledOnce()
+    await expect(backend.listJobs("user-1")).resolves.toHaveLength(1)
+
+    await backend.startEvaluation({
+      userId: "user-1",
+      audio,
+      turnstileToken: "challenge-3",
+    })
+    expect(requests[2].owner).not.toBe(requests[1].owner)
+    expect(requests[2].key).not.toBe(requests[1].key)
+    expect(fetcher).toHaveBeenCalledTimes(2)
+  })
+
+  it("uses a new owner and idempotency key when a different file is selected after failure", async () => {
+    const requests: Array<{ owner: string | null; key: string | null }> = []
+    const transport = createRouterTransport(({ service }) => {
+      service(AudioReviewService, {
+        submitReview(_request, context) {
+          requests.push({
+            owner: context.requestHeader.get("authorization"),
+            key: context.requestHeader.get("idempotency-key"),
+          })
+          throw new ConnectError("not received", Code.Unavailable)
+        },
+      })
+    })
+    const backend = new ApiBackend("https://api.example", transport)
+    for (const name of ["first.wav", "second.wav"]) {
+      await expect(
+        backend.startEvaluation({
+          userId: "user-1",
+          audio: new File(["audio"], name),
+          turnstileToken: "fresh-challenge",
+        })
+      ).rejects.toThrow("not received")
+    }
+    expect(requests[1].owner).not.toBe(requests[0].owner)
+    expect(requests[1].key).not.toBe(requests[0].key)
   })
 })

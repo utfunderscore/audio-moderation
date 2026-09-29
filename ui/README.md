@@ -4,7 +4,7 @@ A single-page React/Vite UI for the audio moderation pipeline. It takes an audio
 file and advances a stage tracker through the event sequence the deployed
 task-events WebSocket emits.
 
-The UI contains **no backend interaction code**. Every backend operation is
+The UI keeps backend interaction code in `src/api/`. Every backend operation is
 declared in one place — `src/api/backend.ts` — and the UI depends only on that
 interface. Uploads, auth, HTTP, and the WebSocket live in the implementation.
 
@@ -30,7 +30,29 @@ AWS_PROFILE=admin terraform -chdir=../terraform output -raw pipeline_task_events
   the Connect RPC calls.
 - `VITE_TASK_EVENTS_ENDPOINT` — the deployed task-events WebSocket URL
   (`wss://…`). `ApiBackend` exchanges the evaluation's bearer token for a
-  one-time ticket and sends it directly to that endpoint.
+   one-time ticket and sends it directly to that endpoint.
+- `VITE_TURNSTILE_SITE_KEY` — public Cloudflare Turnstile site key, required to
+  enable submission. Register the UI hostname with the corresponding widget.
+- `VITE_TURNSTILE_ACTION` — optional widget action; defaults to `submit_review`.
+  Only use another action when the backend is configured to expect it (for
+  example, isolated test settings expecting `test`). Choosing, dropping, or
+  pasting audio opens a verification dialog; the upload begins automatically
+  after Turnstile succeeds. Closing the dialog or a failed upload leaves the
+  file selected for a fresh verification attempt. Tokens are single-use and
+  never stored; retries use the same idempotency key and review owner credential
+  in the open tab.
+
+After an approved backend deployment, `deployment-integration.sh` writes the
+public sitekey and action into ignored `.env.local` and `.env.production.local`
+via `scripts/sync-deployment-env.sh`. Run that script again if the widget changes.
+The Terraform-managed widget secret stays in SSM and Terraform state, never in
+the UI environment files. Restart Vite or rebuild the UI after syncing.
+To submit from a local dev server, include `localhost` and `127.0.0.1` alongside
+the hosted frontend hostname in the **dev** deployment's
+`TURNSTILE_ALLOWED_HOSTNAMES`; both the widget and backend check those names.
+If accessing the server through another development hostname, include that exact
+browser hostname as well, without a scheme or port.
+Do not allow local or development-only hostnames on a production widget.
 
 Vite expands `$VAR` references in env files, so escape the API Gateway
 `$default` stage as `\$default` or it is dropped from the task-events URL.
@@ -49,11 +71,12 @@ npm run preview:workers                 # build and serve locally on http://127.
 AWS_PROFILE=admin npm run deploy:dry-run # build and validate without publishing
 ```
 
-For production, set `VITE_API_ENDPOINT` and `VITE_TASK_EVENTS_ENDPOINT` in
-`.env.production.local` or the build environment. These public URLs are embedded
-in the browser bundle at build time; changing Worker runtime variables does not
-change them. Rebuild and redeploy after changing either URL. The API and audio
-storage CORS configuration must allow the deployed UI origin.
+For production, set `VITE_API_ENDPOINT`, `VITE_TASK_EVENTS_ENDPOINT`, and
+`VITE_TURNSTILE_SITE_KEY` in `.env.production.local` or the build environment.
+These public values are embedded in the browser bundle at build time; changing
+Worker runtime variables does not change them. Rebuild and redeploy after
+changing these values. The API and audio storage CORS configuration must allow
+the deployed UI origin.
 
 To publish, authenticate with Cloudflare and deploy:
 
@@ -76,7 +99,8 @@ If overriding this variable, include these origins in the override as well.
 
 For Cloudflare Workers Builds, select `ui` as the root directory, use `npm ci`
 as the build command and `AWS_PROFILE=admin npm run deploy` as the deploy command
-(the deploy script builds the UI). Set both `VITE_*` URLs as build variables.
+(the deploy script builds the UI). Set both endpoint URLs and
+`VITE_TURNSTILE_SITE_KEY` as build variables.
 For other CI providers, also supply `CLOUDFLARE_API_TOKEN` and
 `CLOUDFLARE_ACCOUNT_ID` through the CI environment.
 
@@ -84,7 +108,7 @@ For other CI providers, also supply `CLOUDFLARE_API_TOKEN` and
 
 A vertical timeline with one page per stage, filling in as the pipeline runs:
 
-- **Audio** — choosing a file starts the evaluation; the playable waveform
+- **Audio** — choose a file, complete the security check and submit; the playable waveform
   appears once audio processing finishes.
 - **Transcription** — the transcript, read from the evaluation result.
 - **Moderation** — five category scores with a flag verdict. A toast confirms
@@ -101,16 +125,15 @@ regressing.
 | Operation | Used by |
 | --- | --- |
 | `listJobs(userId)` | job history |
-| `startEvaluation({ userId, audio })` | choosing a file |
+| `startEvaluation({ userId, audio, turnstileToken })` | submitting a chosen file |
 | `resumeEvaluation(evaluationId)` | restoring an in-progress job after reload |
 | `subscribeTaskEvents(evaluationId, handlers)` | live stage tracking |
 | `getEvaluationResult(evaluationId)` | transcript and scores |
 | `getJobAudio(jobId)` | replaying a past job through a fresh signed download |
 
-`src/main.tsx` is the composition root: it supplies the `Backend` implementation
-to `<App backend={...} />`. It currently passes a placeholder that throws
-`not implemented` for every operation, so the app builds and renders but performs
-no backend work until a real implementation is wired in.
+`src/main.tsx` is the composition root: it supplies `ApiBackend` to
+`<App backend={...} />`. Turnstile is explicitly rendered in the browser and its
+response is sent only with SubmitReview, not stored in the evaluation access store.
 
 Task-event frames are raw event names and delivery is at-least-once, so the
 reducer dedupes by name. Transcripts and scores are not carried on the stream;

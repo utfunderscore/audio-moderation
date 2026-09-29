@@ -1,13 +1,19 @@
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::turnstile::{MAX_TOKEN_BYTES, TurnstileVerifier, VerifyError};
+
+#[cfg(test)]
+#[path = "../../database/tests/common/mod.rs"]
+mod test_database;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_s3::presigning::PresigningConfig;
 use buffa_types::google::protobuf::Timestamp;
 use common::{review_token_hash, review_token_hash_matches};
 use connectrpc::{ConnectError, RequestContext, Response, ServiceRequest};
 use database::{
-    NewReviewPipelineTask, PipelineTaskEventTicketStore, PipelineTaskStore, ReviewJob,
-    ReviewJobStatus as DatabaseReviewJobStatus, ReviewJobStore,
+    NewReviewPipelineTask, PipelineTask, PipelineTaskEventTicketStore, PipelineTaskStore,
+    ReviewJob, ReviewJobStatus as DatabaseReviewJobStatus, ReviewJobStore,
 };
 use tracing::{error, info, warn};
 
@@ -31,6 +37,7 @@ pub(crate) struct SubmitReviewService {
     s3_client: S3Client,
     uploads_bucket: String,
     tenant_id: String,
+    turnstile: Arc<dyn TurnstileVerifier>,
 }
 
 impl SubmitReviewService {
@@ -41,6 +48,7 @@ impl SubmitReviewService {
         s3_client: S3Client,
         uploads_bucket: String,
         tenant_id: String,
+        turnstile: impl TurnstileVerifier + 'static,
     ) -> Self {
         Self {
             store,
@@ -49,6 +57,7 @@ impl SubmitReviewService {
             s3_client,
             uploads_bucket,
             tenant_id,
+            turnstile: Arc::new(turnstile),
         }
     }
 
@@ -68,6 +77,112 @@ impl SubmitReviewService {
             review.ok_or_else(|| ConnectError::unauthenticated("invalid review access token"))?;
         ensure_review_token_matches(&review.access_token_hash, &token_hash)?;
         Ok(review)
+    }
+
+    /// Only authenticated replays may bypass single-use Siteverify. This lookup
+    /// does not touch the review row or reserve an idempotency key.
+    async fn existing_submission(
+        &self,
+        idempotency_key: &str,
+        access_token_hash: &str,
+    ) -> Result<Option<(ReviewJob, PipelineTask)>, ConnectError> {
+        let job = self
+            .store
+            .get_by_idempotency_key(&self.tenant_id, idempotency_key)
+            .await
+            .map_err(|database_error| {
+                error!(error = ?database_error, "failed to look up audio submission");
+                ConnectError::internal("failed to look up review")
+            })?;
+        let Some(job) = job else {
+            return Ok(None);
+        };
+        ensure_review_token_matches(&job.access_token_hash, access_token_hash)?;
+        let task = self
+            .pipeline_store
+            .get_by_review_job(job.job_id, &self.tenant_id)
+            .await
+            .map_err(|database_error| {
+                error!(error = ?database_error, "failed to look up review pipeline task");
+                ConnectError::internal("failed to look up review")
+            })?
+            .filter(|task| task.review_job_id == Some(job.job_id))
+            .ok_or_else(|| ConnectError::internal("review is missing its pipeline task"))?;
+        Ok(Some((job, task)))
+    }
+
+    async fn submission_response(
+        &self,
+        job: ReviewJob,
+        task: PipelineTask,
+        content_type: &str,
+    ) -> connectrpc::ServiceResult<SubmitReviewResponse> {
+        let replayed = !job.created;
+        if job.status != DatabaseReviewJobStatus::AwaitingUpload {
+            info!(jobId = %job.job_id, tenantId = self.tenant_id, status = ?job.status,
+                outcome = "idempotent_replay", "returned existing audio submission");
+            return Response::ok(Self::response_for_existing_job(&job, &task.evaluation_id));
+        }
+
+        if replayed {
+            let source_exists = match self
+                .s3_client
+                .head_object()
+                .bucket(&self.uploads_bucket)
+                .key(&job.input_file_path)
+                .send()
+                .await
+            {
+                Ok(_) => true,
+                Err(error)
+                    if error
+                        .as_service_error()
+                        .is_some_and(|service_error| service_error.is_not_found()) =>
+                {
+                    false
+                }
+                Err(head_error) => {
+                    error!(jobId = %job.job_id, tenantId = self.tenant_id,
+                        outcome = "failed", error = ?head_error, "failed to check existing source audio");
+                    return Err(ConnectError::internal(
+                        "failed to check existing source audio",
+                    ));
+                }
+            };
+            if source_exists {
+                info!(jobId = %job.job_id, tenantId = self.tenant_id, status = ?job.status,
+                    outcome = "source_already_uploaded", "returned existing audio submission");
+                return Response::ok(Self::response_for_existing_job(&job, &task.evaluation_id));
+            }
+        }
+
+        let upload = presign_upload(
+            &self.s3_client,
+            &self.uploads_bucket,
+            &job.input_file_path,
+            content_type,
+        )
+        .await
+        .map_err(|presign_error| {
+            error!(jobId = %job.job_id, tenantId = self.tenant_id,
+                outcome = "failed", error = ?presign_error, "failed to issue audio upload URL");
+            presign_error
+        })?;
+        let upload_headers = upload
+            .headers()
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect();
+        info!(jobId = %job.job_id, tenantId = self.tenant_id, status = ?job.status,
+            outcome = "upload_url_issued", replayed, "accepted audio submission");
+        Response::ok(SubmitReviewResponse {
+            task_id: job.job_id.to_string(),
+            review_id: job.job_id.to_string(),
+            evaluation_id: task.evaluation_id,
+            upload_url: upload.uri().to_owned(),
+            upload_headers,
+            status: ReviewJobStatus::AwaitingUpload.into(),
+            ..Default::default()
+        })
     }
 }
 
@@ -99,6 +214,42 @@ impl AudioReviewService for SubmitReviewService {
         validate_idempotency_key(&idempotency_key)?;
         let access_token_hash = review_token_hash_from_authorization(&ctx)?;
 
+        if let Some((job, task)) = self
+            .existing_submission(&idempotency_key, &access_token_hash)
+            .await?
+        {
+            return self.submission_response(job, task, content_type).await;
+        }
+
+        validate_turnstile_token(&request.turnstile_token)?;
+        // This is deliberately unrelated to the client idempotency key. Siteverify
+        // has no HTTP retry loop today, so one fresh UUID identifies this one
+        // verification attempt. If retries are added, retain this UUID for them.
+        let siteverify_key = uuid::Uuid::new_v4().to_string();
+        if let Err(verification_error) = self
+            .turnstile
+            .verify(&request.turnstile_token, &siteverify_key)
+            .await
+        {
+            // Another invocation may have completed verification and creation while
+            // this one was verifying the same single-use token. Only its rightful
+            // bearer may replay it; a miss remains a hard rejection, never a write.
+            if let Some((job, task)) = self
+                .existing_submission(&idempotency_key, &access_token_hash)
+                .await?
+            {
+                return self.submission_response(job, task, content_type).await;
+            }
+            return Err(match verification_error {
+                VerifyError::Rejected => {
+                    ConnectError::permission_denied("Turnstile verification failed")
+                }
+                VerifyError::Unavailable => {
+                    ConnectError::unavailable("Turnstile verification unavailable")
+                }
+            });
+        }
+
         let review = self
             .pipeline_store
             .create_or_get_review(NewReviewPipelineTask {
@@ -117,106 +268,10 @@ impl AudioReviewService for SubmitReviewService {
                 );
                 ConnectError::internal("failed to create review")
             })?;
-        let job = review.job;
-        let task = review.task;
-        let replayed = !job.created;
         // Do not reveal whether the idempotency key or review exists.
-        ensure_review_token_matches(&job.access_token_hash, &access_token_hash)?;
-        if job.status != DatabaseReviewJobStatus::AwaitingUpload {
-            info!(
-                jobId = %job.job_id,
-                tenantId = self.tenant_id,
-                status = ?job.status,
-                outcome = "idempotent_replay",
-                "returned existing audio submission"
-            );
-            return Response::ok(Self::response_for_existing_job(&job, &task.evaluation_id));
-        }
-
-        if replayed {
-            let source_exists = match self
-                .s3_client
-                .head_object()
-                .bucket(&self.uploads_bucket)
-                .key(&job.input_file_path)
-                .send()
-                .await
-            {
-                Ok(_) => true,
-                Err(error)
-                    if error
-                        .as_service_error()
-                        .is_some_and(|service_error| service_error.is_not_found()) =>
-                {
-                    false
-                }
-                Err(head_error) => {
-                    error!(
-                        jobId = %job.job_id,
-                        tenantId = self.tenant_id,
-                        outcome = "failed",
-                        error = ?head_error,
-                        "failed to check existing source audio"
-                    );
-                    return Err(ConnectError::internal(
-                        "failed to check existing source audio",
-                    ));
-                }
-            };
-
-            if source_exists {
-                info!(
-                    jobId = %job.job_id,
-                    tenantId = self.tenant_id,
-                    status = ?job.status,
-                    outcome = "source_already_uploaded",
-                    "returned existing audio submission"
-                );
-                return Response::ok(Self::response_for_existing_job(&job, &task.evaluation_id));
-            }
-        }
-
-        let upload = presign_upload(
-            &self.s3_client,
-            &self.uploads_bucket,
-            &job.input_file_path,
-            content_type,
-        )
-        .await
-        .map_err(|presign_error| {
-            error!(
-                jobId = %job.job_id,
-                tenantId = self.tenant_id,
-                outcome = "failed",
-                error = ?presign_error,
-                "failed to issue audio upload URL"
-            );
-            presign_error
-        })?;
-
-        let upload_headers = upload
-            .headers()
-            .map(|(name, value)| (name.to_owned(), value.to_owned()))
-            .collect();
-
-        info!(
-            jobId = %job.job_id,
-            tenantId = self.tenant_id,
-            status = ?job.status,
-            outcome = "upload_url_issued",
-            replayed,
-            "accepted audio submission"
-        );
-
-        Response::ok(SubmitReviewResponse {
-            task_id: job.job_id.to_string(),
-            review_id: job.job_id.to_string(),
-            evaluation_id: task.evaluation_id,
-            upload_url: upload.uri().to_owned(),
-            upload_headers,
-            status: ReviewJobStatus::AwaitingUpload.into(),
-            ..Default::default()
-        })
+        ensure_review_token_matches(&review.job.access_token_hash, &access_token_hash)?;
+        self.submission_response(review.job, review.task, content_type)
+            .await
     }
 
     async fn get_review<'a>(
@@ -459,6 +514,13 @@ fn validate_idempotency_key(value: &str) -> Result<(), ConnectError> {
         .map_err(|_| ConnectError::invalid_argument("idempotency-key must be a UUID"))
 }
 
+fn validate_turnstile_token(token: &str) -> Result<(), ConnectError> {
+    if token.trim().is_empty() || token.len() > MAX_TOKEN_BYTES {
+        return Err(ConnectError::invalid_argument("invalid Turnstile token"));
+    }
+    Ok(())
+}
+
 fn ensure_review_token_matches(expected: &str, supplied: &str) -> Result<(), ConnectError> {
     review_token_hash_matches(expected, supplied)
         .then_some(())
@@ -469,8 +531,205 @@ fn ensure_review_token_matches(expected: &str, supplied: &str) -> Result<(), Con
 mod tests {
     use super::*;
     use aws_sdk_s3::config::{Credentials, Region};
+    use buffa::Message;
+    use buffa::view::MessageView;
+    use bytes::Bytes;
     use connectrpc::ErrorCode;
     use lambda_http::http::{HeaderMap, HeaderValue};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::test_database;
+
+    #[derive(Clone)]
+    struct FakeVerifier {
+        calls: Arc<AtomicUsize>,
+        result: Result<(), VerifyError>,
+        verification_keys: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl TurnstileVerifier for FakeVerifier {
+        fn verify<'a>(
+            &'a self,
+            _: &'a str,
+            verification_key: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), VerifyError>> + Send + 'a>>
+        {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.verification_keys
+                .lock()
+                .unwrap()
+                .push(verification_key.to_owned());
+            Box::pin(std::future::ready(self.result))
+        }
+    }
+
+    fn test_service(pool: sqlx::PgPool, verifier: FakeVerifier) -> SubmitReviewService {
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version_latest()
+            .credentials_provider(Credentials::new(
+                "test-key",
+                "test-secret",
+                None,
+                None,
+                "test",
+            ))
+            .region(Region::new("eu-west-2"))
+            .build();
+        SubmitReviewService::new(
+            ReviewJobStore::new(pool.clone()),
+            PipelineTaskStore::new(pool.clone()),
+            PipelineTaskEventTicketStore::new(pool),
+            S3Client::from_conf(config),
+            "uploads".into(),
+            "tenant-a".into(),
+            verifier,
+        )
+    }
+
+    async fn submit_for_test(
+        service: &SubmitReviewService,
+        key: &str,
+        bearer: &str,
+        token: &str,
+    ) -> Result<(), ConnectError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(IDEMPOTENCY_KEY_HEADER, HeaderValue::from_str(key).unwrap());
+        headers.insert(
+            AUTHORIZATION_HEADER,
+            HeaderValue::from_str(&format!("Bearer {bearer}")).unwrap(),
+        );
+        let body = Bytes::from(
+            SubmitReviewRequest {
+                content_type: "audio/wav".into(),
+                turnstile_token: token.into(),
+                ..Default::default()
+            }
+            .encode_to_vec(),
+        );
+        let view =
+            crate::proto::audio::review::v1::SubmitReviewRequestView::decode_view(&body).unwrap();
+        service
+            .submit_review(
+                RequestContext::new(headers),
+                ServiceRequest::from_parts(&view, &body),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn denies_invalid_tokens_without_writing_and_authenticates_replays() {
+        let db = test_database::TestDatabase::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let verifier = FakeVerifier {
+            calls: calls.clone(),
+            result: Err(VerifyError::Rejected),
+            verification_keys: Arc::default(),
+        };
+        let service = test_service(db.pool.clone(), verifier);
+        // This valid noncanonical UUID must remain distinct from Siteverify's
+        // backend-generated verification id.
+        let key = "550E8400-E29B-41D4-A716-446655440000";
+        let bearer = "review_v1.BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc";
+        for token in ["", " ", &"x".repeat(MAX_TOKEN_BYTES + 1)] {
+            let error = submit_for_test(&service, &key, bearer, token)
+                .await
+                .unwrap_err();
+            assert_eq!(error.code, ErrorCode::InvalidArgument);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let error = submit_for_test(&service, &key, bearer, "invalid-token")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::PermissionDenied);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let unavailable = test_service(
+            db.pool.clone(),
+            FakeVerifier {
+                calls: calls.clone(),
+                result: Err(VerifyError::Unavailable),
+                verification_keys: Arc::default(),
+            },
+        );
+        let error = submit_for_test(&unavailable, &key, bearer, "valid-token")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unavailable);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(
+            service
+                .store
+                .get_by_idempotency_key("tenant-a", &key)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM pipeline_tasks")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+
+        let verification_keys: Arc<Mutex<Vec<String>>> = Arc::default();
+        let good = test_service(
+            db.pool.clone(),
+            FakeVerifier {
+                calls: calls.clone(),
+                result: Ok(()),
+                verification_keys: verification_keys.clone(),
+            },
+        );
+        submit_for_test(&good, &key, bearer, "valid-token")
+            .await
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let verification_key = verification_keys.lock().unwrap()[0].clone();
+        assert_ne!(verification_key, key);
+        assert_ne!(
+            verification_key,
+            uuid::Uuid::parse_str(key).unwrap().to_string(),
+            "Siteverify must not canonicalize and reuse the client UUID"
+        );
+        assert_eq!(
+            uuid::Uuid::parse_str(&verification_key)
+                .unwrap()
+                .get_version(),
+            Some(uuid::Version::Random)
+        );
+        let persisted = good
+            .store
+            .get_by_idempotency_key("tenant-a", &key)
+            .await
+            .unwrap()
+            .unwrap();
+        good.store
+            .update_status(
+                persisted.job_id,
+                "tenant-a",
+                DatabaseReviewJobStatus::Processing,
+            )
+            .await
+            .unwrap();
+        // The same key and rightful bearer replays without a Turnstile token.
+        submit_for_test(&service, &key, bearer, "").await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let wrong_bearer = format!("review_v1.{}", {
+            use base64::Engine;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([8u8; 32])
+        });
+        // An invalid owner is rejected before its missing token is considered.
+        let error = submit_for_test(&service, &key, &wrong_bearer, "")
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::Unauthenticated);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM review_jobs")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+    }
 
     fn assert_invalid_argument<T: std::fmt::Debug>(
         result: Result<T, ConnectError>,

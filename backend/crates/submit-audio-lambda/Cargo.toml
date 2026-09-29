@@ -16,9 +16,11 @@ common = { path = "../common" }
 database = { path = "../database" }
 http-body-util = "0.1.3"
 lambda_http = "1.3.1"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "form"] }
 serde = "1.0.229"
+serde_json = "1.0.151"
 sqlx = { version = "0.8.6", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
-tokio = { version = "1.49.0", features = ["macros", "time"] }
+tokio = { version = "1.49.0", features = ["macros", "time", "net", "io-util"] }
 tower = "0.5.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt", "json"] }
@@ -30,8 +32,9 @@ connectrpc-build = "0.9.0"
 [dev-dependencies]
 aws-sdk-sfn = "1.115.0"
 base64 = "0.22.1"
+bytes = "1.11.0"
 futures-util = "0.3.31"
-reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 rustls = { version = "0.23.43", default-features = false, features = ["aws-lc-rs", "std"] }
 serde_json = "1.0.151"
+testcontainers = "0.28.0"
 tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-webpki-roots"] }

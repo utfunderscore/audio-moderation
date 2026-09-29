@@ -6,11 +6,7 @@ import { ApiBackend } from "@/api/api-backend"
 import { ThemeProvider } from "@/components/theme-provider.tsx"
 import App from "./App.tsx"
 
-/**
- * Placeholder backend. The UI depends only on the `Backend` interface in
- * `src/api/backend.ts`; this is the single place the transport is wired to the
- * product UI. Replace it with the real implementation.
- */
+/** The composition root wires the real transport to the product UI. */
 const backend = new ApiBackend()
 
 const rootElement = document.getElementById("root")

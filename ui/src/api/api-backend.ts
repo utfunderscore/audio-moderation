@@ -20,12 +20,25 @@ import {
   AudioModerationService,
   PipelineTaskStatus,
 } from "@/gen/audio/moderation/v1/audio_moderation_pb"
-import { AudioReviewService } from "@/gen/audio/review/v1/audio_review_pb"
+import {
+  AudioReviewService,
+  ReviewJobStatus,
+} from "@/gen/audio/review/v1/audio_review_pb"
 
 const PENDING_STATUS = "PIPELINE_TASK_STATUS_PENDING"
 
 function pipelineStatusName(status: PipelineTaskStatus): string {
   return `PIPELINE_TASK_STATUS_${PipelineTaskStatus[status] ?? "UNSPECIFIED"}`
+}
+
+function isReplayStatus(status: ReviewJobStatus): boolean {
+  return (
+    status === ReviewJobStatus.AWAITING_UPLOAD ||
+    status === ReviewJobStatus.PENDING_PROCESSING ||
+    status === ReviewJobStatus.PROCESSING ||
+    status === ReviewJobStatus.COMPLETED ||
+    status === ReviewJobStatus.ERROR
+  )
 }
 
 const debugRpc: Interceptor = (next) => async (request) => {
@@ -77,6 +90,14 @@ export class ApiBackend implements Backend {
   private readonly moderationClient: Client<typeof AudioModerationService>
   private readonly reviewClient: Client<typeof AudioReviewService>
   private readonly taskEventsEndpoint: string
+  // At most one unresolved submission. A retry of the same selected file must
+  // keep its owner and idempotency key, even when the response was lost.
+  private pendingSubmission: {
+    userId: string
+    audio: File
+    token: string
+    idempotencyKey: string
+  } | null = null
 
   constructor(
     endpoint = import.meta.env.VITE_API_ENDPOINT ?? "",
@@ -102,25 +123,65 @@ export class ApiBackend implements Backend {
   async startEvaluation(
     input: StartEvaluationInput
   ): Promise<StartedEvaluation> {
-    const token = reviewToken()
+    if (!input.turnstileToken) {
+      throw new Error("Complete the security check before submitting audio")
+    }
+    const pending = this.pendingSubmission
+    const attempt =
+      pending !== null &&
+      pending.audio === input.audio &&
+      pending.userId === input.userId
+        ? pending
+        : {
+            audio: input.audio,
+            userId: input.userId,
+            token: reviewToken(),
+            idempotencyKey: crypto.randomUUID(),
+          }
+    this.pendingSubmission = attempt
     const submitted = await this.reviewClient.submitReview(
       {
         contentType: input.audio.type || "audio/octet-stream",
+        turnstileToken: input.turnstileToken,
       },
       {
         headers: {
-          authorization: `Bearer ${token}`,
-          "idempotency-key": crypto.randomUUID(),
+          authorization: `Bearer ${attempt.token}`,
+          "idempotency-key": attempt.idempotencyKey,
         },
       }
     )
 
-    if (
-      submitted.evaluationId === "" ||
-      submitted.reviewId === "" ||
-      submitted.uploadUrl === ""
-    ) {
+    if (submitted.evaluationId === "" || submitted.reviewId === "") {
       throw new Error("SubmitReview returned an invalid upload response")
+    }
+    if (submitted.uploadUrl === "" && !isReplayStatus(submitted.status)) {
+      throw new Error("SubmitReview returned an invalid replay response")
+    }
+
+    // Keep the capability as soon as the review is known, even if the upload
+    // fails or its response is lost. The next attempt can replay SubmitReview.
+    this.evaluationAccess.set(submitted.evaluationId, {
+      reviewId: submitted.reviewId,
+      token: attempt.token,
+    })
+
+    // A replay omits its presigned URL once the source object exists, or once
+    // the review has advanced beyond upload. It is already safe to resume; a
+    // second PUT could overwrite an object that the pipeline is consuming.
+    if (submitted.uploadUrl === "") {
+      this.evaluationAudio.set(submitted.evaluationId, input.audio)
+      this.evaluations.recordStarted({
+        evaluationId: submitted.evaluationId,
+        userId: input.userId,
+        fileName: input.audio.name,
+        submittedAt: Date.now(),
+      })
+      this.pendingSubmission = null
+      return {
+        evaluationId: submitted.evaluationId,
+        status: PENDING_STATUS,
+      }
     }
 
     const upload = await fetch(submitted.uploadUrl, {
@@ -130,10 +191,6 @@ export class ApiBackend implements Backend {
     })
     if (!upload.ok) throw await responseError("Audio upload", upload)
 
-    this.evaluationAccess.set(submitted.evaluationId, {
-      reviewId: submitted.reviewId,
-      token,
-    })
     this.evaluationAudio.set(submitted.evaluationId, input.audio)
     this.evaluations.recordStarted({
       evaluationId: submitted.evaluationId,
@@ -141,6 +198,7 @@ export class ApiBackend implements Backend {
       fileName: input.audio.name,
       submittedAt: Date.now(),
     })
+    this.pendingSubmission = null
 
     return {
       evaluationId: submitted.evaluationId,

@@ -100,22 +100,21 @@ review_jobs
           └── pipeline_task_websocket_connections
 ```
 
-A review can have at most one pipeline task. A task created directly through
-`StartEvaluation` does not have a review, so its `review_job_id` is empty.
+A review can have at most one pipeline task. Pipeline tasks created outside
+the review flow (for example, isolated test fixtures) have no review.
 
-### Keeping direct tasks and review tasks separate
+### Keeping ordinary tasks and review tasks separate
 
-There are two ways to create a pipeline task, and they deliberately have
-different responsibilities:
+The database supports ordinary tasks for internal use and linked review tasks:
 
 | Creation route | What it creates | Can it link a review? |
 |---|---|---|
-| Direct evaluation (`StartEvaluation`) | An ordinary task with caller-supplied audio object URIs. | No. It always saves an empty (`NULL`) `review_job_id`. |
+| Internal task fixture | An ordinary task with audio object URIs. | No. It saves an empty (`NULL`) `review_job_id`. |
 | Review submission (`SubmitReview`) | A review and its one expected task in the same database transaction. | Yes. This is the only application path that creates the review-to-task link. |
 
 The ordinary database API is `NewPipelineTask` with
 `PipelineTaskStore::create_or_get`. `NewPipelineTask` intentionally does not
-contain a `review_job_id` field, so callers cannot accidentally turn a direct
+contain a `review_job_id` field, so callers cannot accidentally turn an ordinary
 task into a review task. A `caller_reference` that happens to look like
 `review-job:42` is only text for tracking; it does not create a relationship.
 
@@ -211,7 +210,7 @@ An empty outcome means the task has not finished yet.
 | `task_id` | The internal database ID for a pipeline task. Step rows, events, tickets, and WebSocket subscriptions use this ID. |
 | `evaluation_id` | The public UUID returned for an evaluation. A UUID is a long random-looking ID that is safe to expose. |
 | `tenant_id` | The customer or workspace that owns the task. It must match the linked review's tenant. |
-| `review_job_id` | The review that created this task. It is empty for direct evaluations. Only the review-specific creation path may set it. `UNIQUE` means one review cannot have two tasks. |
+| `review_job_id` | The review that created this task. It is empty for ordinary internal tasks. Only the review-specific creation path may set it. `UNIQUE` means one review cannot have two tasks. |
 | `idempotency_key` | The key that prevents duplicate tasks. Direct callers provide their own key. The review-specific path derives a stable key such as `review-upload:<review-id>`. |
 | `caller_reference` | Optional text supplied for tracking. Reviews use a derived value such as `review-job:<review-id>`. This is only a label; code should use `review_job_id` for the real relationship. |
 | `outcome` | The final result. It is empty until the task finishes. |
@@ -229,7 +228,7 @@ An empty outcome means the task has not finished yet.
 | `pipeline_tasks_outcome_completion_consistent` | Prevents a task from having an outcome without a completion time, or a completion time without an outcome. |
 | `pipeline_tasks_evaluation_id_unique` | Stops two tasks from sharing one public evaluation ID. |
 | `pipeline_tasks_idempotency_unique` | Stops one tenant from creating two tasks with the same idempotency key. |
-| Unique rule on `review_job_id` | Stops one review from owning more than one pipeline task. Multiple direct evaluations are still allowed because their value is empty. |
+| Unique rule on `review_job_id` | Stops one review from owning more than one pipeline task. Multiple ordinary tasks are still allowed because their value is empty. |
 | `pipeline_tasks_review_job_tenant_fk` | Requires the linked review to exist under the same tenant. The review cannot be deleted while its task still exists. |
 | `idx_pipeline_tasks_outcome` | Makes searches by final outcome faster. |
 
@@ -376,7 +375,6 @@ These values have different jobs and should not be treated as interchangeable:
 | Evaluation ID | Public ID for the linked processing pipeline. |
 | Task ID | Internal database ID used to connect pipeline tables. It is not a secret. |
 | `review_v1` token | Client-generated opaque bearer credential for one review and its linked evaluation. Only its SHA-256 digest is stored. |
-| `eval_v1` token | Proves access to an evaluation created directly through `StartEvaluation`. It is signed but not stored in the database. |
 | `wst_v1` ticket | Short-lived, one-use WebSocket subscription ticket. Only its fingerprint is stored. |
 | AWS callback token | Secret used by an external processing job to resume Step Functions. Only its fingerprint is stored. |
 

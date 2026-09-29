@@ -12,27 +12,6 @@ import type { Timestamp } from "@bufbuild/protobuf/wkt";
 export declare const file_audio_moderation_v1_audio_moderation: GenFile;
 
 /**
- * @generated from message audio.moderation.v1.StartEvaluationRequest
- */
-export declare type StartEvaluationRequest = Message<"audio.moderation.v1.StartEvaluationRequest"> & {
-  /**
-   * @generated from field: repeated audio.moderation.v1.AudioObjectReference audio_objects = 1;
-   */
-  audioObjects: AudioObjectReference[];
-
-  /**
-   * @generated from field: string caller_reference = 2;
-   */
-  callerReference: string;
-};
-
-/**
- * Describes the message audio.moderation.v1.StartEvaluationRequest.
- * Use `create(StartEvaluationRequestSchema)` to create a new message.
- */
-export declare const StartEvaluationRequestSchema: GenMessage<StartEvaluationRequest>;
-
-/**
  * @generated from message audio.moderation.v1.AudioObjectReference
  */
 export declare type AudioObjectReference = Message<"audio.moderation.v1.AudioObjectReference"> & {
@@ -47,32 +26,6 @@ export declare type AudioObjectReference = Message<"audio.moderation.v1.AudioObj
  * Use `create(AudioObjectReferenceSchema)` to create a new message.
  */
 export declare const AudioObjectReferenceSchema: GenMessage<AudioObjectReference>;
-
-/**
- * @generated from message audio.moderation.v1.StartEvaluationResponse
- */
-export declare type StartEvaluationResponse = Message<"audio.moderation.v1.StartEvaluationResponse"> & {
-  /**
-   * @generated from field: string evaluation_id = 1;
-   */
-  evaluationId: string;
-
-  /**
-   * @generated from field: audio.moderation.v1.PipelineTaskStatus status = 2;
-   */
-  status: PipelineTaskStatus;
-
-  /**
-   * @generated from field: string access_token = 3;
-   */
-  accessToken: string;
-};
-
-/**
- * Describes the message audio.moderation.v1.StartEvaluationResponse.
- * Use `create(StartEvaluationResponseSchema)` to create a new message.
- */
-export declare const StartEvaluationResponseSchema: GenMessage<StartEvaluationResponse>;
 
 /**
  * @generated from message audio.moderation.v1.GetEvaluationRequest
@@ -576,16 +529,6 @@ export declare const PipelineStepStatusSchema: GenEnum<PipelineStepStatus>;
  * @generated from service audio.moderation.v1.AudioModerationService
  */
 export declare const AudioModerationService: GenService<{
-  /**
-   * Requires a UUID in the idempotency-key HTTP request header.
-   *
-   * @generated from rpc audio.moderation.v1.AudioModerationService.StartEvaluation
-   */
-  startEvaluation: {
-    methodKind: "unary";
-    input: typeof StartEvaluationRequestSchema;
-    output: typeof StartEvaluationResponseSchema;
-  },
   /**
    * @generated from rpc audio.moderation.v1.AudioModerationService.GetEvaluation
    */
