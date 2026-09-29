@@ -3,7 +3,7 @@ use std::env;
 use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client as S3Client;
 use aws_sdk_ssm::Client as SsmClient;
-use common::load_database_url;
+use common::{load_database_url, load_secure_parameter};
 use connectrpc::ConnectRpcService;
 use database::{PipelineTaskEventTicketStore, PipelineTaskStore, ReviewJobStore};
 use http_body_util::Full;
@@ -13,9 +13,11 @@ use tower::Service;
 
 mod proto;
 mod service;
+mod turnstile;
 
 use proto::audio::review::v1::AudioReviewServiceServer;
 use service::SubmitReviewService;
+use turnstile::Siteverify;
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -32,6 +34,13 @@ async fn main() -> Result<(), Error> {
     let ssm_client = SsmClient::new(&sdk_config);
 
     let database_url = load_database_url(&ssm_client).await?;
+    let turnstile_secret =
+        load_secure_parameter(&ssm_client, "TURNSTILE_SECRET_KEY_PARAMETER").await?;
+    let allowed_hostnames =
+        env::var("TURNSTILE_ALLOWED_HOSTNAMES").expect("TURNSTILE_ALLOWED_HOSTNAMES must be set");
+    let expected_action =
+        env::var("TURNSTILE_EXPECTED_ACTION").unwrap_or_else(|_| "submit_review".to_owned());
+    let turnstile = Siteverify::new(turnstile_secret, &allowed_hostnames, &expected_action)?;
     let pool = PgPoolOptions::new()
         .max_connections(3)
         .connect_lazy(&database_url)?;
@@ -45,6 +54,7 @@ async fn main() -> Result<(), Error> {
         s3_client,
         uploads_bucket,
         tenant_id,
+        turnstile,
     );
     let connect_service = ConnectRpcService::new(AudioReviewServiceServer::new(service));
 

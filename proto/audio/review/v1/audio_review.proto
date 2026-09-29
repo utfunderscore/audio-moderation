@@ -16,6 +16,9 @@ service AudioReviewService {
 
 message SubmitReviewRequest {
   string content_type = 1;
+  // Cloudflare Turnstile token for a new submission (action: submit_review).
+  // An authenticated idempotent replay does not consume this single-use token again.
+  string turnstile_token = 2;
 }
 
 message SubmitReviewResponse {

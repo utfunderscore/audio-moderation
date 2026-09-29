@@ -19,6 +19,14 @@ export declare type SubmitReviewRequest = Message<"audio.review.v1.SubmitReviewR
    * @generated from field: string content_type = 1;
    */
   contentType: string;
+
+  /**
+   * Cloudflare Turnstile token for a new submission (action: submit_review).
+   * An authenticated idempotent replay does not consume this single-use token again.
+   *
+   * @generated from field: string turnstile_token = 2;
+   */
+  turnstileToken: string;
 };
 
 /**

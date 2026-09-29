@@ -566,13 +566,14 @@ async fn submit(
     idempotency_key: &str,
     access_token: &str,
 ) -> Result<Value, Box<dyn std::error::Error>> {
+    let turnstile_token = required_env("TURNSTILE_TEST_TOKEN")?;
     let response = client
         .post(url)
         .header("content-type", "application/json")
         .header("connect-protocol-version", "1")
         .header("idempotency-key", idempotency_key)
         .bearer_auth(access_token)
-        .json(&json!({ "contentType": "audio/wav" }))
+        .json(&json!({ "contentType": "audio/wav", "turnstileToken": turnstile_token }))
         .send()
         .await?;
     let status = response.status();

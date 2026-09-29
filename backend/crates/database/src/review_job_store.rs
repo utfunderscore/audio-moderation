@@ -125,6 +125,27 @@ impl ReviewJobStore {
         .map_err(DatabaseError::Get)
     }
 
+    /// Read-only lookup for a submission replay. A miss never reserves an idempotency key.
+    pub async fn get_by_idempotency_key(
+        &self,
+        tenant_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<ReviewJob>, DatabaseError> {
+        sqlx::query_as::<_, ReviewJob>(
+            r#"
+                SELECT job_id, tenant_id, idempotency_key, access_token_hash,
+                    status, input_file_path, created_at, updated_at, FALSE AS created
+                FROM review_jobs
+                WHERE tenant_id = $1 AND idempotency_key = $2
+            "#,
+        )
+        .bind(tenant_id)
+        .bind(idempotency_key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(DatabaseError::Get)
+    }
+
     /// Finds a review by its generated upload key within one tenant.
     pub async fn get_by_input_file_path(
         &self,

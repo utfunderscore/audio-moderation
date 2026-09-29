@@ -48,6 +48,29 @@ async fn creates_serial_job_and_replays_by_tenant_idempotency_key() {
     assert!(!replayed.created);
     assert_eq!(replayed.job_id, created.job_id);
     assert_ne!(other_tenant.job_id, created.job_id);
+    assert_eq!(
+        store
+            .get_by_idempotency_key("tenant-a", "request-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .job_id,
+        created.job_id
+    );
+    assert!(
+        store
+            .get_by_idempotency_key("tenant-b", "missing")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .get_by_idempotency_key("tenant-c", "request-1")
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(
         store
             .get(created.job_id, "tenant-b")
@@ -234,6 +257,39 @@ async fn atomically_creates_and_replays_a_review_pipeline_with_initial_event() {
             .task_id,
         created.task.task_id
     );
+}
+
+#[tokio::test]
+async fn concurrent_review_creation_keeps_one_owner_and_one_pipeline() {
+    let database = TestDatabase::start().await;
+    let store = PipelineTaskStore::new(database.pool.clone());
+    let create = |hash| {
+        store.create_or_get_review(NewReviewPipelineTask {
+            tenant_id: "tenant-a",
+            idempotency_key: "concurrent-request",
+            access_token_hash: hash,
+            uploads_bucket: "uploads",
+        })
+    };
+    let (first, second) = tokio::join!(create(TOKEN_HASH), create(OTHER_TOKEN_HASH));
+    let first = first.unwrap();
+    let second = second.unwrap();
+    assert_eq!(first.job.job_id, second.job.job_id);
+    assert_eq!(first.task.task_id, second.task.task_id);
+    assert_eq!(first.job.access_token_hash, second.job.access_token_hash);
+    assert_eq!(
+        i32::from(first.job.created) + i32::from(second.job.created),
+        1
+    );
+    let reviews: i64 = sqlx::query_scalar("SELECT count(*) FROM review_jobs")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    let tasks: i64 = sqlx::query_scalar("SELECT count(*) FROM pipeline_tasks")
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+    assert_eq!((reviews, tasks), (1, 1));
 }
 
 #[tokio::test]
