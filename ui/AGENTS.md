@@ -20,15 +20,16 @@ Run from `ui/`:
 
 ## Backend seam and protocol boundaries
 
-- The UI contains no backend interaction code. `src/api/backend.ts` declares the
+- The UI has a real `ApiBackend` in `src/api/api-backend.ts`; `src/api/backend.ts` declares the
   single `Backend` interface for every operation the UI needs (`listJobs`,
   `startEvaluation`, `subscribeTaskEvents`, `getEvaluationResult`,
   `getJobAudio`). Components and hooks depend only on it; do not add transport
   calls (fetch, WebSocket, uploads, auth) to `components/`, `hooks/`, or
   `domain/`.
-- `src/main.tsx` is the composition root and currently passes a placeholder
-  `Backend` that throws for every operation. Wire the real implementation there.
-  The app builds and renders without one but performs no backend work.
+- `src/main.tsx` is the composition root and supplies `ApiBackend`. Turnstile's
+  browser script is loaded via `src/api/turnstile.ts`; do not put RPC/upload
+  transport in components or hooks. New reviews need a single-use Turnstile
+  response (`submit_review` action); owner-authenticated idempotent replays do not.
 - The deployed protocol first exchanges an authorized evaluation access token for
   a one-time task-events ticket, then subscribes with
   `{"action":"subscribe","ticket":<ticket>}`. Incoming frames are raw UTF-8

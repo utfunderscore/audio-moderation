@@ -18,6 +18,15 @@ import { AudioPlayer } from "@/components/demo/stages/AudioPlayer"
 import { AudioProcessing } from "@/components/demo/stages/AudioProcessing"
 import { ModerationStage } from "@/components/demo/stages/ModerationStage"
 import { TranscriptionStage } from "@/components/demo/stages/TranscriptionStage"
+import { TurnstileWidget } from "@/components/demo/TurnstileWidget"
+import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Toaster } from "@/components/ui/sonner"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import type { TerminalEvent } from "@/domain/events"
@@ -32,6 +41,9 @@ import { useMediaQuery } from "@/hooks/useMediaQuery"
 type PageId = "audio" | "transcription" | "moderation"
 
 const DESKTOP_VIEWPORT_QUERY = "(min-width: 1024px)"
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY ?? ""
+const TURNSTILE_ACTION =
+  import.meta.env.VITE_TURNSTILE_ACTION || "submit_review"
 const FOCUSABLE_SELECTOR = [
   "a[href]",
   "button:not([disabled])",
@@ -70,6 +82,9 @@ export function App({ backend }: { backend: Backend }) {
   const [currentJobSelected, setCurrentJobSelected] = useState(false)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [detailsSelectionKey, setDetailsSelectionKey] = useState(0)
+  const [pendingFile, setPendingFile] = useState<File | null>(null)
+  const [challengeKey, setChallengeKey] = useState(0)
+  const challengeConsumed = useRef(false)
   const detailsPanelRef = useRef<HTMLElement>(null)
   const detailsContentRef = useRef<HTMLDivElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
@@ -151,20 +166,42 @@ export function App({ backend }: { backend: Backend }) {
     .map((page) => page.id)
   const isLast = (id: PageId) => visiblePages[visiblePages.length - 1] === id
 
-  /** Choosing audio starts the evaluation immediately. */
-  const startRun = (file: File) => {
-    pausePlayback()
-    const activeElement = document.activeElement
-    if (activeElement instanceof HTMLElement) {
-      detailsInvokerRef.current = activeElement
-    }
-    setCurrentJobSelected(true)
-    setSelectedJobId(null)
-    setDetailsSelectionKey((key) => key + 1)
-    evaluation.start({ userId: DEMO_USER_ID, audio: file })
+  const requestSubmission = (file: File) => {
+    challengeConsumed.current = false
+    setChallengeKey((key) => key + 1)
+    setPendingFile(file)
   }
 
+  /** A response is single-use: close the dialog and submit its selected file once. */
+  const handleChallengeToken = useCallback(
+    (token: string) => {
+      if (
+        pendingFile === null ||
+        challengeConsumed.current ||
+        evaluation.submitting
+      )
+        return
+      challengeConsumed.current = true
+      setPendingFile(null)
+      pausePlayback()
+      const activeElement = document.activeElement
+      if (activeElement instanceof HTMLElement) {
+        detailsInvokerRef.current = activeElement
+      }
+      setCurrentJobSelected(true)
+      setSelectedJobId(null)
+      setDetailsSelectionKey((key) => key + 1)
+      evaluation.start({
+        userId: DEMO_USER_ID,
+        audio: pendingFile,
+        turnstileToken: token,
+      })
+    },
+    [pendingFile, evaluation.submitting, evaluation.start, pausePlayback]
+  )
+
   const handleRemoveAudio = () => {
+    setPendingFile(null)
     evaluation.reset()
     audio.clear()
   }
@@ -197,7 +234,9 @@ export function App({ backend }: { backend: Backend }) {
     selectedJobId === null
       ? null
       : (previousJobs.find((job) => job.id === selectedJobId) ?? null)
-  const sidebarVisible = currentJobSelected || selectedJob !== null
+  const sidebarVisible =
+    (currentJobSelected && (evaluation.hasRun || evaluation.submitting)) ||
+    selectedJob !== null
 
   const closeSidebar = useCallback(() => {
     pausePlayback()
@@ -345,20 +384,94 @@ export function App({ backend }: { backend: Backend }) {
               <section aria-label="Upload audio" className="mb-10">
                 <AudioPicker
                   audio={audio}
-                  disabled={evaluation.running}
-                  onSelected={startRun}
+                  disabled={
+                    evaluation.running ||
+                    evaluation.submitting ||
+                    pendingFile !== null
+                  }
+                  onSelected={(file) => {
+                    evaluation.reset()
+                    setCurrentJobSelected(false)
+                    setSelectedJobId(null)
+                    if (TURNSTILE_SITE_KEY) requestSubmission(file)
+                  }}
                   title={
-                    evaluation.running
+                    evaluation.running || evaluation.submitting
                       ? "A job is currently processing"
                       : "Drop or paste audio here"
                   }
                   description={
-                    evaluation.running
+                    evaluation.running || evaluation.submitting
                       ? "Wait for it to finish before starting another"
                       : "MP3, WAV, M4A, AAC, OGG, WebM • 1 audio file"
                   }
                 />
+                {!TURNSTILE_SITE_KEY ? (
+                  <p
+                    className="text-center text-xs text-destructive"
+                    role="alert"
+                  >
+                    Submission is unavailable: VITE_TURNSTILE_SITE_KEY is not
+                    configured.
+                  </p>
+                ) : null}
+                <div className="mt-3 flex flex-col items-center gap-2">
+                  {TURNSTILE_SITE_KEY &&
+                  audio.file !== null &&
+                  !evaluation.running &&
+                  !evaluation.submitting &&
+                  pendingFile === null ? (
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        if (audio.file !== null) requestSubmission(audio.file)
+                      }}
+                    >
+                      Verify and submit audio
+                    </Button>
+                  ) : null}
+                  {evaluation.submitting ? (
+                    <p className="text-xs text-muted-foreground" role="status">
+                      Submitting audio…
+                    </p>
+                  ) : null}
+                  {evaluation.submissionError !== null ? (
+                    <p
+                      className="text-center text-xs text-destructive"
+                      role="alert"
+                    >
+                      {evaluation.submissionError} Retry with a new security
+                      check.
+                    </p>
+                  ) : null}
+                </div>
               </section>
+
+              <Dialog
+                open={pendingFile !== null}
+                onOpenChange={(open) => {
+                  if (!open) setPendingFile(null)
+                }}
+              >
+                <DialogContent>
+                  <DialogHeader>
+                    <DialogTitle>Verify before uploading</DialogTitle>
+                    <DialogDescription>
+                      Complete the security check to submit{" "}
+                      <span className="break-all">{pendingFile?.name}</span>{" "}
+                      automatically.
+                    </DialogDescription>
+                  </DialogHeader>
+                  {pendingFile !== null && TURNSTILE_SITE_KEY ? (
+                    <TurnstileWidget
+                      key={challengeKey}
+                      siteKey={TURNSTILE_SITE_KEY}
+                      action={TURNSTILE_ACTION}
+                      onToken={handleChallengeToken}
+                    />
+                  ) : null}
+                </DialogContent>
+              </Dialog>
 
               <JobHistory
                 currentJob={currentJob}
@@ -397,7 +510,7 @@ export function App({ backend }: { backend: Backend }) {
                     elapsed={null}
                     elapsedContent={
                       <ElapsedDuration
-                         startedAt={state.startedAt}
+                        startedAt={state.startedAt}
                         endedAt={
                           state.stageTimes.conversion.endedAt ??
                           state.stageTimes.result.endedAt

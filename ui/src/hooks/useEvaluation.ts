@@ -17,6 +17,8 @@ export interface EvaluationRun {
   state: PipelineState
   /** Transcript and scores fetched once the run reaches a terminal event. */
   result: EvaluationResult | null
+  submitting: boolean
+  submissionError: string | null
   start: (input: StartEvaluationInput) => void
   resume: (input: ResumeEvaluationInput) => void
   reset: () => void
@@ -36,6 +38,9 @@ export function useEvaluation(backend: Backend): EvaluationRun {
     createInitialState
   )
   const [result, setResult] = useState<EvaluationResult | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [submissionError, setSubmissionError] = useState<string | null>(null)
+  const submittingRef = useRef(false)
   const unsubscribeRef = useRef<(() => void) | null>(null)
   const runTokenRef = useRef(0)
 
@@ -46,6 +51,9 @@ export function useEvaluation(backend: Backend): EvaluationRun {
 
   const reset = useCallback(() => {
     runTokenRef.current += 1
+    submittingRef.current = false
+    setSubmitting(false)
+    setSubmissionError(null)
     teardown()
     setResult(null)
     dispatch({ type: "reset" })
@@ -82,6 +90,10 @@ export function useEvaluation(backend: Backend): EvaluationRun {
 
   const start = useCallback(
     (input: StartEvaluationInput) => {
+      if (submittingRef.current) return
+      submittingRef.current = true
+      setSubmitting(true)
+      setSubmissionError(null)
       const startedAt = Date.now()
       runTokenRef.current += 1
       const token = runTokenRef.current
@@ -92,9 +104,19 @@ export function useEvaluation(backend: Backend): EvaluationRun {
 
       void backend
         .startEvaluation(input)
-        .then((started) => follow(started, token, startedAt))
-        .catch(() => {
+        .then((started) => {
           if (runTokenRef.current !== token) return
+          submittingRef.current = false
+          setSubmitting(false)
+          follow(started, token, startedAt)
+        })
+        .catch((error: unknown) => {
+          if (runTokenRef.current !== token) return
+          submittingRef.current = false
+          setSubmitting(false)
+          setSubmissionError(
+            error instanceof Error ? error.message : "Unable to submit audio"
+          )
           dispatch({ type: "connection", state: "error" })
         })
     },
@@ -146,6 +168,8 @@ export function useEvaluation(backend: Backend): EvaluationRun {
   return {
     state,
     result,
+    submitting,
+    submissionError,
     start,
     resume,
     reset,

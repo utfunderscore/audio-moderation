@@ -23,7 +23,7 @@ export interface Backend {
   /** Jobs previously submitted by this user, newest first. */
   listJobs(userId: string): Promise<AudioProcessingJob[]>
 
-  /** Upload the selected audio and start the evaluation pipeline. */
+  /** Submit with a fresh Turnstile token, upload audio and start the pipeline. */
   startEvaluation(input: StartEvaluationInput): Promise<StartedEvaluation>
 
   /** Restore the current status for an evaluation submitted by this tab. */
