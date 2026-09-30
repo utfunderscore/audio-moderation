@@ -9,6 +9,7 @@ import type { Backend } from "@/api/backend"
 import { ElapsedDuration } from "@/components/demo/ElapsedDuration"
 import { Header } from "@/components/demo/Header"
 import { HistoricalJobDetails } from "@/components/demo/HistoricalJobDetails"
+import { JobAudio } from "@/components/demo/JobAudio"
 import { JobDetailsSidebar } from "@/components/demo/JobDetailsSidebar"
 import { JobHistory } from "@/components/demo/JobHistory"
 import { PipelineTimeline } from "@/components/demo/PipelineTimeline"
@@ -209,6 +210,8 @@ export function App({ backend }: { backend: Backend }) {
   }
 
   const audioStatus = audioPageState(state)
+  const audioEndedAt =
+    state.stageTimes.conversion.endedAt ?? state.stageTimes.result.endedAt
   const currentJobStatus: "processing" | "complete" | "failed" =
     evaluation.running
       ? "processing"
@@ -501,7 +504,7 @@ export function App({ backend }: { backend: Backend }) {
               contentRef={detailsContentRef}
               closeButtonRef={closeButtonRef}
               selectedJob={selectedJob}
-              audioFileName={audio.file?.name}
+              audioFileName={currentFileName}
               isMobileViewport={isMobileViewport}
               closing={sidebarClosing}
               onClose={closeSidebar}
@@ -522,31 +525,43 @@ export function App({ backend }: { backend: Backend }) {
                     elapsed={null}
                     elapsedContent={
                       <ElapsedDuration
-                        startedAt={state.startedAt}
-                        endedAt={
-                          state.stageTimes.conversion.endedAt ??
-                          state.stageTimes.result.endedAt
+                        startedAt={
+                          (audioStatus === "complete" ||
+                            audioStatus === "failed") &&
+                          audioEndedAt === undefined
+                            ? undefined
+                            : state.startedAt
                         }
+                        endedAt={audioEndedAt}
                       />
                     }
                     isLast={isLast("audio")}
                   >
-                    {audio.file === null ? (
-                      <p className="rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-                        The selected audio is no longer available.
+                    {audioStatus === "failed" ? (
+                      <p className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                        Processing stopped before the audio was ready.
                       </p>
-                    ) : audioStatus === "complete" ? (
+                    ) : audioStatus === "complete" && audio.file !== null ? (
                       <AudioPlayer
                         audio={audio}
                         disabled={evaluation.running}
                         onRemove={handleRemoveAudio}
                       />
-                    ) : audioStatus === "failed" ? (
-                      <p className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-                        Processing stopped before the audio was ready.
-                      </p>
+                    ) : audioStatus === "complete" &&
+                      evaluationId !== null &&
+                      currentFileName !== undefined ? (
+                      <JobAudio
+                        key={evaluationId}
+                        backend={backend}
+                        jobId={evaluationId}
+                        fileName={currentFileName}
+                      />
+                    ) : currentFileName !== undefined ? (
+                      <AudioProcessing fileName={currentFileName} />
                     ) : (
-                      <AudioProcessing fileName={audio.file.name} />
+                      <p className="rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                        The selected audio is no longer available.
+                      </p>
                     )}
                   </StagePage>
 

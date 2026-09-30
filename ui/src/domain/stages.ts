@@ -64,7 +64,7 @@ export const STAGES: readonly StageDefinition[] = [
   },
 ]
 
-/** Stage timing captured while events arrive, used for per-stage elapsed labels. */
+/** Stage timing from evaluation snapshots or observed events, used for elapsed labels. */
 export type StageTimes = Record<
   StageId,
   { startedAt?: number; endedAt?: number }

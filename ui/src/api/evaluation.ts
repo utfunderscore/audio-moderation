@@ -1,4 +1,5 @@
 import type { ModerationScores } from "@/domain/moderation"
+import type { StageTimes } from "@/domain/stages"
 
 export interface StartEvaluationInput {
   userId: string
@@ -11,6 +12,9 @@ export interface StartedEvaluation {
   evaluationId: string
   /** `PIPELINE_TASK_STATUS_*` returned by the API. */
   status: string
+  /** Authoritative timestamps from the evaluation snapshot when resuming. */
+  startedAt?: number
+  stageTimes?: StageTimes
 }
 
 export interface ResumeEvaluationInput {

@@ -7,6 +7,7 @@ import {
   type PipelineState,
   pipelineReducer,
 } from "./reducer"
+import { createStageTimes } from "./stages"
 
 function feed(
   state: PipelineState,
@@ -38,6 +39,47 @@ const HAPPY_PATH = [
 ]
 
 describe("pipelineReducer", () => {
+  it("restores authoritative stage timestamps and keeps them through event replay", () => {
+    const stageTimes = {
+      ...createStageTimes(),
+      conversion: { startedAt: 2_000, endedAt: 4_000 },
+      transcription: { startedAt: 4_000 },
+    }
+    const resumed = pipelineReducer(createInitialState(), {
+      type: "seed",
+      evaluationId: "42",
+      status: PIPELINE_STATUS.startedAsr,
+      at: 11_000,
+      startedAt: 1_000,
+      stageTimes,
+    })
+    const replayed = feed(
+      resumed,
+      [
+        "AUDIO_PROCESSING_STARTED",
+        "AUDIO_PROCESSING_FINISHED",
+        "ASR_STARTED",
+        "ASR_STARTED",
+      ],
+      12_000,
+      "replay"
+    )
+    expect(replayed.stageTimes).toEqual(stageTimes)
+    expect(replayed.stageTimes.conversion).not.toBe(stageTimes.conversion)
+  })
+
+  it("does not substitute page-load time for missing snapshot timestamps", () => {
+    const resumed = pipelineReducer(createInitialState(), {
+      type: "seed",
+      evaluationId: "42",
+      status: PIPELINE_STATUS.startedAsr,
+      at: 11_000,
+      startedAt: 1_000,
+      stageTimes: createStageTimes(),
+    })
+    expect(resumed.stageTimes).toEqual(createStageTimes())
+  })
+
   it("preserves the original start time when resuming", () => {
     const state = pipelineReducer(createInitialState(), {
       type: "seed",

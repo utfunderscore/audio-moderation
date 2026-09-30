@@ -1,3 +1,4 @@
+import type { Timestamp } from "@bufbuild/protobuf/wkt"
 import {
   type Client,
   ConnectError,
@@ -16,8 +17,10 @@ import type {
 } from "@/api/evaluation"
 import { subscribeTaskEventsWebSocket } from "@/api/task-events-websocket"
 import type { AudioProcessingJob } from "@/domain/jobs"
+import type { StageTimes } from "@/domain/stages"
 import {
   AudioModerationService,
+  type Evaluation,
   PipelineTaskStatus,
 } from "@/gen/audio/moderation/v1/audio_moderation_pb"
 import {
@@ -26,6 +29,36 @@ import {
 } from "@/gen/audio/review/v1/audio_review_pb"
 
 const PENDING_STATUS = "PIPELINE_TASK_STATUS_PENDING"
+
+function timestampMilliseconds(
+  timestamp: Timestamp | undefined
+): number | undefined {
+  return timestamp === undefined
+    ? undefined
+    : Number(timestamp.seconds) * 1_000 +
+        Math.floor(timestamp.nanos / 1_000_000)
+}
+
+function evaluationStageTimes(evaluation: Evaluation): StageTimes {
+  const createdAt = timestampMilliseconds(evaluation.createdAt)
+  const completedAt = timestampMilliseconds(evaluation.completedAt)
+  return {
+    submitted: { startedAt: createdAt, endedAt: createdAt },
+    conversion: {
+      startedAt: timestampMilliseconds(evaluation.audioProcessing?.startedAt),
+      endedAt: timestampMilliseconds(evaluation.audioProcessing?.completedAt),
+    },
+    transcription: {
+      startedAt: timestampMilliseconds(evaluation.transcription?.startedAt),
+      endedAt: timestampMilliseconds(evaluation.transcription?.completedAt),
+    },
+    moderation: {
+      startedAt: timestampMilliseconds(evaluation.moderation?.startedAt),
+      endedAt: timestampMilliseconds(evaluation.moderation?.completedAt),
+    },
+    result: { startedAt: completedAt, endedAt: completedAt },
+  }
+}
 
 function pipelineStatusName(status: PipelineTaskStatus): string {
   return `PIPELINE_TASK_STATUS_${PipelineTaskStatus[status] ?? "UNSPECIFIED"}`
@@ -218,6 +251,8 @@ export class ApiBackend implements Backend {
     return {
       evaluationId,
       status: pipelineStatusName(response.evaluation.status),
+      startedAt: timestampMilliseconds(response.evaluation.createdAt),
+      stageTimes: evaluationStageTimes(response.evaluation),
     }
   }
 

@@ -1,5 +1,6 @@
 import { Code, ConnectError, createRouterTransport } from "@connectrpc/connect"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { createStageTimes } from "@/domain/stages"
 import {
   AudioModerationService,
   PipelineTaskStatus,
@@ -27,6 +28,50 @@ class MemoryStorage {
 describe("ApiBackend.startEvaluation", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it("restores stage times from the server snapshot, including sub-second timestamps", async () => {
+    const access = new BrowserEvaluationAccessStore(new MemoryStorage())
+    access.set("evaluation-1", { reviewId: "review-1", token: "owner" })
+    const transport = createRouterTransport(({ service }) => {
+      service(AudioModerationService, {
+        getEvaluation: () => ({
+          evaluation: {
+            evaluationId: "evaluation-1",
+            status: PipelineTaskStatus.STARTED_MODERATION_PROCESSING,
+            createdAt: { seconds: 1n, nanos: 123_456_789 },
+            audioProcessing: {
+              startedAt: { seconds: 2n },
+              completedAt: { seconds: 4n },
+            },
+            transcription: {
+              startedAt: { seconds: 4n },
+              completedAt: { seconds: 7n },
+            },
+            moderation: { startedAt: { seconds: 7n, nanos: 500_000_000 } },
+          },
+        }),
+      })
+    })
+    const backend = new ApiBackend(
+      "https://api.example",
+      transport,
+      new BrowserEvaluationStore(new MemoryStorage()),
+      "",
+      access
+    )
+    await expect(backend.resumeEvaluation("evaluation-1")).resolves.toEqual({
+      evaluationId: "evaluation-1",
+      status: "PIPELINE_TASK_STATUS_STARTED_MODERATION_PROCESSING",
+      startedAt: 1_123,
+      stageTimes: {
+        submitted: { startedAt: 1_123, endedAt: 1_123 },
+        conversion: { startedAt: 2_000, endedAt: 4_000 },
+        transcription: { startedAt: 4_000, endedAt: 7_000 },
+        moderation: { startedAt: 7_500, endedAt: undefined },
+        result: { startedAt: undefined, endedAt: undefined },
+      },
+    })
   })
 
   it("creates an authorized review and uploads the selected audio", async () => {
@@ -259,9 +304,10 @@ describe("ApiBackend.startEvaluation", () => {
     )
     await expect(
       reloadedPage.resumeEvaluation("evaluation-1")
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       evaluationId: "evaluation-1",
       status: "PIPELINE_TASK_STATUS_STARTED_ASR",
+      stageTimes: createStageTimes(),
     })
     await expect(
       reloadedPage.getJobAudio("evaluation-1")

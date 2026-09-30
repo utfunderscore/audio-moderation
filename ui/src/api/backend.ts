@@ -26,7 +26,7 @@ export interface Backend {
   /** Submit with a fresh Turnstile token, upload audio and start the pipeline. */
   startEvaluation(input: StartEvaluationInput): Promise<StartedEvaluation>
 
-  /** Restore the current status for an evaluation submitted by this tab. */
+  /** Restore current status and stage timestamps for a job submitted by this tab. */
   resumeEvaluation(evaluationId: string): Promise<StartedEvaluation>
 
   /** Persisted transcript and scores for a finished evaluation, if any. */

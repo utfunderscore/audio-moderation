@@ -67,7 +67,8 @@ export function useEvaluation(backend: Backend): EvaluationRun {
         evaluationId: started.evaluationId,
         status: started.status,
         at: Date.now(),
-        startedAt,
+        startedAt: started.startedAt ?? startedAt,
+        stageTimes: started.stageTimes,
       })
       unsubscribeRef.current = backend.subscribeTaskEvents(
         started.evaluationId,

@@ -45,6 +45,7 @@ export type PipelineAction =
       status: string
       at: number
       startedAt?: number
+      stageTimes?: StageTimes
     }
   | { type: "connection"; state: ConnectionState }
   | { type: "frame"; name: string; source: EventSource; at: number }
@@ -52,7 +53,7 @@ export type PipelineAction =
 
 /**
  * Pipeline status values from proto/audio/moderation/v1/audio_moderation.proto,
-  * returned by the backend and used to seed the tracker before replay lands.
+ * returned by the backend and used to seed the tracker before replay lands.
  */
 export const PIPELINE_STATUS = {
   pending: "PIPELINE_TASK_STATUS_PENDING",
@@ -256,12 +257,19 @@ function seed(
   evaluationId: string,
   status: string,
   at: number,
-  startedAt = at
+  startedAt = at,
+  stageTimes?: StageTimes
 ): PipelineState {
   const stages = { ...createStages(), ...seedStageStates(status) }
   const times = createStageTimes()
 
   for (const id of STAGE_IDS) {
+    if (stageTimes !== undefined) {
+      // Event-name replay has no timestamps. Retain the snapshot's real timing
+      // rather than treating page load as a stage start or completion.
+      times[id] = { ...stageTimes[id] }
+      continue
+    }
     if (stages[id] === "pending") continue
     const ended = stages[id] === "complete" || stages[id] === "failed"
     times[id] = { startedAt: at, endedAt: ended ? at : undefined }
@@ -298,7 +306,8 @@ export function pipelineReducer(
         action.evaluationId,
         action.status,
         action.at,
-        action.startedAt
+        action.startedAt,
+        action.stageTimes
       )
 
     case "frame": {
