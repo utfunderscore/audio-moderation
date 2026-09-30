@@ -165,13 +165,6 @@
   animation: progress-indeterminate 1.4s ease-in-out infinite;
 }
 
-@keyframes pipeline-panel-enter {
-  from {
-    opacity: 0;
-    transform: translateX(1rem);
-  }
-}
-
 @keyframes pipeline-stage-enter {
   from {
     opacity: 0;
@@ -214,8 +207,51 @@
   }
 }
 
-.pipeline-panel-enter {
-  animation: pipeline-panel-enter 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+.pipeline-panel {
+  width: 100%;
+  transform: translateX(0);
+  transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.pipeline-panel[data-state="closing"] {
+  transform: translateX(100%);
+}
+
+@starting-style {
+  .pipeline-panel {
+    transform: translateX(100%);
+  }
+}
+
+@media (min-width: 1024px) {
+  .pipeline-panel {
+    width: var(--pipeline-width);
+    transform: none;
+    transition: width 420ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .pipeline-panel[data-state="closing"] {
+    width: 0;
+    transform: none;
+  }
+
+  .pipeline-panel[data-resizing="true"] {
+    transition: none;
+  }
+
+  @starting-style {
+    .pipeline-panel {
+      width: 0;
+    }
+  }
+}
+
+/* The shell moves first; timeline animations begin only after it has opened.
+   Pause mounted animations during closing or an interrupted/reversed slide. */
+.pipeline-panel[data-state="opening"] .pipeline-panel-body *,
+.pipeline-panel[data-state="closing"] .pipeline-panel-body * {
+  animation-play-state: paused;
+  transition: none;
 }
 
 .pipeline-stage-enter {
@@ -251,7 +287,14 @@
     opacity: 0.5;
   }
 
-  .pipeline-panel-enter,
+  .pipeline-panel {
+    transition: none;
+  }
+
+  .pipeline-panel[data-state="closing"] {
+    visibility: hidden;
+  }
+
   .pipeline-stage-enter,
   .pipeline-stage-node,
   .pipeline-connector,

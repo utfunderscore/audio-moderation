@@ -11,6 +11,7 @@ import {
 
 import { Button } from "@/components/ui/button"
 import type { AudioProcessingJob } from "@/domain/jobs"
+import { useMediaQuery } from "@/hooks/useMediaQuery"
 
 const DEFAULT_SIDEBAR_WIDTH = 448
 const MIN_SIDEBAR_WIDTH = 360
@@ -35,7 +36,9 @@ interface JobDetailsSidebarProps {
   selectedJob: AudioProcessingJob | null
   audioFileName?: string
   isMobileViewport: boolean
+  closing: boolean
   onClose: () => void
+  onClosed: () => void
   children: ReactNode
 }
 
@@ -47,13 +50,56 @@ export function JobDetailsSidebar({
   selectedJob,
   audioFileName,
   isMobileViewport,
+  closing,
   onClose,
+  onClosed,
   children,
 }: JobDetailsSidebarProps) {
   const separatorRef = useRef<HTMLDivElement>(null)
   const widthRef = useRef(DEFAULT_SIDEBAR_WIDTH)
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH)
   const [resizing, setResizing] = useState(false)
+  const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)")
+  const [entered, setEntered] = useState(reducedMotion)
+  const [moving, setMoving] = useState(!reducedMotion)
+  const [previousClosing, setPreviousClosing] = useState(closing)
+
+  // Pause content immediately when a close is requested or reversed, before
+  // the browser starts the next shell transition.
+  if (closing !== previousClosing) {
+    setPreviousClosing(closing)
+    setMoving(!reducedMotion)
+  }
+
+  useEffect(() => {
+    const finishTransition = () => {
+      if (closing) onClosed()
+      else {
+        setMoving(false)
+        setEntered(true)
+      }
+    }
+    if (reducedMotion) {
+      finishTransition()
+      return
+    }
+
+    // A breakpoint change can cancel the shell transition. Also settle when
+    // the browser does not support starting-style and has nothing to animate.
+    const frame = requestAnimationFrame(() => {
+      const transitioning = panelRef.current
+        ?.getAnimations()
+        .some(
+          (animation) =>
+            animation instanceof CSSTransition &&
+            animation.transitionProperty ===
+              (isMobileViewport ? "transform" : "width") &&
+            animation.playState === "running"
+        )
+      if (!transitioning) finishTransition()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [closing, isMobileViewport, onClosed, panelRef, reducedMotion])
 
   const applySidebarWidth = (width: number) => {
     widthRef.current = width
@@ -117,100 +163,114 @@ export function JobDetailsSidebar({
       role={isMobileViewport ? "dialog" : undefined}
       aria-modal={isMobileViewport ? true : undefined}
       aria-label="Job details"
+      data-state={closing ? "closing" : moving ? "opening" : "open"}
+      data-resizing={resizing || undefined}
+      onTransitionEnd={(event) => {
+        if (event.target !== event.currentTarget) return
+        const panelProperty = isMobileViewport ? "transform" : "width"
+        if (event.propertyName !== panelProperty) return
+        if (closing) onClosed()
+        else {
+          setMoving(false)
+          setEntered(true)
+        }
+      }}
       style={
         {
           "--pipeline-width": `${sidebarWidth}px`,
         } as CSSProperties
       }
       className={cn(
-        "pipeline-panel-enter",
-        "fixed inset-0 z-40 flex h-dvh w-full shrink-0 flex-col overflow-hidden border-l bg-background shadow-xl lg:sticky lg:inset-auto lg:top-14 lg:z-10 lg:h-[calc(100svh-3.5rem)] lg:w-[var(--pipeline-width)] lg:overflow-visible lg:shadow-none",
-        !resizing && "transition-[width] duration-200"
+        "pipeline-panel",
+        "fixed inset-0 z-40 h-dvh shrink-0 overflow-hidden bg-background shadow-xl lg:sticky lg:inset-auto lg:top-14 lg:z-10 lg:h-[calc(100svh-3.5rem)] lg:shadow-none"
       )}
     >
-      {/* biome-ignore lint/a11y/useSemanticElements: This is an interactive ARIA separator, which cannot use a semantic hr element. */}
-      <div
-        ref={separatorRef}
-        role="separator"
-        aria-label="Resize job details"
-        aria-orientation="vertical"
-        aria-valuemin={MIN_SIDEBAR_WIDTH}
-        aria-valuemax={maximumSidebarWidth()}
-        aria-valuenow={sidebarWidth}
-        tabIndex={0}
-        title="Drag to resize. Double-click to reset."
-        className="group absolute inset-y-0 -left-2 z-30 hidden w-4 cursor-col-resize touch-none items-center justify-center outline-none lg:flex"
-        onDoubleClick={() =>
-          commitSidebarWidth(clampSidebarWidth(DEFAULT_SIDEBAR_WIDTH))
-        }
-        onKeyDown={(event) => {
-          let nextWidth: number | null = null
+      <div className="pipeline-panel-body relative flex h-full min-h-0 w-full flex-col border-l lg:w-[var(--pipeline-width)]">
+        {/* biome-ignore lint/a11y/useSemanticElements: This is an interactive ARIA separator, which cannot use a semantic hr element. */}
+        <div
+          ref={separatorRef}
+          role="separator"
+          aria-label="Resize job details"
+          aria-orientation="vertical"
+          aria-valuemin={MIN_SIDEBAR_WIDTH}
+          aria-valuemax={maximumSidebarWidth()}
+          aria-valuenow={sidebarWidth}
+          inert={!entered || closing}
+          tabIndex={0}
+          title="Drag to resize. Double-click to reset."
+          className="group absolute inset-y-0 -left-2 z-30 hidden w-4 cursor-col-resize touch-none items-center justify-center outline-none lg:flex"
+          onDoubleClick={() =>
+            commitSidebarWidth(clampSidebarWidth(DEFAULT_SIDEBAR_WIDTH))
+          }
+          onKeyDown={(event) => {
+            let nextWidth: number | null = null
 
-          if (event.key === "ArrowLeft") nextWidth = widthRef.current + 24
-          if (event.key === "ArrowRight") nextWidth = widthRef.current - 24
-          if (event.key === "Home") nextWidth = MIN_SIDEBAR_WIDTH
-          if (event.key === "End") nextWidth = maximumSidebarWidth()
+            if (event.key === "ArrowLeft") nextWidth = widthRef.current + 24
+            if (event.key === "ArrowRight") nextWidth = widthRef.current - 24
+            if (event.key === "Home") nextWidth = MIN_SIDEBAR_WIDTH
+            if (event.key === "End") nextWidth = maximumSidebarWidth()
 
-          if (nextWidth === null) return
-          event.preventDefault()
-          commitSidebarWidth(clampSidebarWidth(nextWidth))
-        }}
-        onPointerDown={(event) => {
-          event.preventDefault()
-          event.currentTarget.setPointerCapture(event.pointerId)
-          setResizing(true)
-        }}
-        onPointerMove={(event) => {
-          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
-          applySidebarWidth(
-            clampSidebarWidth(window.innerWidth - event.clientX)
-          )
-        }}
-        onPointerUp={stopResizing}
-        onPointerCancel={stopResizing}
-      >
-        <span
-          aria-hidden
-          className={cn(
-            "h-full w-px bg-transparent transition-colors group-hover:bg-ring group-focus-visible:bg-ring",
-            resizing && "bg-ring"
-          )}
-        />
-        <span
-          aria-hidden
-          className={cn(
-            "absolute h-10 w-1 bg-border transition-colors group-hover:bg-ring group-focus-visible:bg-ring",
-            resizing && "bg-ring"
-          )}
-        />
-      </div>
-      <div className="flex h-14 shrink-0 items-center justify-between border-b px-4">
-        <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold">
-            {selectedJob === null ? "Current job" : `Job #${selectedJob.id}`}
-          </h2>
-          <p className="truncate text-xs text-muted-foreground">
-            {selectedJob?.fileName ?? audioFileName ?? "No job selected"}
-          </p>
-        </div>
-        <Button
-          ref={closeButtonRef}
-          type="button"
-          variant="ghost"
-          size="icon"
-          aria-label="Close job details"
-          onClick={onClose}
+            if (nextWidth === null) return
+            event.preventDefault()
+            commitSidebarWidth(clampSidebarWidth(nextWidth))
+          }}
+          onPointerDown={(event) => {
+            event.preventDefault()
+            event.currentTarget.setPointerCapture(event.pointerId)
+            setResizing(true)
+          }}
+          onPointerMove={(event) => {
+            if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+            applySidebarWidth(
+              clampSidebarWidth(window.innerWidth - event.clientX)
+            )
+          }}
+          onPointerUp={stopResizing}
+          onPointerCancel={stopResizing}
         >
-          <span aria-hidden className="text-lg leading-none">
-            ×
-          </span>
-        </Button>
-      </div>
-      <div
-        ref={contentRef}
-        className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] lg:overscroll-auto"
-      >
-        {children}
+          <span
+            aria-hidden
+            className={cn(
+              "h-full w-px bg-transparent transition-colors group-hover:bg-ring group-focus-visible:bg-ring",
+              resizing && "bg-ring"
+            )}
+          />
+          <span
+            aria-hidden
+            className={cn(
+              "absolute h-10 w-1 bg-border transition-colors group-hover:bg-ring group-focus-visible:bg-ring",
+              resizing && "bg-ring"
+            )}
+          />
+        </div>
+        <div className="flex h-14 shrink-0 items-center justify-between border-b px-4">
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-semibold">
+              {selectedJob === null ? "Current job" : `Job #${selectedJob.id}`}
+            </h2>
+            <p className="truncate text-xs text-muted-foreground">
+              {selectedJob?.fileName ?? audioFileName ?? "No job selected"}
+            </p>
+          </div>
+          <Button
+            ref={closeButtonRef}
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Close job details"
+            onClick={onClose}
+          >
+            <span aria-hidden className="text-lg leading-none">
+              ×
+            </span>
+          </Button>
+        </div>
+        <div
+          ref={contentRef}
+          className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] lg:overscroll-auto"
+        >
+          {entered ? children : null}
+        </div>
       </div>
     </aside>
   )

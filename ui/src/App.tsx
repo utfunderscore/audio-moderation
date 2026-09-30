@@ -82,6 +82,7 @@ export function App({ backend }: { backend: Backend }) {
   const [currentJobSelected, setCurrentJobSelected] = useState(false)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const [detailsSelectionKey, setDetailsSelectionKey] = useState(0)
+  const [sidebarClosing, setSidebarClosing] = useState(false)
   const [pendingFile, setPendingFile] = useState<File | null>(null)
   const [challengeKey, setChallengeKey] = useState(0)
   const challengeConsumed = useRef(false)
@@ -190,6 +191,7 @@ export function App({ backend }: { backend: Backend }) {
       }
       setCurrentJobSelected(true)
       setSelectedJobId(null)
+      setSidebarClosing(false)
       setDetailsSelectionKey((key) => key + 1)
       evaluation.start({
         userId: DEMO_USER_ID,
@@ -240,12 +242,18 @@ export function App({ backend }: { backend: Backend }) {
 
   const closeSidebar = useCallback(() => {
     pausePlayback()
+    setSidebarClosing(true)
+  }, [pausePlayback])
+
+  const finishClosingSidebar = useCallback(() => {
     setCurrentJobSelected(false)
     setSelectedJobId(null)
-  }, [pausePlayback])
+    setSidebarClosing(false)
+  }, [])
 
   const openCurrentJob = () => {
     pausePlayback()
+    setSidebarClosing(false)
     const activeElement = document.activeElement
     if (activeElement instanceof HTMLElement) {
       detailsInvokerRef.current = activeElement
@@ -257,6 +265,7 @@ export function App({ backend }: { backend: Backend }) {
 
   const openHistoricalJob = (job: AudioProcessingJob) => {
     pausePlayback()
+    setSidebarClosing(false)
     const activeElement = document.activeElement
     if (activeElement instanceof HTMLElement) {
       detailsInvokerRef.current = activeElement
@@ -393,6 +402,7 @@ export function App({ backend }: { backend: Backend }) {
                     evaluation.reset()
                     setCurrentJobSelected(false)
                     setSelectedJobId(null)
+                    setSidebarClosing(false)
                     if (TURNSTILE_SITE_KEY) requestSubmission(file)
                   }}
                   title={
@@ -493,7 +503,9 @@ export function App({ backend }: { backend: Backend }) {
               selectedJob={selectedJob}
               audioFileName={audio.file?.name}
               isMobileViewport={isMobileViewport}
+              closing={sidebarClosing}
               onClose={closeSidebar}
+              onClosed={finishClosingSidebar}
             >
               {selectedJob !== null ? (
                 <HistoricalJobDetails
