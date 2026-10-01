@@ -131,7 +131,6 @@ resource "aws_lambda_function" "submit_audio" {
       DATABASE_URL_PARAMETER         = var.database_parameter_name
       TURNSTILE_SECRET_KEY_PARAMETER = var.turnstile_secret_key_parameter_name
       TURNSTILE_ALLOWED_HOSTNAMES    = var.turnstile_allowed_hostnames
-      TURNSTILE_EXPECTED_ACTION      = var.turnstile_expected_action
       UPLOADS_BUCKET_NAME            = aws_s3_bucket.uploads.bucket
       TENANT_ID                      = var.tenant_id
       RUST_LOG                       = "info"

@@ -38,9 +38,7 @@ async fn main() -> Result<(), Error> {
         load_secure_parameter(&ssm_client, "TURNSTILE_SECRET_KEY_PARAMETER").await?;
     let allowed_hostnames =
         env::var("TURNSTILE_ALLOWED_HOSTNAMES").expect("TURNSTILE_ALLOWED_HOSTNAMES must be set");
-    let expected_action =
-        env::var("TURNSTILE_EXPECTED_ACTION").unwrap_or_else(|_| "submit_review".to_owned());
-    let turnstile = Siteverify::new(turnstile_secret, &allowed_hostnames, &expected_action)?;
+    let turnstile = Siteverify::new(turnstile_secret, &allowed_hostnames, "submit_review")?;
     let pool = PgPoolOptions::new()
         .max_connections(3)
         .connect_lazy(&database_url)?;

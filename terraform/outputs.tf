@@ -97,10 +97,6 @@ output "turnstile_sitekey" {
   value       = cloudflare_turnstile_widget.submit_review.sitekey
 }
 
-output "turnstile_expected_action" {
-  value = var.turnstile_expected_action
-}
-
 output "tenant_id" {
   value = var.tenant_id
 }

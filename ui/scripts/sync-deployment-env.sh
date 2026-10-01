@@ -9,11 +9,10 @@ UI_ENV_DIR="${UI_ENV_DIR:-${ROOT_DIR}/ui}"
 TERRAFORM_DIR="${ROOT_DIR}/terraform"
 
 sitekey="$(AWS_PROFILE=admin terraform -chdir="${TERRAFORM_DIR}" output -raw turnstile_sitekey)"
-action="$(AWS_PROFILE=admin terraform -chdir="${TERRAFORM_DIR}" output -raw turnstile_expected_action)"
 api_endpoint="$(AWS_PROFILE=admin terraform -chdir="${TERRAFORM_DIR}" output -raw api_endpoint)"
 events_endpoint="$(AWS_PROFILE=admin terraform -chdir="${TERRAFORM_DIR}" output -raw pipeline_task_events_websocket_endpoint)"
 
-if [[ ! "${sitekey}" =~ ^[a-zA-Z0-9_-]{1,64}$ || ! "${action}" =~ ^[a-zA-Z0-9_-]{1,32}$ || ! "${api_endpoint}" =~ ^https://[^[:space:]]+$ || ! "${events_endpoint}" =~ ^wss://[^[:space:]]+$ ]]; then
+if [[ ! "${sitekey}" =~ ^[a-zA-Z0-9_-]{1,64}$ || ! "${api_endpoint}" =~ ^https://[^[:space:]]+$ || ! "${events_endpoint}" =~ ^wss://[^[:space:]]+$ ]]; then
     printf 'Refusing to write invalid public Terraform outputs to UI env files.\n' >&2
     exit 1
 fi
@@ -42,7 +41,6 @@ for filename in .env.local .env.production.local; do
         if [[ "${api_present}" == false ]]; then printf 'VITE_API_ENDPOINT=%s\n' "${api_endpoint}"; fi
         if [[ "${events_present}" == false ]]; then printf 'VITE_TASK_EVENTS_ENDPOINT=%s\n' "${events_endpoint}"; fi
         printf 'VITE_TURNSTILE_SITE_KEY=%s\n' "${sitekey}"
-        printf 'VITE_TURNSTILE_ACTION=%s\n' "${action}"
     } > "${temp}"
     mv -- "${temp}" "${file}"
     printf 'Updated public UI configuration: ui/%s\n' "${filename}"

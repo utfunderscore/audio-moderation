@@ -17,7 +17,6 @@ TENANT_ID="${TENANT_ID:-default}"
 DATABASE_URL_PARAMETER="${DATABASE_URL_PARAMETER:-}"
 TURNSTILE_SECRET_KEY_PARAMETER="${TURNSTILE_SECRET_KEY_PARAMETER:-}"
 TURNSTILE_ALLOWED_HOSTNAMES="${TURNSTILE_ALLOWED_HOSTNAMES:-}"
-TURNSTILE_EXPECTED_ACTION="${TURNSTILE_EXPECTED_ACTION:-submit_review}"
 MODAL_PROXY_TOKEN_ID_PARAMETER="${MODAL_PROXY_TOKEN_ID_PARAMETER:-}"
 MODAL_PROXY_TOKEN_SECRET_PARAMETER="${MODAL_PROXY_TOKEN_SECRET_PARAMETER:-}"
 TRANSCRIPTION_ENDPOINT_URL="${TRANSCRIPTION_ENDPOINT_URL:-}"
@@ -65,7 +64,6 @@ Options:
   --database-parameter-name NAME          SecureString database URL parameter
   --turnstile-secret-parameter-name NAME  Terraform-managed SecureString Turnstile secret parameter
   --turnstile-allowed-hostnames NAMES      Comma-separated exact frontend hostnames (required to deploy)
-  --turnstile-expected-action ACTION      Widget/Siteverify action (default: submit_review)
   --modal-token-id-parameter-name NAME    SecureString Modal token ID parameter
   --modal-token-secret-parameter-name NAME
                                             SecureString Modal token secret parameter
@@ -164,7 +162,6 @@ while [[ $# -gt 0 ]]; do
         --database-parameter-name) require_value "$@"; DATABASE_URL_PARAMETER="$2"; shift 2 ;;
         --turnstile-secret-parameter-name) require_value "$@"; TURNSTILE_SECRET_KEY_PARAMETER="$2"; shift 2 ;;
         --turnstile-allowed-hostnames) require_value "$@"; TURNSTILE_ALLOWED_HOSTNAMES="$2"; shift 2 ;;
-        --turnstile-expected-action) require_value "$@"; TURNSTILE_EXPECTED_ACTION="$2"; shift 2 ;;
         --modal-token-id-parameter-name) require_value "$@"; MODAL_PROXY_TOKEN_ID_PARAMETER="$2"; shift 2 ;;
         --modal-token-secret-parameter-name) require_value "$@"; MODAL_PROXY_TOKEN_SECRET_PARAMETER="$2"; shift 2 ;;
         --transcription-endpoint-url) require_value "$@"; TRANSCRIPTION_ENDPOINT_URL="$2"; shift 2 ;;
@@ -217,10 +214,6 @@ validate_turnstile_configuration() {
     local require_hostnames="${1:-false}"
     if [[ ! "${TURNSTILE_SECRET_KEY_PARAMETER}" =~ ^/[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)*$ ]]; then
         printf 'Turnstile secret parameter name must be an absolute SSM path (for example /project/environment/turnstile-secret-key).\n' >&2
-        exit 1
-    fi
-    if [[ ! "${TURNSTILE_EXPECTED_ACTION}" =~ ^[a-zA-Z0-9_-]{1,32}$ ]]; then
-        printf 'Turnstile expected action must be 1-32 letters, digits, underscores, or hyphens.\n' >&2
         exit 1
     fi
     if [[ -z "${TURNSTILE_ALLOWED_HOSTNAMES}" ]]; then
@@ -405,7 +398,6 @@ set_terraform_vars() {
         -var="database_parameter_name=${DATABASE_URL_PARAMETER}"
         -var="turnstile_secret_key_parameter_name=${TURNSTILE_SECRET_KEY_PARAMETER}"
         -var="turnstile_allowed_hostnames=${TURNSTILE_ALLOWED_HOSTNAMES}"
-        -var="turnstile_expected_action=${TURNSTILE_EXPECTED_ACTION}"
         -var="modal_proxy_token_id_parameter_name=${MODAL_PROXY_TOKEN_ID_PARAMETER}"
         -var="modal_proxy_token_secret_parameter_name=${MODAL_PROXY_TOKEN_SECRET_PARAMETER}"
         -var="transcription_endpoint_url=${TRANSCRIPTION_ENDPOINT_URL}"

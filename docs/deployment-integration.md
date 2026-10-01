@@ -101,9 +101,8 @@ The complete deployment requires:
   example `app.example.com,preview.example.com`); no scheme, port, path,
   wildcards, whitespace, or API hostname unless it also serves the widget.
   This is independent of API CORS origins and Cloudflare API proxy hostnames.
-  The required Siteverify action defaults to `submit_review`; set the browser
-  widget's action to match. Use `--turnstile-expected-action` to override only
-  for an intentionally isolated environment.
+  The required Siteverify action is fixed to `submit_review` in both the browser
+  widget and backend verifier.
 - The Modal OIDC provider in the target AWS account.
 - An HTTPS endpoint verified to accept this repository's Rust `TranscriptionRequest` contract. It defaults to the `transcription_endpoint_url` Terraform variable, so the runner can resolve it from Terraform output or the deployed transcription-caller instead of requiring `--transcription-endpoint-url`.
 - An HTTPS Modal base URL whose `/moderation/` route accepts this repository's `ModerationRequest` contract. Pass it with `--modal-endpoint-url`, or let the runner resolve `modal_endpoint_url` from Terraform or the deployed moderation-caller.

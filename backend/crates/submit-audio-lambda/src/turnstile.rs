@@ -63,7 +63,7 @@ impl Siteverify {
         }
         let expected_action = expected_action.trim();
         if expected_action.is_empty() {
-            return Err("TURNSTILE_EXPECTED_ACTION must not be empty");
+            return Err("Turnstile expected action must not be empty");
         }
         let client = reqwest::Client::builder()
             .timeout(SITEVERIFY_TIMEOUT)

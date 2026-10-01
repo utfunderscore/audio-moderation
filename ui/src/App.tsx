@@ -42,8 +42,7 @@ type PageId = "audio" | "transcription" | "moderation"
 
 const DESKTOP_VIEWPORT_QUERY = "(min-width: 1024px)"
 const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY ?? ""
-const TURNSTILE_ACTION =
-  import.meta.env.VITE_TURNSTILE_ACTION || "submit_review"
+const TURNSTILE_ACTION = "submit_review"
 const FOCUSABLE_SELECTOR = [
   "a[href]",
   "button:not([disabled])",

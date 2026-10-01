@@ -83,12 +83,12 @@ that all eight function updates are complete.
 Terraform creates a Cloudflare Turnstile widget and writes its secret to an SSM
 SecureString. The secret is sensitive in plans but resides in local Terraform
 state; it never enters the Lambda environment or UI env files. SubmitReview's
-Lambda receives only the SSM **parameter name**, exact frontend hostname
-allowlist, and expected Siteverify action (default `submit_review`). The runner
-forwards `--turnstile-secret-parameter-name`, `--turnstile-allowed-hostnames`,
-and `--turnstile-expected-action` to Terraform. It requires Cloudflare credentials
+Lambda receives only the SSM **parameter name** and exact frontend hostname
+allowlist. The runner forwards `--turnstile-secret-parameter-name` and
+`--turnstile-allowed-hostnames` to Terraform. It requires Cloudflare credentials
 and an explicit hostname allowlist for full deployments, then copies the public
-sitekey/action to ignored UI env files after a successful apply. Deployed review
+sitekey to ignored UI env files after a successful apply. The browser widget and
+Lambda verifier both use the fixed `submit_review` action. Deployed review
 tests require a fresh real `TURNSTILE_TEST_TOKEN` from the invoking environment;
 see the [runbook](deployment-integration.md#turnstile-setup-and-deployed-review-tests).
 

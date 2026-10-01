@@ -82,17 +82,6 @@ variable "turnstile_allowed_hostnames" {
   }
 }
 
-variable "turnstile_expected_action" {
-  description = "Turnstile Siteverify action required for SubmitReview; use test only with isolated dummy-key integration environments"
-  type        = string
-  default     = "submit_review"
-
-  validation {
-    condition     = can(regex("^[A-Za-z0-9_-]{1,32}$", var.turnstile_expected_action))
-    error_message = "turnstile_expected_action must be a nonempty Turnstile action (1-32 letters, digits, underscores, or hyphens)."
-  }
-}
-
 variable "modal_proxy_token_id_parameter_name" {
   description = "Secure SSM parameter containing the Modal proxy token ID"
   type        = string
