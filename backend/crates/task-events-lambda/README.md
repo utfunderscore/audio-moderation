@@ -5,8 +5,8 @@
 `tests/deployed.rs` is ignored by default. Run it only through the root runner:
 
 ```sh
-AWS_PROFILE=admin ./deployment-integration.sh preflight task-events
-AWS_PROFILE=admin ./deployment-integration.sh test task-events
+AWS_PROFILE=admin ./scripts/test-deployed.sh preflight task-events
+AWS_PROFILE=admin ./scripts/test-deployed.sh test task-events
 ```
 
 The runner resolves Terraform's `pipeline_task_events_websocket_endpoint` into

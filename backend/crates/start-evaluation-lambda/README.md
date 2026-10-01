@@ -9,5 +9,5 @@ upload notification handled by `confirm-upload-lambda` dispatches the workflow.
 This Lambda cannot create or dispatch evaluations.
 
 For deployed coverage of the upload-to-dispatch boundary, run the
-`review-confirmation` suite through the root `deployment-integration.sh` runner.
-See `docs/deployment-integration.md` for prerequisites and approval rules.
+`review-confirmation` suite through the root `scripts/test-deployed.sh` runner.
+See `scripts/deployed-tests/README.md` for prerequisites and approval rules.

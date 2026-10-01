@@ -14,7 +14,7 @@
   cache in sync when changing queries/schema; offline compilation alone does
   not verify compatibility with a running database.
 - `tests/deployed.rs` targets are ignored by default. Run them through root
-  `deployment-integration.sh`, which resolves endpoints, secrets, and fixtures;
+  `scripts/test-deployed.sh`, which resolves endpoints, secrets, and fixtures;
   do not enable all ignored tests as a routine local verification step.
 
 ## Contracts and wiring
@@ -32,11 +32,11 @@
   persisted callback-attempt state. See root `docs/task-callback.md` before changing
   token handling or callback contracts.
 - Lambda Dockerfiles need repository-root build context: they copy `backend/`,
-  `proto/`, and `migrations/`. Use the root deployment runner for image publication.
+  `proto/`, and `migrations/`. Use `scripts/deploy.sh` for image publication.
 
 ## Deployed test selection
 
-- Follow root `docs/deployment-integration.md` and the root `AGENTS.md` deployment
+- Follow root `scripts/deployed-tests/README.md` and the root `AGENTS.md` deployment
   rules. Crate READMEs add details for start-evaluation and task-events tests.
 - `review-confirmation` verifies that an uploaded review creates one
   idempotent pipeline task and dispatches the expected Step Functions execution.

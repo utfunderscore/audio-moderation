@@ -24,27 +24,23 @@
 ## Deployment and deployed tests
 
 - Prefix **all** AWS CLI, Terraform, and deployment commands with `AWS_PROFILE=admin`.
-- Read `docs/deployment-integration.md` before remote operations; it defines
-  approval requirements, prerequisites, suite selection, and fixture cleanup.
+- Read `scripts/deployment/README.md` before deployment or
+  `scripts/deployed-tests/README.md` before remote tests; they define approval
+  requirements, prerequisites, suite selection, and fixture cleanup.
   AWS deployment requires explicit user approval; Modal modifications require
   explicit approval immediately before the command.
-- From the root, start with `AWS_PROFILE=admin ./deployment-integration.sh preflight`
-  (or `preflight <suite>` for focused testing). Then use the same prefix with
-  `deploy`, `test <suite>`, or `all <suite>`. `all` deploys all eight Lambdas even
-  for a narrow suite; use `test` for an existing deployment.
+- From the root, use `AWS_PROFILE=admin ./scripts/deploy.sh preflight`, then
+  `deploy`, or `AWS_PROFILE=admin ./scripts/test-deployed.sh preflight <suite>`,
+  then `test <suite>`. Both workflows automatically preflight their execution.
+  `deployment-integration.sh` is a legacy dispatcher; its `all` command still
+  deploys all eight Lambdas even for a narrow suite.
 - Use the runner rather than direct Terraform apply or ad hoc image publication.
   It coordinates all eight images under one immutable tag; never use `latest`.
   Terraform state is local: do not deploy concurrently from separate worktrees.
-- Full preflight checks three existing SSM `SecureString` parameters without
-  decrypting them; Terraform creates the fourth, Turnstile secret parameter from
-  its managed widget at deploy time. Preflight does not apply migrations, verify
-  schema objects, or contact model endpoints. Full deploy needs the current
-  database schema, Modal OIDC, Cloudflare credentials, an explicit Turnstile
-  frontend hostname allowlist, and compatible HTTPS endpoints.
-  `--modal-endpoint-url` is a base URL; moderation appends `/moderation/`.
-  Deployed review suites require a fresh real `TURNSTILE_TEST_TOKEN`; dummy
-  tokens do not work against the Terraform-created secret. Never print decrypted
-  secrets or test tokens. Terraform state contains the widget secret; never commit it.
+- Workflow-specific prerequisites and implementation instructions live in
+  `scripts/deployment/AGENTS.md` and `scripts/deployed-tests/AGENTS.md`.
+  Never print decrypted secrets or test tokens. Terraform state contains the
+  widget secret; never commit it.
 - `task-callback`, `transcription-caller`, and `moderation-caller` isolated suites
   are unsupported; do not bypass them with placeholder task tokens.
   `review-confirmation` tests upload-triggered dispatch but does not wait for
