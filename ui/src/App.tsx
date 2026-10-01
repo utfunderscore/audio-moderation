@@ -20,7 +20,6 @@ import { AudioProcessing } from "@/components/demo/stages/AudioProcessing"
 import { ModerationStage } from "@/components/demo/stages/ModerationStage"
 import { TranscriptionStage } from "@/components/demo/stages/TranscriptionStage"
 import { TurnstileWidget } from "@/components/demo/TurnstileWidget"
-import { Button } from "@/components/ui/button"
 import {
   Dialog,
   DialogContent,
@@ -429,20 +428,6 @@ export function App({ backend }: { backend: Backend }) {
                   </p>
                 ) : null}
                 <div className="mt-3 flex flex-col items-center gap-2">
-                  {TURNSTILE_SITE_KEY &&
-                  audio.file !== null &&
-                  !evaluation.running &&
-                  !evaluation.submitting &&
-                  pendingFile === null ? (
-                    <Button
-                      type="button"
-                      onClick={() => {
-                        if (audio.file !== null) requestSubmission(audio.file)
-                      }}
-                    >
-                      Verify and submit audio
-                    </Button>
-                  ) : null}
                   {evaluation.submitting ? (
                     <p className="text-xs text-muted-foreground" role="status">
                       Submitting audio…
