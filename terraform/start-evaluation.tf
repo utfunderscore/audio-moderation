@@ -1,3 +1,8 @@
+variable "start_evaluation_image_tag" {
+  description = "Immutable ECR image tag pushed before applying the start-evaluation Lambda configuration"
+  type        = string
+}
+
 resource "aws_ecr_repository" "start_evaluation" {
   name                 = "${local.name_prefix}-start-evaluation"
   image_tag_mutability = "IMMUTABLE"
@@ -139,4 +144,12 @@ resource "aws_lambda_permission" "start_evaluation_api_gateway" {
   function_name = aws_lambda_function.start_evaluation.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.public.execution_arn}/*/*"
+}
+
+output "start_evaluation_ecr_repository_url" {
+  value = aws_ecr_repository.start_evaluation.repository_url
+}
+
+output "start_evaluation_function_name" {
+  value = aws_lambda_function.start_evaluation.function_name
 }

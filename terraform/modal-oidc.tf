@@ -1,3 +1,14 @@
+variable "modal_workspace_id" {
+  description = "Modal workspace ID permitted to assume the stitched-audio reader role"
+  type        = string
+  default     = "ac-k4lbrkEynY351mickkxfRh"
+
+  validation {
+    condition     = can(regex("^ac-[A-Za-z0-9]+$", var.modal_workspace_id))
+    error_message = "modal_workspace_id must be a Modal workspace ID such as ac-12345abcd."
+  }
+}
+
 data "aws_iam_openid_connect_provider" "modal" {
   arn = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/oidc.modal.com"
 }
@@ -70,4 +81,9 @@ resource "aws_iam_role_policy" "modal_stitched_audio_reader" {
       },
     ]
   })
+}
+
+output "modal_stitched_audio_reader_role_arn" {
+  description = "Set as oidc_auth_role_arn on Modal's read-only CloudBucketMount"
+  value       = aws_iam_role.modal_stitched_audio_reader.arn
 }

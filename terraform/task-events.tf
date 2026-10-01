@@ -1,6 +1,19 @@
-# The public API accepts WebSocket connections without authentication because
-# clients receive event names only. The subscribe route consumes a one-use,
-# task-scoped ticket; its database invariant permits one task stream per socket.
+variable "task_events_image_tag" {
+  description = "Immutable image tag for the task-events Lambda"
+  type        = string
+}
+
+variable "task_events_domain_name" {
+  description = "Cloudflare-proxied hostname for the task-events WebSocket API"
+  type        = string
+  default     = "events-guard.utf.lol"
+}
+
+locals {
+  task_events_websocket_endpoint  = var.enable_cloudflare_proxy ? "wss://${var.task_events_domain_name}" : trimsuffix(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "/")
+  task_events_management_endpoint = var.enable_cloudflare_proxy ? "https://${var.task_events_domain_name}" : replace(trimsuffix(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "/"), "wss://", "https://")
+}
+
 resource "aws_ecr_repository" "task_events" {
   name                 = "${local.name_prefix}-task-events"
   image_tag_mutability = "IMMUTABLE"
@@ -63,6 +76,9 @@ resource "aws_cloudwatch_log_group" "task_events" {
   retention_in_days = 7
 }
 
+# The public API accepts WebSocket connections without authentication because
+# clients receive event names only. The subscribe route consumes a one-use,
+# task-scoped ticket; its database invariant permits one task stream per socket.
 resource "aws_apigatewayv2_api" "pipeline_task_events" {
   name                         = "${local.name_prefix}-pipeline-task-events"
   protocol_type                = "WEBSOCKET"
@@ -140,4 +156,67 @@ resource "aws_apigatewayv2_stage" "pipeline_task_events" {
     throttling_burst_limit = 10
     throttling_rate_limit  = 5
   }
+}
+
+resource "aws_apigatewayv2_domain_name" "task_events" {
+  count = var.enable_cloudflare_proxy ? 1 : 0
+
+  domain_name = var.task_events_domain_name
+
+  domain_name_configuration {
+    certificate_arn = aws_acm_certificate_validation.public_apis["task_events"].certificate_arn
+    endpoint_type   = "REGIONAL"
+    security_policy = "TLS_1_2"
+  }
+}
+
+resource "aws_apigatewayv2_api_mapping" "task_events" {
+  count = var.enable_cloudflare_proxy ? 1 : 0
+
+  api_id      = aws_apigatewayv2_api.pipeline_task_events.id
+  domain_name = aws_apigatewayv2_domain_name.task_events[0].id
+  stage       = aws_apigatewayv2_stage.pipeline_task_events.id
+}
+
+resource "cloudflare_dns_record" "task_events" {
+  count = var.enable_cloudflare_proxy ? 1 : 0
+
+  zone_id = data.cloudflare_zone.public[0].id
+  name    = var.task_events_domain_name
+  type    = "CNAME"
+  content = aws_apigatewayv2_domain_name.task_events[0].domain_name_configuration[0].target_domain_name
+  ttl     = 1
+  proxied = true
+  comment = "SocialGuard task-events WebSocket API"
+}
+
+# Lifecycle Lambdas publish event names directly through the WebSocket API's
+# management endpoint. Clients recover any missed delivery from PostgreSQL.
+resource "aws_iam_role_policy" "task_event_emission" {
+  for_each = {
+    audio_processing     = aws_iam_role.audio_processing.id
+    confirm_upload       = aws_iam_role.confirm_upload.id
+    task_callback        = aws_iam_role.task_callback.id
+    transcription_caller = aws_iam_role.transcription_caller.id
+    moderation_caller    = aws_iam_role.moderation_caller.id
+  }
+
+  name = "${local.name_prefix}-${replace(each.key, "_", "-")}-task-event-emission"
+  role = each.value
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "execute-api:ManageConnections"
+      Resource = "${aws_apigatewayv2_api.pipeline_task_events.execution_arn}/$default/POST/@connections/*"
+    }]
+  })
+}
+
+output "pipeline_task_events_websocket_endpoint" {
+  value = local.task_events_websocket_endpoint
+}
+
+output "task_events_function_name" {
+  value = aws_lambda_function.task_events.function_name
 }

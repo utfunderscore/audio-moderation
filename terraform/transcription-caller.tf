@@ -1,3 +1,14 @@
+variable "transcription_caller_image_tag" {
+  description = "Immutable ECR image tag pushed before applying the transcription-caller Lambda configuration"
+  type        = string
+}
+
+variable "transcription_endpoint_url" {
+  description = "Compatible external transcription API endpoint URL"
+  type        = string
+  default     = "https://utfunderscore-development--socialguard-transcription-serve-api.modal.run"
+}
+
 resource "aws_ecr_repository" "transcription_caller" {
   name                 = "${local.name_prefix}-transcription-caller"
   image_tag_mutability = "IMMUTABLE"
@@ -137,4 +148,16 @@ resource "aws_lambda_function" "transcription_caller" {
     aws_iam_role_policy.task_event_emission,
     aws_cloudwatch_log_group.transcription_caller,
   ]
+}
+
+output "transcription_caller_ecr_repository_url" {
+  value = aws_ecr_repository.transcription_caller.repository_url
+}
+
+output "transcription_caller_function_name" {
+  value = aws_lambda_function.transcription_caller.function_name
+}
+
+output "transcription_endpoint_url" {
+  value = var.transcription_endpoint_url
 }

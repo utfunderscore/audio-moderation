@@ -1,7 +1,18 @@
+# Shared Cloudflare zone and certificate validation for both APIs. Custom
+# domains, API mappings, and proxied DNS records live with the owning API.
+variable "enable_cloudflare_proxy" {
+  description = "Create API Gateway custom domains and proxy them through Cloudflare"
+  type        = bool
+  default     = false
+}
+
+variable "cloudflare_zone_name" {
+  description = "Cloudflare DNS zone that owns the public API hostnames"
+  type        = string
+  default     = "utf.lol"
+}
+
 locals {
-  public_api_endpoint             = var.enable_cloudflare_proxy ? "https://${var.public_api_domain_name}" : trimsuffix(aws_apigatewayv2_stage.default.invoke_url, "/")
-  task_events_websocket_endpoint  = var.enable_cloudflare_proxy ? "wss://${var.task_events_domain_name}" : trimsuffix(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "/")
-  task_events_management_endpoint = var.enable_cloudflare_proxy ? "https://${var.task_events_domain_name}" : replace(trimsuffix(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "/"), "wss://", "https://")
   cloudflare_api_domains = var.enable_cloudflare_proxy ? {
     public      = var.public_api_domain_name
     task_events = var.task_events_domain_name
@@ -56,68 +67,4 @@ resource "aws_acm_certificate_validation" "public_apis" {
   validation_record_fqdns = [try(one(aws_acm_certificate.public_apis[each.key].domain_validation_options).resource_record_name, "")]
 
   depends_on = [cloudflare_dns_record.public_api_certificate_validation]
-}
-
-resource "aws_apigatewayv2_domain_name" "public" {
-  count = var.enable_cloudflare_proxy ? 1 : 0
-
-  domain_name = var.public_api_domain_name
-
-  domain_name_configuration {
-    certificate_arn = aws_acm_certificate_validation.public_apis["public"].certificate_arn
-    endpoint_type   = "REGIONAL"
-    security_policy = "TLS_1_2"
-  }
-}
-
-resource "aws_apigatewayv2_api_mapping" "public" {
-  count = var.enable_cloudflare_proxy ? 1 : 0
-
-  api_id      = aws_apigatewayv2_api.public.id
-  domain_name = aws_apigatewayv2_domain_name.public[0].id
-  stage       = aws_apigatewayv2_stage.default.id
-}
-
-resource "aws_apigatewayv2_domain_name" "task_events" {
-  count = var.enable_cloudflare_proxy ? 1 : 0
-
-  domain_name = var.task_events_domain_name
-
-  domain_name_configuration {
-    certificate_arn = aws_acm_certificate_validation.public_apis["task_events"].certificate_arn
-    endpoint_type   = "REGIONAL"
-    security_policy = "TLS_1_2"
-  }
-}
-
-resource "aws_apigatewayv2_api_mapping" "task_events" {
-  count = var.enable_cloudflare_proxy ? 1 : 0
-
-  api_id      = aws_apigatewayv2_api.pipeline_task_events.id
-  domain_name = aws_apigatewayv2_domain_name.task_events[0].id
-  stage       = aws_apigatewayv2_stage.pipeline_task_events.id
-}
-
-resource "cloudflare_dns_record" "public_api" {
-  count = var.enable_cloudflare_proxy ? 1 : 0
-
-  zone_id = data.cloudflare_zone.public[0].id
-  name    = var.public_api_domain_name
-  type    = "CNAME"
-  content = aws_apigatewayv2_domain_name.public[0].domain_name_configuration[0].target_domain_name
-  ttl     = 1
-  proxied = true
-  comment = "SocialGuard public HTTP API"
-}
-
-resource "cloudflare_dns_record" "task_events" {
-  count = var.enable_cloudflare_proxy ? 1 : 0
-
-  zone_id = data.cloudflare_zone.public[0].id
-  name    = var.task_events_domain_name
-  type    = "CNAME"
-  content = aws_apigatewayv2_domain_name.task_events[0].domain_name_configuration[0].target_domain_name
-  ttl     = 1
-  proxied = true
-  comment = "SocialGuard task-events WebSocket API"
 }

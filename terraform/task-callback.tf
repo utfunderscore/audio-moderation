@@ -1,3 +1,8 @@
+variable "task_callback_image_tag" {
+  description = "Immutable ECR image tag pushed before applying the task-callback Lambda configuration"
+  type        = string
+}
+
 resource "aws_ecr_repository" "task_callback" {
   name                 = "${local.name_prefix}-task-callback"
   image_tag_mutability = "IMMUTABLE"
@@ -151,4 +156,17 @@ resource "aws_lambda_permission" "task_callback_api_gateway" {
   function_name = aws_lambda_function.task_callback.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.public.execution_arn}/$default/POST/callbacks/external-task"
+}
+
+output "task_callback_ecr_repository_url" {
+  value = aws_ecr_repository.task_callback.repository_url
+}
+
+output "task_callback_function_name" {
+  value = aws_lambda_function.task_callback.function_name
+}
+
+output "task_callback_url" {
+  description = "SigV4-protected endpoint the external transcription service must call back"
+  value       = "${local.public_api_endpoint}/callbacks/external-task"
 }

@@ -1,3 +1,9 @@
+variable "enable_test_resources" {
+  description = "Create deployed integration-test-only infrastructure"
+  type        = bool
+  default     = false
+}
+
 resource "aws_iam_role" "task_callback_test_state_machine" {
   count = var.enable_test_resources ? 1 : 0
 
@@ -81,4 +87,9 @@ resource "aws_sfn_state_machine" "task_callback_test" {
   })
 
   depends_on = [aws_iam_role_policy.task_callback_test_state_machine]
+}
+
+output "task_callback_test_state_machine_arn" {
+  description = "Test-only state machine used to supply a real callback task token"
+  value       = try(aws_sfn_state_machine.task_callback_test[0].arn, "")
 }

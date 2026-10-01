@@ -1,3 +1,8 @@
+variable "submit_audio_image_tag" {
+  description = "Immutable ECR image tag pushed before applying the Lambda configuration"
+  type        = string
+}
+
 resource "aws_ecr_repository" "submit_audio" {
   name                 = "${local.name_prefix}-submit-audio"
   image_tag_mutability = "IMMUTABLE"
@@ -170,4 +175,12 @@ resource "aws_lambda_permission" "submit_audio_api_gateway" {
   function_name = aws_lambda_function.submit_audio.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.public.execution_arn}/*/*"
+}
+
+output "submit_audio_ecr_repository_url" {
+  value = aws_ecr_repository.submit_audio.repository_url
+}
+
+output "submit_audio_function_name" {
+  value = aws_lambda_function.submit_audio.function_name
 }

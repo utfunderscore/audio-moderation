@@ -1,3 +1,13 @@
+variable "moderation_caller_image_tag" {
+  description = "Immutable ECR image tag pushed before applying the moderation-caller Lambda configuration"
+  type        = string
+}
+
+variable "modal_endpoint_url" {
+  description = "Base URL for the Modal moderation API"
+  type        = string
+}
+
 resource "aws_ecr_repository" "moderation_caller" {
   name                 = "${local.name_prefix}-moderation-caller"
   image_tag_mutability = "IMMUTABLE"
@@ -137,4 +147,16 @@ resource "aws_lambda_function" "moderation_caller" {
     aws_iam_role_policy.task_event_emission,
     aws_cloudwatch_log_group.moderation_caller,
   ]
+}
+
+output "moderation_caller_ecr_repository_url" {
+  value = aws_ecr_repository.moderation_caller.repository_url
+}
+
+output "moderation_caller_function_name" {
+  value = aws_lambda_function.moderation_caller.function_name
+}
+
+output "modal_endpoint_url" {
+  value = var.modal_endpoint_url
 }

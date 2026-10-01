@@ -1,3 +1,8 @@
+variable "confirm_upload_image_tag" {
+  description = "Immutable ECR image tag pushed before applying the Lambda configuration"
+  type        = string
+}
+
 resource "aws_ecr_repository" "confirm_upload" {
   name                 = "${local.name_prefix}-confirm-upload"
   image_tag_mutability = "IMMUTABLE"
@@ -173,4 +178,12 @@ resource "aws_s3_bucket_notification" "confirm_upload" {
   }
 
   depends_on = [aws_lambda_permission.confirm_upload_s3]
+}
+
+output "confirm_upload_ecr_repository_url" {
+  value = aws_ecr_repository.confirm_upload.repository_url
+}
+
+output "confirm_upload_function_name" {
+  value = aws_lambda_function.confirm_upload.function_name
 }
