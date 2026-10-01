@@ -83,6 +83,79 @@ async fn creates_ordered_inputs_and_replays_by_tenant_idempotency_key() {
 }
 
 #[tokio::test]
+async fn deletes_only_the_exact_undispatched_fixture_and_cascades_step_rows() {
+    let database = TestDatabase::start().await;
+    let store = PipelineTaskStore::new(database.pool.clone());
+    let task = store
+        .create_or_get(NewPipelineTask {
+            tenant_id: "tenant-a",
+            idempotency_key: "audio-conversion-fixture",
+            caller_reference: None,
+            audio_s3_uris: &["s3://uploads/audio.wav".to_owned()],
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        !store
+            .delete_fixture(task.task_id, "tenant-b", "audio-conversion-fixture")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .delete_fixture(task.task_id, "tenant-a", "wrong-key")
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE pipeline_tasks SET execution_arn = $1 WHERE task_id = $2")
+        .bind("arn:aws:states:eu-west-2:123456789012:execution:test:fixture")
+        .bind(task.task_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    assert!(
+        !store
+            .delete_fixture(task.task_id, "tenant-a", "audio-conversion-fixture")
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE pipeline_tasks SET execution_arn = NULL WHERE task_id = $1")
+        .bind(task.task_id)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+    assert!(
+        store
+            .delete_fixture(task.task_id, "tenant-a", "audio-conversion-fixture")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !store
+            .delete_fixture(task.task_id, "tenant-a", "audio-conversion-fixture")
+            .await
+            .unwrap()
+    );
+
+    for table in [
+        "pipeline_tasks",
+        "pipeline_task_inputs",
+        "audio_processing_tasks",
+        "transcription_tasks",
+        "moderation_tasks",
+    ] {
+        let count: i64 =
+            sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table} WHERE task_id = $1"))
+                .bind(task.task_id)
+                .fetch_one(&database.pool)
+                .await
+                .unwrap();
+        assert_eq!(count, 0, "{table} must be removed");
+    }
+}
+
+#[tokio::test]
 async fn records_an_asr_task_id_once_and_allows_identical_retries() {
     let database = TestDatabase::start().await;
     let store = PipelineTaskStore::new(database.pool.clone());

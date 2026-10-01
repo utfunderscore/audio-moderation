@@ -86,6 +86,9 @@ pub enum PipelineTaskError {
     #[error("failed to create review and its pipeline task")]
     CreateReview(#[source] sqlx::Error),
 
+    #[error("failed to delete pipeline task fixture")]
+    DeleteFixture(#[source] sqlx::Error),
+
     #[error("review {review_job_id} is not linked to its expected pipeline task")]
     ReviewTaskConflict { review_job_id: i32 },
 }
@@ -674,6 +677,30 @@ impl PipelineTaskStore {
             audio_s3_uris,
             created: persisted.created,
         })
+    }
+
+    /// Deletes only an unlinked, undispatched task with the exact fixture identity.
+    /// Dependent step, input, and event rows are removed by database cascades.
+    pub async fn delete_fixture(
+        &self,
+        task_id: i32,
+        tenant_id: &str,
+        idempotency_key: &str,
+    ) -> Result<bool, PipelineTaskError> {
+        let result = sqlx::query(
+            r#"
+                DELETE FROM pipeline_tasks
+                WHERE task_id = $1 AND tenant_id = $2 AND idempotency_key = $3
+                    AND review_job_id IS NULL AND execution_arn IS NULL
+            "#,
+        )
+        .bind(task_id)
+        .bind(tenant_id)
+        .bind(idempotency_key)
+        .execute(&self.pool)
+        .await
+        .map_err(PipelineTaskError::DeleteFixture)?;
+        Ok(result.rows_affected() == 1)
     }
 
     /// Atomically creates (or replays) a review and the task it exclusively
