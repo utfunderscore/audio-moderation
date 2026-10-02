@@ -352,7 +352,8 @@ describe("sample job", () => {
     const row = screen.getByRole("row", {
       name: "Open job sample-job: sample-1.mp3",
     })
-    expect(within(row).getByText("Sample")).toBeDefined()
+    // The sample badge and its Submitted value both read "Sample".
+    expect(within(row).getAllByText("Sample")).toHaveLength(2)
     expect(within(row).getByText("Example")).toBeDefined()
     fireEvent.click(row)
 
