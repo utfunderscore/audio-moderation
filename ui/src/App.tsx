@@ -458,7 +458,7 @@ export function App({ backend }: { backend: Backend }) {
                     <DialogTitle>Verify before uploading</DialogTitle>
                     <DialogDescription>
                       Complete the security check to submit{" "}
-                      <span className="break-all">{pendingFile?.name}</span>{" "}
+                      <span className="break-words">{pendingFile?.name}</span>{" "}
                       automatically.
                     </DialogDescription>
                   </DialogHeader>
@@ -569,6 +569,7 @@ export function App({ backend }: { backend: Backend }) {
                       <TranscriptionStage
                         state={state.stages.transcription}
                         transcript={transcript}
+                        loading={evaluation.resultLoading}
                       />
                     </StagePage>
                   ) : null}

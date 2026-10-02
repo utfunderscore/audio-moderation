@@ -88,7 +88,7 @@ export function StagePage({
       ) : null}
 
       <div className="flex flex-col gap-3">
-        <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="flex min-h-8 min-w-0 items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-3">
             <span
               aria-hidden

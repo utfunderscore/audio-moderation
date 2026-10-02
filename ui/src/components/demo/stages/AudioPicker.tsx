@@ -1,5 +1,4 @@
 import {
-  Clipboard,
   InfoCircle,
   MusicNote01,
   UploadCloud02,
@@ -32,11 +31,11 @@ export function AudioPicker({
   audio,
   disabled = false,
   onSelected,
-  title = "Drop or paste audio here",
+  title = "Drop audio here",
   description = "MP3, WAV, M4A, AAC, OGG, WebM • 1 audio file",
 }: AudioPickerProps) {
   const [dragging, setDragging] = useState(false)
-  const [clipboardError, setClipboardError] = useState<string | null>(null)
+  const [selectionError, setSelectionError] = useState<string | null>(null)
   const [loadingSample, setLoadingSample] = useState<AudioSample | null>(null)
   const sampleRequest = useRef<AbortController | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -52,7 +51,7 @@ export function AudioPicker({
     const request = new AbortController()
     sampleRequest.current = request
     setLoadingSample(sample)
-    setClipboardError(null)
+    setSelectionError(null)
     try {
       const file = await getSampleAudio(sample, request.signal)
       if (request.signal.aborted) return
@@ -60,7 +59,7 @@ export function AudioPicker({
       onSelected?.(file)
     } catch (error) {
       if (!request.signal.aborted) {
-        setClipboardError(
+        setSelectionError(
           error instanceof Error ? error.message : "Unable to load sample audio"
         )
       }
@@ -72,7 +71,7 @@ export function AudioPicker({
 
   const selectFile = (file: File) => {
     if (selectionDisabled) return
-    setClipboardError(null)
+    setSelectionError(null)
     audio.selectFile(file)
     onSelected?.(file)
   }
@@ -83,34 +82,6 @@ export function AudioPicker({
     if (selectionDisabled) return
     const file = event.dataTransfer.files?.[0]
     if (file) selectFile(file)
-  }
-
-  const pasteFromClipboard = async () => {
-    if (selectionDisabled) return
-
-    try {
-      if (!navigator.clipboard?.read) {
-        throw new Error("Clipboard audio is not supported in this browser")
-      }
-
-      const clipboardItems = await navigator.clipboard.read()
-      for (const item of clipboardItems) {
-        const type = item.types.find((clipboardType) =>
-          clipboardType.startsWith("audio/")
-        )
-        if (type === undefined) continue
-
-        const audioBlob = await item.getType(type)
-        selectFile(new File([audioBlob], "pasted-audio", { type }))
-        return
-      }
-
-      throw new Error("No audio file found on the clipboard")
-    } catch (error) {
-      setClipboardError(
-        error instanceof Error ? error.message : "Unable to paste audio"
-      )
-    }
   }
 
   return (
@@ -147,18 +118,6 @@ export function AudioPicker({
               <span className="relative top-px flex items-center gap-1">
                 <UploadCloud02 aria-hidden />
                 Choose audio
-              </span>
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={selectionDisabled}
-              onClick={() => void pasteFromClipboard()}
-            >
-              <span className="relative top-px flex items-center gap-1">
-                <Clipboard aria-hidden />
-                Paste from clipboard
               </span>
             </Button>
           </div>
@@ -218,9 +177,9 @@ export function AudioPicker({
           </TooltipContent>
         </Tooltip>
       </div>
-      {clipboardError !== null ? (
+      {selectionError !== null ? (
         <p className="text-center text-xs text-destructive" role="alert">
-          {clipboardError}
+          {selectionError}
         </p>
       ) : null}
     </div>

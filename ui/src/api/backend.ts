@@ -15,7 +15,7 @@ import type {
  * at the composition root (`src/main.tsx`) to connect the UI.
  *
  * `subscribeTaskEvents` carries event names only, so `getEvaluationResult`
- * supplies the transcript and moderation scores once a run finishes. Because
+ * supplies persisted artifacts as their stages complete. Because
  * the server has no list endpoint, terminal snapshots are also recorded in the
  * browser-local history through this seam.
  */
@@ -29,7 +29,7 @@ export interface Backend {
   /** Restore current status and stage timestamps for a job submitted by this tab. */
   resumeEvaluation(evaluationId: string): Promise<StartedEvaluation>
 
-  /** Persisted transcript and scores for a finished evaluation, if any. */
+  /** Currently available persisted transcript and scores, including partial results. */
   getEvaluationResult(evaluationId: string): Promise<EvaluationResult | null>
 
   /** Audio for a job opened from the history list. */

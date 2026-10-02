@@ -1,8 +1,8 @@
-import { Clock } from "@untitledui/icons"
 import { cn } from "cn"
-import type { ReactNode } from "react"
+import { type ReactNode, useState } from "react"
 import { ElapsedDuration } from "@/components/demo/ElapsedDuration"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   type AudioJobDisplayStatus,
   type AudioJobStatus,
@@ -36,6 +36,7 @@ const DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
 })
 
 const DESKTOP_VIEWPORT_QUERY = "(min-width: 1024px)"
+const PAGE_SIZE = 10
 
 function formatSubmitted(timestamp: number) {
   const date = new Date(timestamp)
@@ -216,6 +217,7 @@ export function JobHistory({
   onSelectJob: (job: AudioProcessingJob) => void
 }) {
   const desktop = useMediaQuery(DESKTOP_VIEWPORT_QUERY)
+  const [requestedPage, setPage] = useState(1)
   const current: Job | null =
     currentJob === null
       ? null
@@ -255,6 +257,11 @@ export function JobHistory({
       onOpen: () => onSelectJob(job),
     })),
   ]
+  const pageCount = Math.max(1, Math.ceil(displayJobs.length / PAGE_SIZE))
+  const page = Math.min(requestedPage, pageCount)
+  if (page !== requestedPage) setPage(page)
+  const pageStart = (page - 1) * PAGE_SIZE
+  const visibleJobs = displayJobs.slice(pageStart, pageStart + PAGE_SIZE)
   const showLoading = loading && previousJobs.length === 0
   const showEmpty = !loading && error === null && displayJobs.length === 0
 
@@ -265,10 +272,6 @@ export function JobHistory({
           <h2 id="jobs-heading" className="text-lg font-semibold">
             Recent jobs
           </h2>
-        </div>
-        <div className="hidden items-center gap-1.5 text-xs text-muted-foreground sm:flex">
-          <Clock aria-hidden className="size-3.5" />
-          Updated just now
         </div>
       </div>
 
@@ -295,7 +298,7 @@ export function JobHistory({
               </tr>
             </thead>
             <tbody className="divide-y">
-              {displayJobs.map((job) => (
+              {visibleJobs.map((job) => (
                 <JobRow key={job.id} job={job} />
               ))}
               {showLoading ? (
@@ -333,7 +336,7 @@ export function JobHistory({
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          {displayJobs.map((job) => (
+          {visibleJobs.map((job) => (
             <MobileJobItem key={job.id} job={job} />
           ))}
           {showLoading ? (
@@ -353,6 +356,38 @@ export function JobHistory({
           ) : null}
         </div>
       )}
+      {displayJobs.length > 0 ? (
+        <nav
+          aria-label="Job history pagination"
+          className="mt-4 flex flex-wrap items-center justify-between gap-3"
+        >
+          <p className="text-xs text-muted-foreground" role="status">
+            Showing {pageStart + 1}–{pageStart + visibleJobs.length} of{" "}
+            {displayJobs.length} jobs
+          </p>
+          <div className="flex items-center gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={page === 1}
+              onClick={() => setPage(page - 1)}
+            >
+              Previous
+            </Button>
+            <span className="text-xs text-muted-foreground">
+              Page {page} of {pageCount}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={page === pageCount}
+              onClick={() => setPage(page + 1)}
+            >
+              Next
+            </Button>
+          </div>
+        </nav>
+      ) : null}
     </section>
   )
 }

@@ -15,8 +15,9 @@ import {
 
 export interface EvaluationRun {
   state: PipelineState
-  /** Transcript and scores fetched once the run reaches a terminal event. */
+  /** Persisted artifacts fetched as each stage completes and at termination. */
   result: EvaluationResult | null
+  resultLoading: boolean
   submitting: boolean
   submissionError: string | null
   start: (input: StartEvaluationInput) => void
@@ -38,6 +39,7 @@ export function useEvaluation(backend: Backend): EvaluationRun {
     createInitialState
   )
   const [result, setResult] = useState<EvaluationResult | null>(null)
+  const [resultLoading, setResultLoading] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [submissionError, setSubmissionError] = useState<string | null>(null)
   const submittingRef = useRef(false)
@@ -56,6 +58,7 @@ export function useEvaluation(backend: Backend): EvaluationRun {
     setSubmissionError(null)
     teardown()
     setResult(null)
+    setResultLoading(false)
     dispatch({ type: "reset" })
   }, [teardown])
 
@@ -100,6 +103,7 @@ export function useEvaluation(backend: Backend): EvaluationRun {
       const token = runTokenRef.current
       teardown()
       setResult(null)
+      setResultLoading(false)
       dispatch({ type: "reset" })
       dispatch({ type: "connection", state: "connecting" })
 
@@ -130,6 +134,7 @@ export function useEvaluation(backend: Backend): EvaluationRun {
       const token = runTokenRef.current
       teardown()
       setResult(null)
+      setResultLoading(false)
       void backend
         .resumeEvaluation(input.evaluationId)
         .then((started) => follow(started, token, input.startedAt))
@@ -143,32 +148,50 @@ export function useEvaluation(backend: Backend): EvaluationRun {
 
   useEffect(() => teardown, [teardown])
 
-  // The event stream carries names only; read the persisted artifacts once the
-  // workflow settles.
+  const transcriptionComplete = state.stages.transcription === "complete"
+  const moderationComplete = state.stages.moderation === "complete"
+
+  // The event stream carries names only. Read each artifact as soon as its
+  // stage completes, including when resuming an in-progress evaluation.
   useEffect(() => {
     const evaluationId = state.evaluationId
     const outcome = state.outcome
-    if (outcome === null || evaluationId === null) return undefined
+    if (
+      evaluationId === null ||
+      (!transcriptionComplete && !moderationComplete && outcome === null)
+    )
+      return undefined
 
     let cancelled = false
+    setResultLoading(true)
     void backend
       .getEvaluationResult(evaluationId)
       .then((next) => {
         if (cancelled) return
-        setResult(next)
+        if (next !== null) setResult(next)
       })
       .catch(() => {
         // A missing result is rendered as "No scores/transcript returned".
+      })
+      .finally(() => {
+        if (!cancelled) setResultLoading(false)
       })
 
     return () => {
       cancelled = true
     }
-  }, [backend, state.evaluationId, state.outcome])
+  }, [
+    backend,
+    state.evaluationId,
+    state.outcome,
+    transcriptionComplete,
+    moderationComplete,
+  ])
 
   return {
     state,
     result,
+    resultLoading,
     submitting,
     submissionError,
     start,
