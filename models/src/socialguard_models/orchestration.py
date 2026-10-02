@@ -18,7 +18,7 @@ from socialguard_models.modal_app import app, cpu_image, runtime_secret
 from socialguard_models.model_job import ModelJob, SubmittedModel
 
 logger = logging.getLogger(__name__)
-WORKER_TIMEOUT_SECONDS = 660
+WORKER_TIMEOUT_SECONDS = 180
 MAX_CONCURRENT_TASKS = 32
 PROCESS_TIMEOUT_SECONDS = WORKER_TIMEOUT_SECONDS + CALLBACK_MAX_DURATION_SECONDS
 

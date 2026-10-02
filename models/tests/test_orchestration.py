@@ -34,6 +34,10 @@ def task() -> TranscriptionTask:
     )
 
 
+def test_model_worker_timeout_is_three_minutes() -> None:
+    assert pipeline.WORKER_TIMEOUT_SECONDS == 180
+
+
 @pytest.fixture
 def services(monkeypatch: pytest.MonkeyPatch) -> Mock:
     services = Mock()
@@ -49,6 +53,19 @@ def services(monkeypatch: pytest.MonkeyPatch) -> Mock:
     monkeypatch.setattr(pipeline, "monotonic", Mock(side_effect=[100, 102]))
     monkeypatch.setattr(pipeline, "WORKER_TIMEOUT_SECONDS", 42)
     return services
+
+
+def test_transcription_times_out_and_cancels_within_three_minute_budget(
+    task: TranscriptionTask, services: Mock, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline, "WORKER_TIMEOUT_SECONDS", 180)
+    services.worker.get.aio.side_effect = TimeoutError("worker timed out")
+
+    assert asyncio.run(run_model(TranscriptionJob(task))) == FailedOutcome(
+        cause="TimeoutError",
+    )
+    services.worker.get.aio.assert_awaited_once_with(timeout=178)
+    services.worker.cancel.aio.assert_awaited_once_with()
 
 
 def test_transcription_resolves_s3_and_waits_for_selected_worker(

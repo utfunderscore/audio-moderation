@@ -105,6 +105,10 @@ model. The shared pipeline waits for the result within a deadline that includes
 preparation and submission time. Failures produce a shared failed outcome and
 trigger best-effort cancellation if a worker was submitted.
 
+The shared model-work deadline is three minutes, including GPU startup and result
+waiting, for both transcription and moderation. Callback delivery has a separate
+retry allowance, so the UI may receive the failure shortly after that deadline.
+
 The function logs success or failure without transcript text, task tokens, or
 exception messages. It invokes the callback Lambda named by the required
 `TASK_CALLBACK_FUNCTION_NAME` environment variable, wrapping the callback body
