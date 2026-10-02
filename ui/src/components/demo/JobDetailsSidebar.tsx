@@ -11,6 +11,7 @@ import {
 
 import { Button } from "@/components/ui/button"
 import type { AudioProcessingJob } from "@/domain/jobs"
+import { isSampleJob } from "@/domain/sample-job"
 import { useMediaQuery } from "@/hooks/useMediaQuery"
 
 const DEFAULT_SIDEBAR_WIDTH = 448
@@ -246,7 +247,11 @@ export function JobDetailsSidebar({
         <div className="flex h-14 shrink-0 items-center justify-between border-b px-4">
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold">
-              {selectedJob === null ? "Current job" : `Job #${selectedJob.id}`}
+              {selectedJob === null
+                ? "Current job"
+                : isSampleJob(selectedJob)
+                  ? "Sample job · example result"
+                  : `Job #${selectedJob.id}`}
             </h2>
             <p className="truncate text-xs text-muted-foreground">
               {selectedJob?.fileName ?? audioFileName ?? "No job selected"}

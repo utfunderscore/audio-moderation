@@ -7,6 +7,7 @@ import { StagePage } from "@/components/demo/StagePage"
 import { ModerationStage } from "@/components/demo/stages/ModerationStage"
 import { TranscriptionStage } from "@/components/demo/stages/TranscriptionStage"
 import type { AudioProcessingJob } from "@/domain/jobs"
+import { isSampleJob } from "@/domain/sample-job"
 
 export function HistoricalJobDetails({
   backend,
@@ -17,6 +18,7 @@ export function HistoricalJobDetails({
 }) {
   const complete = job.status === "complete"
   const processing = job.status === "processing"
+  const sample = isSampleJob(job)
 
   return (
     <PipelineTimeline>
@@ -28,12 +30,21 @@ export function HistoricalJobDetails({
         isLast={!complete}
       >
         {complete ? (
-          <JobAudio
-            key={job.id}
-            backend={backend}
-            jobId={job.id}
-            fileName={job.fileName}
-          />
+          <div className="flex flex-col gap-3">
+            <JobAudio
+              key={job.id}
+              backend={backend}
+              jobId={job.id}
+              fileName={job.fileName}
+              sample={sample}
+            />
+            {sample ? (
+              <p className="text-xs text-muted-foreground">
+                Example result from the bundled abusive chat audio. Your own
+                results may vary.
+              </p>
+            ) : null}
+          </div>
         ) : processing ? (
           <p className="rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
             This evaluation is still processing.

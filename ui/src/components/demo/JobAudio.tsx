@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react"
 
 import type { Backend } from "@/api/backend"
+import { getSampleAudio } from "@/api/sample-audio"
 import { AudioPlayer } from "@/components/demo/stages/AudioPlayer"
 import { Button } from "@/components/ui/button"
 import { useAudioInput } from "@/hooks/useAudioInput"
@@ -12,10 +13,12 @@ export function JobAudio({
   backend,
   jobId,
   fileName,
+  sample = false,
 }: {
   backend: Backend
   jobId: string
   fileName: string
+  sample?: boolean
 }) {
   const audio = useAudioInput()
   const { selectFile } = audio
@@ -25,9 +28,13 @@ export function JobAudio({
   // biome-ignore lint/correctness/useExhaustiveDependencies: Retrying increments attempt to deliberately restart this preload effect.
   useEffect(() => {
     let cancelled = false
+    const controller = new AbortController()
 
-    void backend
-      .getJobAudio(jobId)
+    void (
+      sample
+        ? getSampleAudio("abusive", controller.signal)
+        : backend.getJobAudio(jobId)
+    )
       .then((blob) => {
         if (cancelled) return
         selectFile(
@@ -41,8 +48,9 @@ export function JobAudio({
 
     return () => {
       cancelled = true
+      controller.abort()
     }
-  }, [attempt, backend, fileName, jobId, selectFile])
+  }, [attempt, backend, fileName, jobId, sample, selectFile])
 
   return (
     <>

@@ -10,6 +10,7 @@ import {
   jobDisplayStatus,
 } from "@/domain/jobs"
 import type { ModerationScores } from "@/domain/moderation"
+import { isSampleJob } from "@/domain/sample-job"
 import { useMediaQuery } from "@/hooks/useMediaQuery"
 
 interface Job {
@@ -18,6 +19,7 @@ interface Job {
   submitted: string
   duration: ReactNode
   status: AudioJobDisplayStatus
+  sample: boolean
   current: boolean
   selected: boolean
   onOpen: () => void
@@ -116,6 +118,11 @@ function JobRow({ job }: { job: Job }) {
               Current
             </Badge>
           ) : null}
+          {job.sample ? (
+            <Badge variant="secondary" className="shrink-0 rounded-full">
+              Sample
+            </Badge>
+          ) : null}
         </div>
       </td>
       <td className="px-4 py-2.5 text-xs whitespace-nowrap text-muted-foreground">
@@ -125,7 +132,7 @@ function JobRow({ job }: { job: Job }) {
         {job.duration}
       </td>
       <td className="px-4 py-2.5 text-xs whitespace-nowrap text-muted-foreground">
-        #{job.id}
+        {job.sample ? "Example" : `#${job.id}`}
       </td>
       <td className="px-4 py-2.5">
         <StatusBadge status={job.status} />
@@ -155,6 +162,11 @@ function MobileJobItem({ job }: { job: Job }) {
                 Current
               </Badge>
             ) : null}
+            {job.sample ? (
+              <Badge variant="secondary" className="shrink-0 rounded-full">
+                Sample
+              </Badge>
+            ) : null}
           </div>
           <p className="mt-1 text-xs text-muted-foreground">{job.submitted}</p>
         </div>
@@ -168,7 +180,9 @@ function MobileJobItem({ job }: { job: Job }) {
         </div>
         <div className="min-w-0 pl-3">
           <p className="text-muted-foreground">Job</p>
-          <p className="mt-1 font-mono break-all">#{job.id}</p>
+          <p className="mt-1 font-mono break-all">
+            {job.sample ? "Example" : `#${job.id}`}
+          </p>
         </div>
       </div>
     </button>
@@ -217,6 +231,7 @@ export function JobHistory({
             />
           ),
           status: jobDisplayStatus(currentJob.status, currentJob.scores),
+          sample: false,
           current: true,
           selected: selectedJobId === null,
           onOpen: onOpenCurrent,
@@ -228,10 +243,13 @@ export function JobHistory({
     ...previousJobs.map((job) => ({
       id: job.id,
       fileName: job.fileName,
-      submitted: formatSubmitted(job.submittedAt),
+      submitted: isSampleJob(job)
+        ? "Sample"
+        : formatSubmitted(job.submittedAt),
       duration:
         job.durationMs === null ? "—" : formatStoredDuration(job.durationMs),
       status: jobDisplayStatus(job.status, job.scores),
+      sample: isSampleJob(job),
       current: false,
       selected: selectedJobId === job.id,
       onOpen: () => onSelectJob(job),

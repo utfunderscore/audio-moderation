@@ -6,7 +6,7 @@ umask 077
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 UI_ENV_DIR="${UI_ENV_DIR:-${ROOT_DIR}/ui}"
-TERRAFORM_DIR="${ROOT_DIR}/terraform"
+TERRAFORM_DIR="${TERRAFORM_DIR:-${ROOT_DIR}/terraform}"
 
 sitekey="$(AWS_PROFILE=admin terraform -chdir="${TERRAFORM_DIR}" output -raw turnstile_sitekey)"
 api_endpoint="$(AWS_PROFILE=admin terraform -chdir="${TERRAFORM_DIR}" output -raw api_endpoint)"

@@ -32,6 +32,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import type { TerminalEvent } from "@/domain/events"
 import { type AudioProcessingJob, DEMO_USER_ID } from "@/domain/jobs"
 import type { PipelineState } from "@/domain/reducer"
+import { SAMPLE_JOB } from "@/domain/sample-job"
 import type { StageId, StageState } from "@/domain/stages"
 import { useAudioInput } from "@/hooks/useAudioInput"
 import { useEvaluation } from "@/hooks/useEvaluation"
@@ -236,7 +237,9 @@ export function App({ backend }: { backend: Backend }) {
   const selectedJob =
     selectedJobId === null
       ? null
-      : (previousJobs.find((job) => job.id === selectedJobId) ?? null)
+      : ([...previousJobs, SAMPLE_JOB].find(
+          (job) => job.id === selectedJobId
+        ) ?? null)
   const sidebarVisible =
     (currentJobSelected && (evaluation.hasRun || evaluation.submitting)) ||
     selectedJob !== null
@@ -472,7 +475,7 @@ export function App({ backend }: { backend: Backend }) {
 
               <JobHistory
                 currentJob={currentJob}
-                jobs={previousJobs}
+                jobs={[...previousJobs, SAMPLE_JOB]}
                 loading={jobsLoading}
                 error={jobsError}
                 selectedJobId={currentJobSelected ? null : selectedJobId}

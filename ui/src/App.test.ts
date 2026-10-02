@@ -104,6 +104,7 @@ beforeEach(() => {
     })
   )
   Element.prototype.scrollTo = vi.fn()
+  window.scrollTo = vi.fn()
 })
 
 afterEach(() => {
@@ -333,5 +334,98 @@ describe("in-progress job after reload", () => {
     await within(panel).findByRole("button", { name: "Play" })
     cleanup()
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:restored-audio")
+  })
+})
+
+describe("sample job", () => {
+  it("shows the abusive chat result and bundled audio to a new user", async () => {
+    const backend = reloadedBackend()
+    backend.listJobs.mockResolvedValue([])
+    const fetchSample = vi.fn().mockResolvedValue({
+      ok: true,
+      blob: () =>
+        Promise.resolve(new Blob(["sample audio"], { type: "audio/mpeg" })),
+    })
+    vi.stubGlobal("fetch", fetchSample)
+    render(createElement(App, { backend }), { wrapper: ThemeProvider })
+
+    const row = screen.getByRole("row", {
+      name: "Open job sample-job: sample-1.mp3",
+    })
+    expect(within(row).getByText("Sample")).toBeDefined()
+    expect(within(row).getByText("Example")).toBeDefined()
+    fireEvent.click(row)
+
+    const panel = screen.getByRole("complementary")
+    expect(
+      await within(panel).findByRole("button", { name: "Play" })
+    ).toBeDefined()
+    expect(fetchSample).toHaveBeenCalledWith(
+      "/samples/sample-1.mp3",
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    )
+    expect(within(panel).getByText(/Fucking watching/)).toBeDefined()
+    expect(within(panel).getByText("61 words")).toBeDefined()
+    expect(within(panel).getByText("Harassment or abuse")).toBeDefined()
+    expect(within(panel).getByText("82%")).toBeDefined()
+    expect(backend.getJobAudio).not.toHaveBeenCalled()
+    expect(backend.resumeEvaluation).not.toHaveBeenCalled()
+    expect(backend.startEvaluation).not.toHaveBeenCalled()
+  })
+
+  it("keeps the example visible alongside jobs and when history fails", async () => {
+    const backend = reloadedBackend()
+    backend.listJobs.mockResolvedValueOnce([
+      {
+        id: "real-job",
+        userId: DEMO_USER_ID,
+        fileName: "recording.wav",
+        submittedAt: Date.now(),
+        durationMs: 8_000,
+        status: "complete",
+      },
+    ])
+    render(createElement(App, { backend }), { wrapper: ThemeProvider })
+    expect(await screen.findByText("recording.wav")).toBeDefined()
+    expect(screen.getByText("sample-1.mp3")).toBeDefined()
+
+    cleanup()
+    backend.listJobs.mockRejectedValue(new Error("History unavailable"))
+    render(createElement(App, { backend }), { wrapper: ThemeProvider })
+    expect(await screen.findByText("History unavailable")).toBeDefined()
+    expect(screen.getByText("sample-1.mp3")).toBeDefined()
+  })
+
+  it("opens the sample from the mobile jobs list", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: query === "(prefers-reduced-motion: reduce)",
+        media: query,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      }))
+    )
+    const backend = reloadedBackend()
+    backend.listJobs.mockResolvedValue([])
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        blob: () =>
+          Promise.resolve(new Blob(["sample"], { type: "audio/mpeg" })),
+      })
+    )
+    render(createElement(App, { backend }), { wrapper: ThemeProvider })
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Open job sample-job: sample-1.mp3",
+      })
+    )
+    const panel = screen.getByRole("dialog", { name: "Job details" })
+    expect(within(panel).getByText("82%")).toBeDefined()
+    expect(
+      await within(panel).findByRole("button", { name: "Play" })
+    ).toBeDefined()
   })
 })
