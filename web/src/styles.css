@@ -1,0 +1,45 @@
+@layer ui-sdk;
+
+@import "@ui-sdk/core/web.css";
+@import "allo-font/allo.css";
+
+@font-face {
+  font-family: "Stack Sans Notch";
+  src: url("/fonts/StackSansNotch-SemiBold-latin-v5.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: optional;
+}
+
+:root {
+  --font-sans: "Allo", system-ui, sans-serif;
+  --font-socialguard: "Stack Sans Notch", sans-serif;
+  --bg: #0b0b0d;
+  --surface: #1a1a1e;
+  --surface-hover: rgb(255 255 255 / 0.08);
+  --fg: #f4f4f5;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.font-socialguard {
+  font-family: var(--font-socialguard);
+}
+
+.dot-ripple {
+  place-self: stretch;
+  min-height: clamp(34rem, 72vh, 46rem);
+  background-color: #2e2e2e;
+  background-image: var(--dot-ripple, none);
+  mask-repeat: no-repeat;
+}
