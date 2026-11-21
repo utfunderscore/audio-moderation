@@ -66,5 +66,5 @@ deploy() {
         printf 'Lambda updated: %s\n' "${function_name}"
     done
     printf 'Full deployment complete. API endpoint: %s\n' "$(deployment_output api_endpoint)"
-    AWS_PROFILE=admin UI_ENV_DIR="${ROOT_DIR}/ui" "${ROOT_DIR}/ui/scripts/sync-deployment-env.sh"
+    AWS_PROFILE=admin UI_ENV_DIR="${ROOT_DIR}/web" "${ROOT_DIR}/web/scripts/sync-deployment-env.sh"
 }

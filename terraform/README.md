@@ -129,10 +129,10 @@ not transcripts or scores, and replay/live delivery is at-least-once.
 - `../migrations/`: database schema; no database/schema provisioning lives here.
 - `../models/`: separately deployed Python services sharing request/callback
   contracts with Rust callers.
-- `../ui/src/api/`: browser RPC, upload, Turnstile, and task-event transport.
+- `../web/src/api/`: browser RPC, upload, Turnstile, and task-event transport.
 - `../deployment-integration.sh`: consumer of Terraform input/output names and
   explicit ECR bootstrap resource addresses. Check references when renaming them.
-- `../ui/scripts/sync-deployment-env.sh`: consumer of public API, WebSocket, and
+- `../web/scripts/sync-deployment-env.sh`: consumer of public API, WebSocket, and
   Turnstile outputs. Check it when changing output names or endpoint semantics.
 
 ## Placement rules for future changes

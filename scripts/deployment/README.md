@@ -52,7 +52,7 @@ atomic rollout or automatic rollback.
 
 Terraform state is local in `terraform/`. Do not deploy concurrently from
 separate worktrees: there is no shared state lock. UI synchronization writes only
-public outputs to ignored `ui/.env.local` and `ui/.env.production.local` files.
+public outputs to ignored `web/.env.local` and `web/.env.production.local` files.
 
 ## Implementation boundary
 

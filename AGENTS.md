@@ -1,17 +1,17 @@
 ## Boundaries that matter
 
 - Component commands and implementation gotchas live in `backend/AGENTS.md`,
-  `models/AGENTS.md`, and `ui/AGENTS.md`. Cargo's workspace root is `backend/`.
+  `models/AGENTS.md`, and `web/AGENTS.md`. Cargo's workspace root is `backend/`.
 - Review submission creates an idempotent pipeline task; upload notifications
   start the Step Functions conversion → transcription → moderation flow.
 - `models/` is a separate Modal deployable. Rust callers and Python services share
   JSON request/callback contracts, not code. Keep both sides in sync; terminal
   callbacks go through `task-callback-lambda` to resume Step Functions.
 - Public RPC sources live in root `proto/`; database schema lives in `migrations/`.
-- `ui/` is a React/Vite browser demo. Its `ApiBackend` owns RPC, upload, and
+- `web/` is a TanStack Start (React) browser demo. Its `ApiBackend` owns RPC, upload, and
   task-event transport behind the `Backend` interface. Task-event WebSocket
   frames contain event names only, with at-least-once replay/live delivery;
-  transcripts and scores come from the evaluation read API. See `ui/README.md`.
+  transcripts and scores come from the evaluation read API. See `web/AGENTS.md`.
 
 ## Shared policies and local database
 

@@ -17,9 +17,9 @@ if [[ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
 fi
 
 export AWS_PROFILE=admin TERRAFORM_DIR
-UI_ENV_DIR="${ROOT_DIR}/ui" "${ROOT_DIR}/ui/scripts/sync-deployment-env.sh"
+UI_ENV_DIR="${ROOT_DIR}/web" "${ROOT_DIR}/web/scripts/sync-deployment-env.sh"
 
 # Vite gives existing process variables precedence over the synchronized env file.
 unset VITE_TURNSTILE_SITE_KEY VITE_API_ENDPOINT VITE_TASK_EVENTS_ENDPOINT
-cd "${ROOT_DIR}/ui"
+cd "${ROOT_DIR}/web"
 npm run deploy
