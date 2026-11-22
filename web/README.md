@@ -18,14 +18,27 @@ npm run build
 
 ## Deploy to Cloudflare Workers
 
-This project uses the Cloudflare Vite plugin (configured in `vite.config.ts`) and `wrangler.jsonc`:
+The app runs as a Worker (`@cloudflare/vite-plugin`, `wrangler.jsonc`) on the
+`guard.utf.lol` custom domain. The `VITE_*` endpoint and Turnstile site key are
+inlined at build time, so they must be present when building.
 
-1. Install Wrangler: `npm install -g wrangler`
-2. Authenticate: `wrangler login`
-3. Deploy: `npx wrangler deploy`
+Preferred, from the repository root (needs the deployed Terraform state):
 
-For production env vars, run `wrangler secret put MY_VAR` for each secret listed in `.env.example`. Public (non-secret) vars go in `wrangler.jsonc` under `vars`.
+```bash
+CLOUDFLARE_ACCOUNT_ID=<account> AWS_PROFILE=admin ./scripts/deploy-ui.sh
+```
 
-KV, D1, R2, and Durable Object bindings are configured in `wrangler.jsonc` — see https://developers.cloudflare.com/workers/wrangler/configuration/.
+This syncs the public Terraform outputs into `web/.env.local` and
+`web/.env.production.local`, then runs `npm run deploy`.
 
+Without Terraform state, fill in `web/.env.production.local` from
+`.env.example`, then from `web/`:
 
+```bash
+AWS_PROFILE=admin npm run deploy:dry-run   # build and package only
+AWS_PROFILE=admin npm run deploy           # checks VITE_* values, builds, publishes
+```
+
+Wrangler needs Cloudflare credentials: `npx wrangler login`, or
+`CLOUDFLARE_API_TOKEN` in non-interactive shells. The Turnstile widget's allowed
+hostnames (`turnstile_allowed_hostnames` in Terraform) must include the UI host.

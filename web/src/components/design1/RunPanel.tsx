@@ -56,7 +56,14 @@ export function RunPanel({
 			) : (
 				<div className="d1-verdict" data-tone="pending">
 					<h2>Checking your clip…</h2>
-					<p>This usually takes a few seconds.</p>
+					{state.connection === "error" ? (
+						<p role="alert">
+							We lost the live progress feed. Reload the page to pick up where
+							it left off.
+						</p>
+					) : (
+						<p>This usually takes a few seconds.</p>
+					)}
 				</div>
 			)}
 

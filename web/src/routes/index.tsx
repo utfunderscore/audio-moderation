@@ -1,14 +1,18 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { getSampleAudio } from "@/api/sample-audio";
-import { SimulatedBackend } from "@/api/simulated-backend";
 import { Design1Topbar } from "@/components/design1/Design1Topbar";
 import { PipelineDemo } from "@/components/design1/PipelineDemo";
 import { PixelStars } from "@/components/PixelStars";
 import { DEMO_USER_ID } from "@/domain/jobs";
 import { useEvaluation } from "@/hooks/useEvaluation";
+import { backend } from "@/lib/backend";
 import design1Css from "../design1.css?url";
+
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY ?? "";
+const MISSING_SITE_KEY =
+	"Submission is unavailable: VITE_TURNSTILE_SITE_KEY is not configured.";
 
 export const Route = createFileRoute("/")({
 	head: () => ({
@@ -23,23 +27,69 @@ const STAR_FREE_ZONES =
 	".d1-title, .d1-lede, .d1-card, .d1-fineprint, .d1-footer";
 
 function LandingPage() {
-	const [backend] = useState(() => new SimulatedBackend());
 	const evaluation = useEvaluation(backend);
+	const { resume } = evaluation;
 	const [file, setFile] = useState<File | null>(null);
+	const [verifying, setVerifying] = useState<File | null>(null);
+	const [configError, setConfigError] = useState<string | null>(null);
+	const tokenUsed = useRef(false);
 
-	const start = (audio: File) => {
-		setFile(audio);
+	// Pick an in-flight job back up after a reload; access tokens live in this tab's sessionStorage.
+	useEffect(() => {
+		let cancelled = false;
+		void backend.listJobs(DEMO_USER_ID).then((jobs) => {
+			const job = jobs.find((candidate) => candidate.status === "processing");
+			if (cancelled || job === undefined) return;
+			resume({ evaluationId: job.id, startedAt: job.submittedAt });
+			void backend
+				.getJobAudio(job.id)
+				.then((blob) => {
+					if (!cancelled) {
+						setFile(new File([blob], job.fileName, { type: blob.type }));
+					}
+				})
+				.catch(() => {});
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [resume]);
+
+	const requestVerification = (audio: File) => {
+		if (!TURNSTILE_SITE_KEY) {
+			setConfigError(MISSING_SITE_KEY);
+			return;
+		}
+		setConfigError(null);
+		tokenUsed.current = false;
+		evaluation.reset();
+		setFile(null);
+		setVerifying(audio);
+	};
+
+	// Turnstile responses are single-use, so submit at most once per challenge.
+	const submit = (turnstileToken: string) => {
+		if (verifying === null || tokenUsed.current) return;
+		tokenUsed.current = true;
+		setFile(verifying);
+		setVerifying(null);
 		evaluation.start({
 			userId: DEMO_USER_ID,
-			audio,
-			turnstileToken: "simulated",
+			audio: verifying,
+			turnstileToken,
 		});
 	};
 
 	const reset = () => {
 		setFile(null);
+		setVerifying(null);
 		evaluation.reset();
 	};
+
+	const submissionError =
+		evaluation.submissionError === null
+			? null
+			: `${evaluation.submissionError} Try again with a new security check.`;
 
 	return (
 		<div className="d1">
@@ -61,7 +111,11 @@ function LandingPage() {
 					<PipelineDemo
 						evaluation={evaluation}
 						file={file}
-						onFile={start}
+						verifying={verifying}
+						turnstileSiteKey={TURNSTILE_SITE_KEY}
+						error={configError ?? submissionError}
+						onFile={requestVerification}
+						onVerified={submit}
 						onReset={reset}
 						loadSample={getSampleAudio}
 					/>

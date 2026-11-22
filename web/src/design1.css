@@ -1129,3 +1129,27 @@
 		font-size: 1.5rem;
 	}
 }
+
+/* Verification */
+
+.d1-verify-file {
+	color: var(--d1-fg);
+	overflow-wrap: anywhere;
+}
+
+.d1-turnstile {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	min-height: 65px;
+}
+
+.d1 .d1-link-button {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+	font: inherit;
+	text-decoration: underline;
+	cursor: pointer;
+}
