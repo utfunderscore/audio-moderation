@@ -25,9 +25,28 @@
 	display: flex;
 	flex-direction: column;
 	min-height: 100vh;
-	background: var(--d1-bg);
+	/* 5px #121212 squares on a 10px black grid, matching the star pixel size. */
+	background: conic-gradient(from 270deg, #121212 25%, #000 0) 0 0 / 10px 10px;
 	color: var(--d1-fg);
 	overflow-x: clip;
+	isolation: isolate;
+}
+
+.d1-body {
+	position: relative;
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+}
+
+/* Scrolls with the content (not fixed) so avoided areas stay lined up. */
+.d1-body > .pixel-stars {
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	width: 100%;
+	height: 100%;
+	pointer-events: none;
 }
 
 .d1 :is(h1, h2, h3, p) {
@@ -106,6 +125,7 @@
 
 .d1-footer {
 	border-top: 1px solid var(--d1-line);
+	background: var(--d1-bg);
 }
 
 .d1-footer-inner {
@@ -197,21 +217,6 @@
 	padding: 64px 24px 96px;
 }
 
-.d1-main::before {
-	content: "";
-	position: absolute;
-	inset: 0 0 auto;
-	height: 34rem;
-	background-image:
-		linear-gradient(var(--d1-line) 1px, transparent 1px),
-		linear-gradient(90deg, var(--d1-line) 1px, transparent 1px);
-	background-size: 64px 64px;
-	background-position: center top;
-	mask-image: radial-gradient(ellipse 45% 55% at 50% 25%, black, transparent);
-	opacity: 0.35;
-	pointer-events: none;
-}
-
 .d1-hero {
 	position: relative;
 	display: flex;
@@ -254,11 +259,11 @@
 .d1-card {
 	position: relative;
 	width: min(40rem, 100%);
-	margin-top: 36px;
+	margin-top: 56px;
 	padding: 8px;
 	border: 1px solid var(--d1-line-strong);
 	border-radius: 22px;
-	background: color-mix(in srgb, var(--d1-surface) 88%, transparent);
+	background: var(--d1-surface);
 	box-shadow:
 		0 1px 0 rgb(255 255 255 / 0.05) inset,
 		0 30px 80px rgb(0 0 0 / 0.5);
@@ -1094,7 +1099,7 @@
 	}
 
 	.d1-card {
-		margin-top: 28px;
+		margin-top: 40px;
 		border-radius: 18px;
 	}
 
