@@ -45,7 +45,7 @@ the Lambda that handles them.
 | `transcription-caller.tf` | Asynchronous transcription-request Lambda; `transcription_endpoint_url`; database and Modal proxy-token parameter access; callback URL and task-event environment. |
 | `moderation-caller.tf` | Asynchronous moderation-request Lambda; `modal_endpoint_url` base URL; database and Modal proxy-token parameter access; callback URL and task-event environment. |
 | `task-callback.tf` | External-result callback Lambda; Step Functions task-success/task-failure permissions; database access; `POST /callbacks/external-task` integration with `AWS_IAM` authentication; callback URL output. |
-| `task-events.tf` | Task-event Lambda **and** WebSocket API; management/browser endpoint locals; `$connect`, `subscribe`, and `$disconnect` routes; stage, custom domain, API mapping, proxied DNS, and shared `task_event_emission` IAM policies for lifecycle Lambdas. |
+| `task-events.tf` | Task-event Lambda **and** WebSocket API; management/browser endpoint locals (Lambdas post via the default execute-api endpoint; browsers use the proxied hostname, and `$connect` rejects other hosts via `TASK_EVENTS_ALLOWED_CONNECT_DOMAIN`); `$connect`, `subscribe`, and `$disconnect` routes; stage, custom domain, API mapping, proxied DNS, and shared `task_event_emission` IAM policies for lifecycle Lambdas. |
 
 ## Shared component files
 
