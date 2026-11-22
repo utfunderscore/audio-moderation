@@ -10,8 +10,15 @@ variable "task_events_domain_name" {
 }
 
 locals {
-  task_events_websocket_endpoint  = var.enable_cloudflare_proxy ? "wss://${var.task_events_domain_name}" : trimsuffix(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "/")
-  task_events_management_endpoint = var.enable_cloudflare_proxy ? "https://${var.task_events_domain_name}" : replace(trimsuffix(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "/"), "wss://", "https://")
+  # Browsers use the Cloudflare-proxied hostname when proxying is enabled.
+  task_events_websocket_endpoint = var.enable_cloudflare_proxy ? "wss://${var.task_events_domain_name}" : trimsuffix(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "/")
+  # Lambdas always post through the default execute-api endpoint so
+  # SigV4-signed @connections calls stay inside AWS and never meet Cloudflare
+  # bot or security checks. IAM (execute-api:ManageConnections) protects it.
+  task_events_management_endpoint = replace(trimsuffix(aws_apigatewayv2_stage.pipeline_task_events.invoke_url, "/"), "wss://", "https://")
+  # With proxying enabled, $connect rejects sockets opened on any other host,
+  # so browsers cannot bypass Cloudflare through the default endpoint.
+  task_events_allowed_connect_domain = var.enable_cloudflare_proxy ? var.task_events_domain_name : ""
 }
 
 resource "aws_ecr_repository" "task_events" {
@@ -80,10 +87,11 @@ resource "aws_cloudwatch_log_group" "task_events" {
 # clients receive event names only. The subscribe route consumes a one-use,
 # task-scoped ticket; its database invariant permits one task stream per socket.
 resource "aws_apigatewayv2_api" "pipeline_task_events" {
-  name                         = "${local.name_prefix}-pipeline-task-events"
-  protocol_type                = "WEBSOCKET"
-  route_selection_expression   = "$request.body.action"
-  disable_execute_api_endpoint = var.enable_cloudflare_proxy
+  name                       = "${local.name_prefix}-pipeline-task-events"
+  protocol_type              = "WEBSOCKET"
+  route_selection_expression = "$request.body.action"
+  # Kept enabled for Lambda management calls; see task_events_management_endpoint.
+  disable_execute_api_endpoint = false
 }
 
 resource "aws_lambda_function" "task_events" {
@@ -97,9 +105,10 @@ resource "aws_lambda_function" "task_events" {
 
   environment {
     variables = {
-      DATABASE_URL_PARAMETER          = var.database_parameter_name
-      TASK_EVENTS_MANAGEMENT_ENDPOINT = local.task_events_management_endpoint
-      RUST_LOG                        = "info"
+      DATABASE_URL_PARAMETER             = var.database_parameter_name
+      TASK_EVENTS_MANAGEMENT_ENDPOINT    = local.task_events_management_endpoint
+      TASK_EVENTS_ALLOWED_CONNECT_DOMAIN = local.task_events_allowed_connect_domain
+      RUST_LOG                           = "info"
     }
   }
 
