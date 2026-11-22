@@ -42,8 +42,10 @@ Run from `web/`:
   the server too: keep `window`/`document`/storage access lazy or in effects.
 - `@/` resolves to `src/` in both Vite (tsconfig paths) and Vitest.
 - `src/routes/index.tsx` is the landing page: the pipeline demo built from
-  `src/components/design1/` and styled by `src/design1.css`. It currently wires
-  `SimulatedBackend`; `src/lib/backend.ts` only exports the `ApiBackend`.
+  `src/components/design1/` and styled by `src/design1.css`. It uses the
+  `ApiBackend` from `src/lib/backend.ts`: a chosen clip goes through a Turnstile
+  step (`VerifyPanel`) before `startEvaluation`, and an in-flight job from this tab
+  resumes on reload. `src/api/simulated-backend.ts` is an unwired design-only stub.
 
 ## ui-sdk
 

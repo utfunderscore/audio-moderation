@@ -13,7 +13,7 @@
     "format": "biome format",
     "lint": "biome lint",
     "check": "biome check",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "node scripts/check-deploy-env.mjs && npm run build && wrangler deploy",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "generate:proto": "buf generate ../proto --template buf.gen.yaml",

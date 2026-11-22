@@ -12,6 +12,7 @@ import type { EvaluationRun } from "@/hooks/useEvaluation";
 import { ClipInput } from "./ClipInput";
 import { nodeStates, STEPS } from "./pipeline-view";
 import { RunPanel } from "./RunPanel";
+import { VerifyPanel } from "./VerifyPanel";
 
 const useIsoLayoutEffect =
 	typeof window === "undefined" ? useEffect : useLayoutEffect;
@@ -55,7 +56,11 @@ function AutoHeight({ children }: { children: ReactNode }) {
 type PipelineDemoProps = {
 	evaluation: EvaluationRun;
 	file: File | null;
+	verifying: File | null;
+	turnstileSiteKey: string;
+	error: string | null;
 	onFile: (file: File) => void;
+	onVerified: (token: string) => void;
 	onReset: () => void;
 	loadSample: (sample: AudioSample, signal: AbortSignal) => Promise<File>;
 };
@@ -63,7 +68,11 @@ type PipelineDemoProps = {
 export function PipelineDemo({
 	evaluation,
 	file,
+	verifying,
+	turnstileSiteKey,
+	error,
 	onFile,
+	onVerified,
 	onReset,
 	loadSample,
 }: PipelineDemoProps) {
@@ -84,13 +93,18 @@ export function PipelineDemo({
 							onReset={onReset}
 						/>
 					</div>
+				) : verifying ? (
+					<div key="verify" className="d1-phase">
+						<VerifyPanel
+							file={verifying}
+							siteKey={turnstileSiteKey}
+							onToken={onVerified}
+							onCancel={onReset}
+						/>
+					</div>
 				) : (
 					<div key="idle" className="d1-phase">
-						<ClipInput
-							onFile={onFile}
-							loadSample={loadSample}
-							error={evaluation.submissionError}
-						/>
+						<ClipInput onFile={onFile} loadSample={loadSample} error={error} />
 					</div>
 				)}
 			</AutoHeight>

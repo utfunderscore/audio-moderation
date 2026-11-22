@@ -5,6 +5,7 @@ export interface TurnstileApi {
     options: {
       sitekey: string
       action: string
+      theme?: "auto" | "light" | "dark"
       callback: (token: string) => void
       "expired-callback": () => void
       "error-callback": () => void

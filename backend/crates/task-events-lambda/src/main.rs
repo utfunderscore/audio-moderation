@@ -33,7 +33,13 @@ async fn main() -> Result<(), Error> {
         env::var("TASK_EVENTS_MANAGEMENT_ENDPOINT")
             .expect("TASK_EVENTS_MANAGEMENT_ENDPOINT must be set"),
     );
-    let handler = TaskEventsHandler::new(connections, tickets).with_event_emitter(events);
+    let mut handler = TaskEventsHandler::new(connections, tickets).with_event_emitter(events);
+    if let Some(domain) = env::var("TASK_EVENTS_ALLOWED_CONNECT_DOMAIN")
+        .ok()
+        .filter(|domain| !domain.is_empty())
+    {
+        handler = handler.with_allowed_connect_domain(domain);
+    }
     run(service_fn(move |event| {
         let handler = handler.clone();
         async move { handler.handle(event).await }

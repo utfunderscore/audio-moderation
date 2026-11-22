@@ -26,6 +26,9 @@ pub struct ApiGatewayWebSocketEvent {
 pub struct WebSocketRequestContext {
     pub connection_id: ConnectionId,
     pub route_key: WebSocketRoute,
+    /// Hostname the client used to reach API Gateway.
+    #[serde(default)]
+    pub domain_name: Option<String>,
 }
 
 /// An API Gateway WebSocket connection identifier.
@@ -48,6 +51,7 @@ pub enum WebSocketRoute {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectEvent {
     pub connection_id: ConnectionId,
+    pub domain_name: Option<String>,
 }
 
 /// Input accepted by the `subscribe` route.
@@ -85,6 +89,7 @@ pub struct TaskEventsHandler<S, T> {
     connections: S,
     tickets: T,
     events: Option<TaskEventEmitter>,
+    allowed_connect_domain: Option<String>,
 }
 
 /// Persistence required by the task-events WebSocket handler.
@@ -144,11 +149,19 @@ impl<S, T> TaskEventsHandler<S, T> {
             connections,
             tickets,
             events: None,
+            allowed_connect_domain: None,
         }
     }
 
     pub fn with_event_emitter(mut self, events: TaskEventEmitter) -> Self {
         self.events = Some(events);
+        self
+    }
+
+    /// Accepts `$connect` only on `domain`, so clients cannot bypass the
+    /// Cloudflare-proxied hostname through the default execute-api endpoint.
+    pub fn with_allowed_connect_domain(mut self, domain: impl Into<String>) -> Self {
+        self.allowed_connect_domain = Some(domain.into());
         self
     }
 }
@@ -167,7 +180,13 @@ impl<S: TaskConnectionStore, T: TaskEventTicketStore> TaskEventsHandler<S, T> {
         let connection_id = request_context.connection_id;
 
         match request_context.route_key {
-            WebSocketRoute::Connect => self.connect(ConnectEvent { connection_id }).await,
+            WebSocketRoute::Connect => {
+                self.connect(ConnectEvent {
+                    connection_id,
+                    domain_name: request_context.domain_name,
+                })
+                .await
+            }
             WebSocketRoute::Subscribe => {
                 let body =
                     body.ok_or_else(|| invalid_input("subscribe requests require a body"))?;
@@ -182,8 +201,18 @@ impl<S: TaskConnectionStore, T: TaskEventTicketStore> TaskEventsHandler<S, T> {
         }
     }
 
-    /// Logs a newly accepted WebSocket connection.
-    pub async fn connect(&self, _event: ConnectEvent) -> Result<WebSocketResponse, Error> {
+    /// Accepts a WebSocket connection made through the allowed hostname.
+    pub async fn connect(&self, event: ConnectEvent) -> Result<WebSocketResponse, Error> {
+        if let Some(allowed) = &self.allowed_connect_domain
+            && event.domain_name.as_deref() != Some(allowed.as_str())
+        {
+            info!(
+                connectionId = %event.connection_id.0,
+                domainName = event.domain_name.as_deref().unwrap_or(""),
+                "rejected WebSocket connection on a non-public hostname"
+            );
+            return Ok(forbidden_host_response());
+        }
         Ok(success_response())
     }
 
@@ -245,6 +274,13 @@ fn unauthorized_response() -> WebSocketResponse {
     WebSocketResponse {
         status_code: 401,
         body: Some("invalid or expired task-events ticket".into()),
+    }
+}
+
+fn forbidden_host_response() -> WebSocketResponse {
+    WebSocketResponse {
+        status_code: 403,
+        body: Some("connect through the public task-events hostname".into()),
     }
 }
 
@@ -362,6 +398,7 @@ mod tests {
                         request_context: WebSocketRequestContext {
                             connection_id: ConnectionId("connection-123".into()),
                             route_key: serde_json::from_str(&format!("\"{route_key}\"")).unwrap(),
+                            domain_name: None,
                         },
                         body: body.map(str::to_owned),
                         is_base64_encoded: false,
@@ -399,6 +436,7 @@ mod tests {
                 request_context: WebSocketRequestContext {
                     connection_id: ConnectionId("connection-123".into()),
                     route_key: WebSocketRoute::Subscribe,
+                    domain_name: None,
                 },
                 body: None,
                 is_base64_encoded: false,
@@ -456,5 +494,58 @@ mod tests {
                 .unwrap(),
             subscription_conflict_response()
         );
+    }
+
+    fn connect_event(domain_name: Option<&str>) -> ConnectEvent {
+        ConnectEvent {
+            connection_id: ConnectionId("connection-123".into()),
+            domain_name: domain_name.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn deserializes_the_connect_domain_name() {
+        let event: ApiGatewayWebSocketEvent = serde_json::from_str(
+            r#"{"requestContext":{"connectionId":"c","routeKey":"$connect","domainName":"events.example.com"}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            event.request_context.domain_name.as_deref(),
+            Some("events.example.com")
+        );
+    }
+
+    #[tokio::test]
+    async fn accepts_connect_on_the_allowed_domain() {
+        let handler = TaskEventsHandler::new(
+            RecordingConnectionStore::default(),
+            RecordingTicketStore::default(),
+        )
+        .with_allowed_connect_domain("events.example.com");
+
+        assert_eq!(
+            handler
+                .connect(connect_event(Some("events.example.com")))
+                .await
+                .unwrap(),
+            success_response()
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_connect_on_another_or_missing_domain() {
+        let handler = TaskEventsHandler::new(
+            RecordingConnectionStore::default(),
+            RecordingTicketStore::default(),
+        )
+        .with_allowed_connect_domain("events.example.com");
+
+        for domain in [Some("abc123.execute-api.eu-west-2.amazonaws.com"), None] {
+            assert_eq!(
+                handler.connect(connect_event(domain)).await.unwrap(),
+                forbidden_host_response()
+            );
+        }
     }
 }
